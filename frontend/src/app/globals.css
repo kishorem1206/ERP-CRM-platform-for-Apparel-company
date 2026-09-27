@@ -6,58 +6,65 @@
 
 @layer base {
   :root {
-    /* ── Canvas ─────────────────────────────────────── */
-    --background:        232 18% 93%;    /* #EAECF2 cool blue-gray */
-    --foreground:        228 32% 11%;    /* near-black indigo-navy */
+    /* ── Canvas — #F7F8FA light surface ────────────────── */
+    --background:        220 23% 97%;
+    --foreground:        221 39% 11%;    /* #111827 near-black */
 
     /* ── Card surface ───────────────────────────────── */
     --card:              0 0% 100%;
-    --card-foreground:   228 32% 11%;
+    --card-foreground:   221 39% 11%;
 
     /* ── Popover ────────────────────────────────────── */
     --popover:           0 0% 100%;
-    --popover-foreground:228 32% 11%;
+    --popover-foreground:221 39% 11%;
 
-    /* ── Primary — #5347CE deep indigo ──────────────── */
-    --primary:           245 57% 55%;
+    /* ── Primary — #0049A7 — exact sidebar blue ───────── */
+    --primary:           214 100% 33%;
     --primary-foreground:0 0% 100%;
 
-    /* ── Secondary — #887CFD lavender ───────────────── */
-    --secondary:         249 95% 74%;
-    --secondary-foreground: 245 57% 22%;
+    /* ── Secondary — #0F78FF vivid blue (lighter tier) ── */
+    --secondary:         214 100% 53%;
+    --secondary-foreground: 0 0% 100%;
 
-    /* ── Muted ──────────────────────────────────────── */
-    --muted:             228 20% 95%;
-    --muted-foreground:  220 14% 56%;
+    /* ── Muted — #F3F5F8 soft surface ─────────────────── */
+    --muted:             216 26% 96%;
+    --muted-foreground:  215 16% 47%;    /* #64748B */
 
-    /* ── Accent — pale indigo tint ──────────────────── */
-    --accent:            245 57% 95%;
-    --accent-foreground: 245 57% 36%;
+    /* ── Accent — #8174F5 — exact sidebar purple ──────── */
+    --accent:            244 53% 94%;
+    --accent-foreground: 246 87% 71%;
 
-    /* ── Semantic ───────────────────────────────────── */
-    --destructive:       4 86% 58%;
+    /* ── Semantic — #1D0DB0 deep purple stands in for red (no red/amber/green anywhere) ── */
+    --destructive:       246 86% 37%;
     --destructive-foreground: 0 0% 100%;
 
-    /* ── Border / Input / Ring ──────────────────────── */
-    --border:            228 18% 88%;
-    --input:             228 18% 88%;
-    --ring:              245 57% 55%;
+    /* ── Border / Input / Ring — #E2E6EC ──────────────── */
+    --border:            216 21% 91%;
+    --input:             216 21% 91%;
+    --ring:              214 100% 33%;
 
     /* ── Radius ─────────────────────────────────────── */
     --radius:            0.625rem;
 
-    /* ── Brand accent palette (CSS vars for charts) ─── */
-    --brand-indigo:      #5347CE;
-    --brand-lavender:    #887CFD;
-    --brand-blue:        #4896FE;
-    --brand-teal:        #16C8C7;
+    /* ── Brand palette — every colour in the app is a shade of these two,
+         anchored exactly to the locked sidebar's Blue and Purple ──────── */
+    --brand-blue-deep:    #0F233D;
+    --brand-blue:         #0049A7;   /* = sidebar background, PRIMARY */
+    --brand-blue-vivid:   #0F78FF;   /* success / positive / secondary CTA */
+    --brand-blue-light:   #8FC0FF;
+    --brand-blue-tint:    #E7EFF9;
 
-    /* ── Shadows — indigo-tinted, very subtle ─────── */
-    --shadow-xs:  0 1px 2px 0 rgb(83 71 206 / .04);
-    --shadow-sm:  0 2px 8px -1px rgb(83 71 206 / .07), 0 1px 3px -1px rgb(83 71 206 / .04);
-    --shadow-md:  0 4px 16px -2px rgb(83 71 206 / .09), 0 2px 6px -2px rgb(83 71 206 / .05);
-    --shadow-lg:  0 8px 32px -4px rgb(83 71 206 / .11), 0 4px 10px -4px rgb(83 71 206 / .06);
-    --shadow-xl:  0 16px 48px -6px rgb(83 71 206 / .14), 0 6px 16px -6px rgb(83 71 206 / .08);
+    --brand-purple-deep:  #1D0DB0;   /* error / cancelled / urgent */
+    --brand-purple:       #8174F5;   /* = sidebar icon accent, PURPLE */
+    --brand-purple-light: #A096F7;   /* warning / pending / attention */
+    --brand-purple-tint:  #E9E8F8;
+
+    /* ── Shadows — very subtle, per design system ─────── */
+    --shadow-xs:  0 1px 3px 0 rgb(20 40 80 / .05);
+    --shadow-sm:  0 2px 8px -1px rgb(20 40 80 / .05);
+    --shadow-md:  0 8px 24px -4px rgb(20 40 80 / .10);
+    --shadow-lg:  0 12px 36px -6px rgb(20 40 80 / .14);
+    --shadow-xl:  0 20px 60px -8px rgb(20 40 80 / .18);
   }
 
   /* ── Dark mode ──────────────────────────────────────── */
@@ -72,24 +79,24 @@
       --popover:           232 24% 14%;
       --popover-foreground:228 20% 92%;
 
-      --primary:           245 70% 65%;
+      --primary:           214 70% 65%;
       --primary-foreground:232 28% 8%;
 
-      --secondary:         249 60% 28%;
-      --secondary-foreground: 249 95% 82%;
+      --secondary:         218 60% 28%;
+      --secondary-foreground: 218 95% 82%;
 
       --muted:             232 22% 18%;
       --muted-foreground:  220 14% 55%;
 
-      --accent:            245 40% 20%;
-      --accent-foreground: 245 70% 72%;
+      --accent:            214 40% 20%;
+      --accent-foreground: 214 70% 72%;
 
-      --destructive:       4 72% 48%;
+      --destructive:       353 72% 48%;
       --destructive-foreground: 0 0% 100%;
 
       --border:            232 20% 22%;
       --input:             232 20% 22%;
-      --ring:              245 70% 65%;
+      --ring:              214 70% 65%;
 
       --shadow-xs:  0 1px 2px 0 rgb(0 0 0 / .20);
       --shadow-sm:  0 2px 8px -1px rgb(0 0 0 / .32), 0 1px 3px -1px rgb(0 0 0 / .18);
@@ -109,24 +116,24 @@
     --popover:           232 24% 14%;
     --popover-foreground:228 20% 92%;
 
-    --primary:           245 70% 65%;
+    --primary:           214 70% 65%;
     --primary-foreground:232 28% 8%;
 
-    --secondary:         249 60% 28%;
-    --secondary-foreground: 249 95% 82%;
+    --secondary:         218 60% 28%;
+    --secondary-foreground: 218 95% 82%;
 
     --muted:             232 22% 18%;
     --muted-foreground:  220 14% 55%;
 
-    --accent:            245 40% 20%;
-    --accent-foreground: 245 70% 72%;
+    --accent:            214 40% 20%;
+    --accent-foreground: 214 70% 72%;
 
-    --destructive:       4 72% 48%;
+    --destructive:       353 72% 48%;
     --destructive-foreground: 0 0% 100%;
 
     --border:            232 20% 22%;
     --input:             232 20% 22%;
-    --ring:              245 70% 65%;
+    --ring:              214 70% 65%;
 
     --shadow-xs:  0 1px 2px 0 rgb(0 0 0 / .20);
     --shadow-sm:  0 2px 8px -1px rgb(0 0 0 / .32), 0 1px 3px -1px rgb(0 0 0 / .18);
@@ -225,16 +232,16 @@
 
   /* Primary button — indigo with soft glow */
   button[class*="bg-primary"] {
-    box-shadow: 0 2px 10px hsl(245 57% 55% / .32), 0 1px 4px hsl(245 57% 55% / .20);
+    box-shadow: 0 2px 10px hsl(214 100% 33% / .32), 0 1px 4px hsl(214 100% 33% / .20);
     transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1);
   }
   button[class*="bg-primary"]:hover {
-    box-shadow: 0 4px 18px hsl(245 57% 55% / .44), 0 2px 8px hsl(245 57% 55% / .28);
+    box-shadow: 0 4px 18px hsl(214 100% 33% / .44), 0 2px 8px hsl(214 100% 33% / .28);
     transform: translateY(-1px);
   }
   button[class*="bg-primary"]:active {
     transform: translateY(0);
-    box-shadow: 0 1px 5px hsl(245 57% 55% / .26);
+    box-shadow: 0 1px 5px hsl(214 100% 33% / .26);
   }
 
   /* All interactive elements */
@@ -335,13 +342,13 @@
 
   /* Brand gradients */
   .gradient-primary {
-    background: linear-gradient(135deg, hsl(245 57% 55%), hsl(249 95% 68%));
+    background: linear-gradient(135deg, hsl(214 100% 33%), hsl(214 100% 53%));
   }
   .gradient-blue-teal {
-    background: linear-gradient(135deg, #4896FE, #16C8C7);
+    background: linear-gradient(135deg, #0049A7, #8174F5);
   }
   .gradient-indigo-lavender {
-    background: linear-gradient(135deg, #5347CE, #887CFD);
+    background: linear-gradient(135deg, #0049A7, #0F78FF);
   }
 
   .text-balance { text-wrap: balance; }

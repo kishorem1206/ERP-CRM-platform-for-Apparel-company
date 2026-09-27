@@ -89,10 +89,10 @@ export default function LoginPage() {
                 placeholder="000000"
                 className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30 tracking-widest text-center text-lg"
               />
-              {otpErrors.code && <p className="text-xs text-red-500">{otpErrors.code.message}</p>}
+              {otpErrors.code && <p className="text-xs text-violet-500">{otpErrors.code.message}</p>}
             </div>
             {error && (
-              <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">
+              <p className="text-xs text-violet-500 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-md px-3 py-2">
                 {error}
               </p>
             )}
@@ -135,7 +135,7 @@ export default function LoginPage() {
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30"
             />
             {errors.email && (
-              <p className="text-xs text-red-500">{errors.email.message}</p>
+              <p className="text-xs text-violet-500">{errors.email.message}</p>
             )}
           </div>
 
@@ -154,12 +154,12 @@ export default function LoginPage() {
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30"
             />
             {errors.password && (
-              <p className="text-xs text-red-500">{errors.password.message}</p>
+              <p className="text-xs text-violet-500">{errors.password.message}</p>
             )}
           </div>
 
           {error && (
-            <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">
+            <p className="text-xs text-violet-500 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-md px-3 py-2">
               {error}
             </p>
           )}

@@ -162,6 +162,7 @@ async def seed():
             ("delivery", "DEL"), ("credit_note", "CN"), ("stock_transfer", "STT"),
             ("stock_adjustment", "ADJ"), ("production_lot", "LOT"),
             ("material_issue", "MIS"), ("production_entry", "PE"),
+            ("job_work_challan", "JWC"),
         ]:
             await db.execute(
                 text("""

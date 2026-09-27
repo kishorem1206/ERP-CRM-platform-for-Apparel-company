@@ -4,14 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const TEAL = "#16C8C7";
+const TEAL = "#8174F5";
 
 const STATUS_HEX: Record<string, string> = {
-  draft: "#94A3B8", planned: "#4896FE", approved: "#887CFD",
-  in_production: "#16C8C7", qc: "#F59E0B", packing: "#F97316",
-  completed: "#10B981", cancelled: "#EF4444",
-  pending: "#4896FE", received: "#10B981", partial: "#F59E0B",
-  issued: TEAL, open: "#4896FE", closed: "#10B981",
+  draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
+  in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
+  completed: "#0F78FF", cancelled: "#1D0DB0",
+  pending: "#0049A7", received: "#0F78FF", partial: "#A096F7",
+  issued: TEAL, open: "#0049A7", closed: "#0F78FF",
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -19,7 +19,7 @@ function StatusDot({ status }: { status: string }) {
   const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />

@@ -6,10 +6,10 @@ import remarkGfm from "remark-gfm";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 interface Message {
   role: "user" | "assistant";

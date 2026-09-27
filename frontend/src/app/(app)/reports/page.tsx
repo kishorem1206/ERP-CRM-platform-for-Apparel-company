@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { TrendingUp, ShoppingBag, Factory, Calculator, BarChart3, ChevronRight } from "lucide-react";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
-const AMBER    = "#F59E0B";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
+const AMBER    = "#A096F7";
 
 const CARDS = [
   {

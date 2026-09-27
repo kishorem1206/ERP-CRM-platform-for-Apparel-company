@@ -31,15 +31,22 @@ class ProductOut(BaseModel):
     product_type: str
     category_id: Optional[UUID] = None
     category_name: Optional[str] = None
+    unit_id: Optional[UUID] = None
     unit_abbreviation: Optional[str] = None
+    hsn_id: Optional[UUID] = None
     hsn_code: Optional[str] = None
     gst_rate: Optional[Decimal] = None
     mrp: Optional[Decimal] = None
+    dealer_price: Optional[Decimal] = None
     cost_price: Optional[Decimal] = None
+    description: Optional[str] = None
     fabric_type: Optional[str] = None
     fabric_composition: Optional[str] = None
     gsm: Optional[Decimal] = None
     construction: Optional[str] = None
+    fit: Optional[str] = None
+    season: Optional[str] = None
+    gender: Optional[str] = None
     is_active: bool
     variants: list[ProductVariantOut] = []
 
@@ -128,6 +135,7 @@ class HsnOut(BaseModel):
     hsn: str
     description: Optional[str] = None
     gst_rate: Decimal
+    cess_rate: Optional[Decimal] = None
     model_config = {"from_attributes": True}
 
 
@@ -135,5 +143,6 @@ class WarehouseOut(BaseModel):
     id: UUID
     name: str
     code: Optional[str] = None
+    address: Optional[str] = None
     is_active: bool
     model_config = {"from_attributes": True}

@@ -35,5 +35,13 @@ celery_app.conf.update(
             "task": "app.workers.tasks.check_production_delays",
             "schedule": 24 * 60 * 60,
         },
+        "mark-rotten-leads-every-6h": {
+            "task": "app.workers.tasks.mark_rotten_leads",
+            "schedule": 6 * 60 * 60,
+        },
+        "check-job-work-challans-daily": {
+            "task": "app.workers.tasks.check_job_work_challans",
+            "schedule": 24 * 60 * 60,
+        },
     },
 )

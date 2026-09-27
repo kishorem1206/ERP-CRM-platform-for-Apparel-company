@@ -72,7 +72,7 @@ class VendorCreate(BaseModel):
     @field_validator("vendor_type")
     @classmethod
     def validate_vendor_type(cls, v: str) -> str:
-        allowed = {"supplier", "job_worker", "transporter"}
+        allowed = {"supplier", "job_worker", "transporter", "agent"}
         if v not in allowed:
             raise ValueError(f"vendor_type must be one of {allowed}")
         return v

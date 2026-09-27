@@ -8,9 +8,9 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
-const LAVENDER = "#887CFD";
+const LAVENDER = "#0F78FF";
 
-type VendorType = "supplier" | "job_worker" | "transporter";
+type VendorType = "supplier" | "job_worker" | "transporter" | "agent";
 
 interface Vendor {
   id: string;
@@ -27,6 +27,7 @@ const TYPE_LABELS: Record<VendorType, string> = {
   supplier: "Supplier",
   job_worker: "Job Worker",
   transporter: "Transporter",
+  agent: "Agent",
 };
 
 const TYPE_FILTERS = [
@@ -34,6 +35,7 @@ const TYPE_FILTERS = [
   { label: "Suppliers", value: "supplier" },
   { label: "Job Workers", value: "job_worker" },
   { label: "Transporters", value: "transporter" },
+  { label: "Agents", value: "agent" },
 ];
 
 const columns: Column<Record<string, unknown>>[] = [
@@ -170,6 +172,7 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
                     { value: "supplier", label: "Supplier" },
                     { value: "job_worker", label: "Job Worker" },
                     { value: "transporter", label: "Transporter" },
+                    { value: "agent", label: "Agent" },
                   ]}
                 />
               </div>
@@ -239,7 +242,7 @@ export default function VendorsPage() {
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">PURCHASE / VENDORS</p>
           <h1 className="text-2xl font-bold tracking-tight">Vendors</h1>
-          <p className="text-sm text-muted-foreground mt-1">Yarn mills, fabric suppliers, job workers, and trim vendors.</p>
+          <p className="text-sm text-muted-foreground mt-1">Yarn mills, fabric suppliers, job workers, agents, and trim vendors.</p>
         </div>
         <button
           onClick={() => setShowAdd(true)}

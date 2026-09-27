@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Calendar, ArrowRight } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
@@ -9,10 +10,10 @@ import {
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type GSTRow = Record<string, unknown> & {
   month: string; taxable_amount: string; cgst_amount: string;
@@ -64,10 +65,36 @@ const GST_TABS = [
   { value: "input",  label: "Input ITC (GSTR-2A)" },
 ] as const;
 
+const PRESETS: { label: string; value: number | "ytd" }[] = [
+  { label: "7D", value: 7 },
+  { label: "30D", value: 30 },
+  { label: "90D", value: 90 },
+  { label: "YTD", value: "ytd" },
+];
+
 export default function GSTSummaryPage() {
   const [from, setFrom] = useState(firstOfYear);
   const [to, setTo]     = useState(today);
   const [tab, setTab]   = useState<"output" | "input">("output");
+
+  const applyPreset = useCallback((days: number | "ytd") => {
+    const toStr = new Date().toISOString().slice(0, 10);
+    const fromStr = days === "ytd"
+      ? `${new Date().getFullYear()}-01-01`
+      : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    setFrom(fromStr);
+    setTo(toStr);
+  }, []);
+
+  const activePreset = (() => {
+    if (to !== today) return null;
+    const days = Math.round((new Date(today).getTime() - new Date(from).getTime()) / 86_400_000);
+    if (from === `${new Date().getFullYear()}-01-01`) return "ytd";
+    if (days === 7) return 7;
+    if (days === 30) return 30;
+    if (days === 90) return 90;
+    return null;
+  })();
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["report-gst", from, to],
@@ -107,27 +134,49 @@ export default function GSTSummaryPage() {
             Monthly CGST / SGST / IGST breakdown.
           </p>
         </div>
-      </div>
 
-      {/* Filters */}
-      <div className="flex items-end gap-3 flex-wrap bg-card border border-border rounded-2xl p-5">
-        <div>
-          <label className="block text-xs font-medium mb-1 text-muted-foreground">From</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="rounded-xl border border-border bg-background px-3 py-2 text-sm" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl">
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => applyPreset(p.value)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150"
+                style={
+                  activePreset === p.value
+                    ? { background: "hsl(var(--card))", color: LAVENDER, boxShadow: "var(--shadow-xs)" }
+                    : { color: "hsl(var(--muted-foreground))" }
+                }
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 bg-card border border-border rounded-xl pl-3 pr-1 py-1">
+            <Calendar className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="text-sm bg-transparent border-none outline-none w-[124px]"
+            />
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground/50 flex-shrink-0" />
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="text-sm bg-transparent border-none outline-none w-[124px]"
+            />
+            <button
+              onClick={() => refetch()}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 active:scale-95 flex-shrink-0"
+              style={{ background: LAVENDER }}
+            >
+              Apply
+            </button>
+          </div>
         </div>
-        <div>
-          <label className="block text-xs font-medium mb-1 text-muted-foreground">To</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            className="rounded-xl border border-border bg-background px-3 py-2 text-sm" />
-        </div>
-        <button
-          onClick={() => refetch()}
-          className="rounded-xl px-5 py-2 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
-          style={{ background: LAVENDER }}
-        >
-          Apply
-        </button>
       </div>
 
       {/* Tab strip */}

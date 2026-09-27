@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
-const BLUE = "#4896FE";
+const BLUE = "#0049A7";
 
 interface PurchaseOrder {
   id: string;
@@ -191,9 +191,9 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                           onChange={(v) => updateItem(i, "unit_id", v)}
                           placeholder="Unit…"
                           accent={BLUE}
-                          options={(units ?? []).map((u: { id: string; symbol: string }) => ({
+                          options={(units ?? []).map((u: { id: string; abbreviation: string }) => ({
                             value: u.id,
-                            label: u.symbol,
+                            label: u.abbreviation,
                           }))}
                         />
                       </td>

@@ -5,10 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type BalanceRow = Record<string, unknown> & {
   product_id: string;
@@ -23,8 +23,8 @@ type BalanceRow = Record<string, unknown> & {
 const TYPE_HEX: Record<string, string> = {
   raw_material: BLUE,
   fabric:       LAVENDER,
-  trim:         "#F59E0B",
-  packing:      "#F97316",
+  trim:         "#A096F7",
+  packing:      "#A096F7",
   finished_good: TEAL,
 };
 
@@ -38,7 +38,7 @@ const columns: Column<BalanceRow>[] = [
       const color = TYPE_HEX[row.product_type] ?? "#94A3B8";
       return (
         <span
-          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
           style={{ background: `${color}18`, color }}
         >
           {row.product_type.replace(/_/g, " ")}
@@ -52,7 +52,7 @@ const columns: Column<BalanceRow>[] = [
     render: (row) => {
       const bal = Number(row.balance);
       return (
-        <span className={`font-semibold tabular-nums ${bal < 0 ? "text-red-600" : bal === 0 ? "text-muted-foreground" : "text-emerald-600"}`}>
+        <span className={`font-semibold tabular-nums ${bal < 0 ? "text-[#1D0DB0]" : bal === 0 ? "text-muted-foreground" : "text-[#0F78FF]"}`}>
           {bal.toFixed(4)} {row.unit_symbol}
         </span>
       );

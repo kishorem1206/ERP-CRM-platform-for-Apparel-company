@@ -21,7 +21,7 @@ class MaterialsService:
         """Concurrency-safe sequence number using document_sequences SELECT FOR UPDATE."""
         result = await self.db.execute(
             text("""
-                SELECT id, prefix, separator, year_format, next_number, padding
+                SELECT prefix, separator, year_format, next_number, padding
                 FROM document_sequences
                 WHERE company_id = :cid AND document_type = :dtype
                 FOR UPDATE
@@ -54,8 +54,8 @@ class MaterialsService:
         lot_number = f"{prefix}{sep}{year_part}{number_part}"
 
         await self.db.execute(
-            text("UPDATE document_sequences SET next_number = next_number + 1 WHERE id = :id"),
-            {"id": str(row["id"])},
+            text("UPDATE document_sequences SET next_number = next_number + 1 WHERE company_id = :cid AND document_type = :dtype"),
+            {"cid": str(company_id), "dtype": document_type},
         )
         return lot_number
 
@@ -256,16 +256,33 @@ class MaterialsService:
 
     async def list_lots(
         self, company_id: UUID, material_type: str | None = None,
+        trim_type: str | None = None,
         page: int = 1, page_size: int = 50,
     ) -> tuple[list[InventoryLot], int]:
         q = select(InventoryLot).where(InventoryLot.company_id == company_id)
         if material_type:
             q = q.where(InventoryLot.material_type == material_type)
+        if trim_type:
+            q = q.where(InventoryLot.trim_type == trim_type)
         from sqlalchemy import func
         total = (await self.db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
         q = q.order_by(InventoryLot.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
         rows = (await self.db.execute(q)).scalars().all()
         return list(rows), total
+
+    async def list_trim_types(self, company_id: UUID) -> list[tuple[str, int]]:
+        """Distinct trim types with lot counts, for filter chips on the Trims tab."""
+        result = await self.db.execute(
+            text("""
+                SELECT trim_type, COUNT(*) AS cnt
+                FROM inventory_lots
+                WHERE company_id = :cid AND material_type = 'trim' AND trim_type IS NOT NULL
+                GROUP BY trim_type
+                ORDER BY trim_type
+            """),
+            {"cid": str(company_id)},
+        )
+        return [(row.trim_type, row.cnt) for row in result.all()]
 
     async def list_fabric_runs(
         self, company_id: UUID, status: str | None = None,

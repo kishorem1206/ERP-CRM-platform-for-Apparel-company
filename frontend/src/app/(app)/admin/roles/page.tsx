@@ -7,10 +7,10 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type RoleRow = Record<string, unknown> & {
   id: string;
@@ -98,7 +98,7 @@ export default function RolesPage() {
           {!r.is_system && (
             <button
               onClick={() => deleteMut.mutate(r.id)}
-              className="p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 text-red-500 transition-colors"
+              className="p-1 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-950/30 text-violet-500 transition-colors"
               title="Delete"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -156,7 +156,7 @@ export default function RolesPage() {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 px-3 py-2 text-sm">{error}</div>}
+            {error && <div className="rounded-xl bg-violet-50 border border-violet-200 text-violet-700 px-3 py-2 text-sm">{error}</div>}
             <div>
               <label className="block text-xs font-medium mb-1 text-muted-foreground">Role Name *</label>
               <input value={name} onChange={(e) => setName(e.target.value)}

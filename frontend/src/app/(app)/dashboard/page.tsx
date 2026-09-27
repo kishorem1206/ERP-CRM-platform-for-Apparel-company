@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import {
@@ -8,15 +9,18 @@ import {
 } from "recharts";
 import {
   Wind, Scissors, Package2, Factory, ShieldCheck, Truck,
-  TrendingUp, Wallet, ChevronRight, ArrowUpRight,
+  TrendingUp, Wallet, ChevronRight,
+  Phone, Users, StickyNote, CheckSquare, Mail, X, CalendarClock,
+  Receipt, CreditCard,
 } from "lucide-react";
 import api from "@/lib/api";
+import { ModalPortal } from "@/components/shared/modal-portal";
 
 /* ── Brand palette ──────────────────────────────────────── */
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 /* ── Helpers ─────────────────────────────────────────────── */
 const INR = (v: number) =>
@@ -33,11 +37,11 @@ const STATUS_COLOR: Record<string, string> = {
   planned:           BLUE,
   approved:          LAVENDER,
   in_production:     TEAL,
-  qc:                "#F59E0B",
-  packing:           "#F97316",
-  ready_to_dispatch: "#22C55E",
-  completed:         "#10B981",
-  cancelled:         "#EF4444",
+  qc:                "#A096F7",
+  packing:           "#A096F7",
+  ready_to_dispatch: "#0F78FF",
+  completed:         "#0F78FF",
+  cancelled:         "#1D0DB0",
 };
 const STATUS_LABEL: Record<string, string> = {
   draft:             "Draft",
@@ -84,8 +88,8 @@ function StatusBadge({ status }: { status: string }) {
   const label = STATUS_LABEL[status] ?? status.replace(/_/g, " ");
   return (
     <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
-      style={{ background: `${color}1A`, color }}
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded whitespace-nowrap"
+      style={{ background: `${color}1A`, color, fontSize: 11, fontWeight: 700 }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
       {label}
@@ -93,23 +97,31 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-/* ── Inline header stat ───────────────────────────────────── */
-function HeaderStat({
-  label, value, loading, trend,
+/* ── KPI metric card ──────────────────────────────────────── */
+function KpiCard({
+  label, value, sublabel, icon: Icon, accent, loading,
 }: {
-  label: string; value: string; loading: boolean; trend?: "up";
+  label: string; value: string; sublabel?: string;
+  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  accent: string; loading: boolean;
 }) {
   return (
-    <div className="text-right">
-      {loading ? (
-        <Skeleton className="h-7 w-28 mb-1 ml-auto" />
-      ) : (
-        <div className="flex items-center justify-end gap-1">
-          {trend === "up" && <ArrowUpRight className="h-3.5 w-3.5 text-emerald-500" />}
-          <p className="text-xl font-bold tracking-tight tabular-nums">{value}</p>
+    <div className="bg-card border border-border rounded-2xl p-5 flex-1 min-w-[200px]">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{label}</p>
+        <div
+          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ background: `${accent}14`, border: `1px solid ${accent}28` }}
+        >
+          <Icon className="h-4 w-4" style={{ color: accent }} />
         </div>
+      </div>
+      {loading ? (
+        <Skeleton className="h-7 w-24 mt-2" />
+      ) : (
+        <p className="text-2xl font-bold tracking-tight tabular-nums mt-2">{value}</p>
       )}
-      <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+      {sublabel && <p className="text-xs text-muted-foreground mt-1">{sublabel}</p>}
     </div>
   );
 }
@@ -183,6 +195,137 @@ function PipelineNode({ stage, isLast }: { stage: PipelineStage; isLast: boolean
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Today's Activities popup ─────────────────────────────── */
+interface TodayActivity {
+  id: string;
+  type: string;
+  title: string;
+  schedule_from: string | null;
+  is_done: boolean;
+  lead_title: string | null;
+  person_name: string | null;
+}
+
+const TODAY_ACTIVITY_ICONS: Record<string, React.ReactNode> = {
+  call: <Phone className="h-3.5 w-3.5" />,
+  meeting: <Users className="h-3.5 w-3.5" />,
+  note: <StickyNote className="h-3.5 w-3.5" />,
+  task: <CheckSquare className="h-3.5 w-3.5" />,
+  email: <Mail className="h-3.5 w-3.5" />,
+};
+
+const TODAY_ACTIVITY_COLORS: Record<string, string> = {
+  call: BLUE,
+  meeting: LAVENDER,
+  note: "#A096F7",
+  task: "#0F78FF",
+  email: INDIGO,
+};
+
+function dismissedKey() {
+  return `today-activities-dismissed-${new Date().toISOString().slice(0, 10)}`;
+}
+
+function TodayActivitiesPopup() {
+  const [dismissed, setDismissed] = useState(true); // start hidden until we check sessionStorage
+
+  useEffect(() => {
+    try {
+      setDismissed(sessionStorage.getItem(dismissedKey()) === "1");
+    } catch {
+      setDismissed(false);
+    }
+  }, []);
+
+  const { data } = useQuery({
+    queryKey: ["dash-today-activities"],
+    queryFn: async () => {
+      const now = new Date();
+      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      const dayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+      const res = await api.get("/crm/activities", {
+        params: { date_from: dayStart.toISOString(), date_to: dayEnd.toISOString(), page_size: 50 },
+      });
+      return (res.data.data ?? []) as TodayActivity[];
+    },
+    staleTime: 60_000,
+  });
+
+  const activities = (data ?? []).sort((a, b) => (a.schedule_from ?? "").localeCompare(b.schedule_from ?? ""));
+
+  function dismiss() {
+    setDismissed(true);
+    try {
+      sessionStorage.setItem(dismissedKey(), "1");
+    } catch {
+      /* private-mode storage may throw — dismissal just won't persist */
+    }
+  }
+
+  if (dismissed || activities.length === 0) return null;
+
+  const pendingCount = activities.filter((a) => !a.is_done).length;
+
+  return (
+    <ModalPortal>
+    <div className="fixed bottom-6 right-6 z-50 w-[360px] bg-card border border-border rounded-2xl shadow-2xl overflow-hidden">
+      <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-border">
+        <div className="flex items-center gap-2.5">
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ background: `${INDIGO}18`, color: INDIGO }}
+          >
+            <CalendarClock className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold leading-tight">Today's Activities</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {pendingCount > 0 ? `${pendingCount} pending · ${activities.length} total` : `${activities.length} scheduled`}
+            </p>
+          </div>
+        </div>
+        <button onClick={dismiss} className="p-1 rounded-md hover:bg-muted text-muted-foreground transition-colors flex-shrink-0">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="max-h-72 overflow-y-auto divide-y divide-border">
+        {activities.map((a) => {
+          const color = TODAY_ACTIVITY_COLORS[a.type] ?? INDIGO;
+          return (
+            <div key={a.id} className="flex items-start gap-2.5 px-4 py-2.5">
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                style={{ background: `${color}18`, color }}
+              >
+                {TODAY_ACTIVITY_ICONS[a.type] ?? <CheckSquare className="h-3.5 w-3.5" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className={`text-xs font-medium leading-snug truncate ${a.is_done ? "line-through text-muted-foreground" : ""}`}>
+                  {a.title}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {a.schedule_from
+                    ? new Date(a.schedule_from).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
+                    : "No time set"}
+                  {(a.lead_title || a.person_name) && ` · ${a.lead_title ?? a.person_name}`}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <Link
+        href="/crm/activities"
+        className="block text-center text-xs font-semibold px-4 py-2.5 border-t border-border hover:bg-muted/50 transition-colors"
+        style={{ color: INDIGO }}
+      >
+        View all activities
+      </Link>
+    </div>
+    </ModalPortal>
   );
 }
 
@@ -278,9 +421,23 @@ export default function DashboardPage() {
     if (!monthMap[r.month]) monthMap[r.month] = { month: r.month, revenue: 0, purchase: 0 };
     monthMap[r.month].purchase = Number(r.total_amount);
   });
-  const trendData = Object.values(monthMap)
-    .sort((a, b) => a.month.localeCompare(b.month))
-    .map((r) => ({ ...r, month: r.month.slice(0, 7) }));
+
+  // Zero-fill every month from Jan through the current month so a month with
+  // no invoices renders as a flat 0 instead of being skipped entirely —
+  // skipping it left a visual gap where the line jumped straight past it.
+  const trendData: { month: string; revenue: number; purchase: number }[] = [];
+  const ytdCursor = new Date(new Date().getFullYear(), 0, 1);
+  const ytdEnd = new Date();
+  while (ytdCursor <= ytdEnd) {
+    const key = ytdCursor.toISOString().slice(0, 7); // "YYYY-MM"
+    const found = Object.values(monthMap).find((r) => r.month.startsWith(key));
+    trendData.push({
+      month: ytdCursor.toLocaleDateString("en-IN", { month: "short" }),
+      revenue: found?.revenue ?? 0,
+      purchase: found?.purchase ?? 0,
+    });
+    ytdCursor.setMonth(ytdCursor.getMonth() + 1);
+  }
 
   const mtdOutput  = outputData.filter((r) => r.month >= mtdStart);
   const revenueMTD = mtdOutput.reduce((s, r) => s + Number(r.total_amount), 0);
@@ -321,7 +478,7 @@ export default function DashboardPage() {
       label: "Yarn",
       icon: Wind,
       href: "/inventory/lots",
-      accent: "#D97706",
+      accent: "#A096F7",
       metric: yarnQ.isSuccess ? String(yarnQ.data) : null,
       metricLabel: "in stock",
       loading: yarnQ.isLoading,
@@ -365,7 +522,7 @@ export default function DashboardPage() {
       label: "QC & Pack",
       icon: ShieldCheck,
       href: "/production",
-      accent: "#F97316",
+      accent: "#A096F7",
       metric: prodQ.isSuccess ? String(qcLots) : null,
       metricLabel: "in QC / packing",
       loading: prodQ.isLoading,
@@ -376,7 +533,7 @@ export default function DashboardPage() {
       label: "Dispatch",
       icon: Truck,
       href: "/sales",
-      accent: "#22C55E",
+      accent: "#0F78FF",
       metric: null,
       metricLabel: "ready to ship",
       loading: false,
@@ -386,45 +543,69 @@ export default function DashboardPage() {
 
   const financialLoading = gstQ.isLoading || salesQ.isLoading;
 
-  const hour     = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  // This page is statically prerendered at build time, so `new Date()` must
+  // not be evaluated during the initial render (server and client would
+  // disagree on "now" and produce a hydration mismatch). Render a neutral
+  // placeholder until mounted, then swap in the real client-side date.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const now = mounted ? new Date() : null;
+  const hour = now?.getHours() ?? null;
+  const greeting = hour === null ? "Welcome back" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const dateLabel = now
+    ? now.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : "";
 
   /* ── Render ─────────────────────────────────────────────── */
   return (
     <div className="p-8 space-y-8">
+      <TodayActivitiesPopup />
 
       {/* ── Header ──────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-8 flex-wrap">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">
-            {new Date().toLocaleDateString("en-IN", {
-              weekday: "long", day: "numeric", month: "long", year: "numeric",
-            })}
-          </p>
-          <h1 className="text-2xl font-bold tracking-tight">{greeting}</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Here's where your manufacturing stands today.
-          </p>
-        </div>
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">
+          {dateLabel}
+        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{greeting}</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Here's where your manufacturing stands today.
+        </p>
+      </div>
 
-        <div className="flex items-start gap-10 flex-wrap">
-          <HeaderStat
-            label="Revenue this month"
-            value={financialLoading ? "…" : INR(revenueMTD)}
-            loading={financialLoading}
-            trend="up"
-          />
-          <HeaderStat
-            label="Receivable"
-            value={financialLoading ? "…" : INR(outstanding)}
-            loading={financialLoading}
-          />
-          <HeaderStat
-            label="Payable"
-            value={purchaseQ.isLoading ? "…" : INR(totalPayable)}
-            loading={purchaseQ.isLoading}
-          />
-        </div>
+      {/* ── KPI Cards ─────────────────────────────────────────── */}
+      <div className="flex flex-wrap gap-4">
+        <KpiCard
+          label="Revenue this month"
+          value={financialLoading ? "…" : INR(revenueMTD)}
+          sublabel="Month to date"
+          icon={TrendingUp}
+          accent={INDIGO}
+          loading={financialLoading}
+        />
+        <KpiCard
+          label="Receivable"
+          value={financialLoading ? "…" : INR(outstanding)}
+          sublabel="Outstanding from customers"
+          icon={Receipt}
+          accent={TEAL}
+          loading={financialLoading}
+        />
+        <KpiCard
+          label="Payable"
+          value={purchaseQ.isLoading ? "…" : INR(totalPayable)}
+          sublabel="Outstanding to vendors"
+          icon={CreditCard}
+          accent="#A096F7"
+          loading={purchaseQ.isLoading}
+        />
+        <KpiCard
+          label="Active Lots"
+          value={prodQ.isLoading ? "…" : String(activeLots)}
+          sublabel="In planning or production"
+          icon={Factory}
+          accent="#0F78FF"
+          loading={prodQ.isLoading}
+        />
       </div>
 
       {/* ── Manufacturing Pipeline ───────────────────────────── */}

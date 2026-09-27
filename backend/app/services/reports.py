@@ -167,13 +167,23 @@ class ReportsService:
                     FROM inventory_transactions
                     WHERE company_id = :cid AND direction = 1
                     GROUP BY product_id, warehouse_id
+                ),
+                avg_cost AS (
+                    SELECT
+                        product_id,
+                        warehouse_id,
+                        SUM(quantity * unit_cost) / NULLIF(SUM(quantity), 0) AS wavg_cost
+                    FROM inventory_transactions
+                    WHERE company_id = :cid AND direction = 1
+                    GROUP BY product_id, warehouse_id
                 )
                 SELECT
                     p.name              AS product_name,
                     p.product_type,
                     w.name              AS warehouse_name,
-                    u.symbol            AS unit_symbol,
+                    u.abbreviation      AS unit_symbol,
                     sb.balance,
+                    ROUND(sb.balance * COALESCE(ac.wavg_cost, 0), 2) AS stock_value,
                     er.first_date       AS oldest_receipt_date,
                     (CURRENT_DATE - er.first_date) AS age_days,
                     CASE
@@ -189,6 +199,9 @@ class ReportsService:
                 LEFT JOIN earliest_receipt er
                     ON er.product_id   = sb.product_id
                     AND er.warehouse_id = sb.warehouse_id
+                LEFT JOIN avg_cost ac
+                    ON ac.product_id   = sb.product_id
+                    AND ac.warehouse_id = sb.warehouse_id
                 ORDER BY age_days DESC NULLS LAST
             """),
             {"cid": str(company_id)},

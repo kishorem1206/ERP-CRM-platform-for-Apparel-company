@@ -5,10 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type Transaction = Record<string, unknown> & {
   id: string;
@@ -43,7 +43,7 @@ const columns: Column<Transaction>[] = [
       const color = TEAL;
       return (
         <span
-          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
           style={{ background: `${color}18`, color }}
         >
           {row.transaction_type.replace(/_/g, " ")}
@@ -58,7 +58,7 @@ const columns: Column<Transaction>[] = [
     key: "quantity",
     header: "Qty",
     render: (row) => (
-      <span className={`font-semibold tabular-nums ${row.direction === 1 ? "text-emerald-600" : "text-red-600"}`}>
+      <span className={`font-semibold tabular-nums ${row.direction === 1 ? "text-[#0F78FF]" : "text-[#1D0DB0]"}`}>
         {row.direction === 1 ? "+" : "-"}{Number(row.quantity).toFixed(2)}
       </span>
     ),

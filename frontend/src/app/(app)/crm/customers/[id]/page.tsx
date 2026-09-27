@@ -10,7 +10,7 @@ import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const INDIGO = "#5347CE";
+const INDIGO = "#0049A7";
 
 interface NatureOfBusiness { id: string; name: string }
 interface UserOption { id: string; full_name: string }
@@ -248,7 +248,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
                 value={form.customer_type}
                 onChange={(v) => setForm((f) => ({ ...f, customer_type: v }))}
                 placeholder="Select type"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "domestic", label: "Domestic" },
                   { value: "export", label: "Export" },
@@ -270,7 +270,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
                 value={form.nature_of_business_id}
                 onChange={(v) => setForm((f) => ({ ...f, nature_of_business_id: v }))}
                 placeholder="— Select —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— Select —" },
                   ...nobList.map((n) => ({ value: n.id, label: n.name })),
@@ -282,7 +282,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
                 value={form.contact_type}
                 onChange={(v) => setForm((f) => ({ ...f, contact_type: v }))}
                 placeholder="— Select —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— Select —" },
                   { value: "buyer", label: "Buyer" },
@@ -321,7 +321,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
                 value={form.is_active ? "true" : "false"}
                 onChange={(v) => setForm((f) => ({ ...f, is_active: v === "true" }))}
                 placeholder="Select status"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "true", label: "Active" },
                   { value: "false", label: "Inactive" },
@@ -435,7 +435,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
                   value={form[k]}
                   onChange={(v) => setForm((f) => ({ ...f, [k]: v }))}
                   placeholder="— None —"
-                  accent="#5347CE"
+                  accent="#0049A7"
                   options={[
                     { value: "", label: "— None —" },
                     ...userList.map((u) => ({ value: u.id, label: u.full_name })),
@@ -456,7 +456,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
             <div className="flex gap-1 mt-1">
               {[1, 2, 3, 4, 5].map((n) => (
                 <button key={n} type="button" onClick={() => setForm((f) => ({ ...f, customer_rating: n }))}
-                  className={`p-1 rounded ${form.customer_rating >= n ? "text-amber-400" : "text-muted-foreground/30"}`}>
+                  className={`p-1 rounded ${form.customer_rating >= n ? "text-violet-400" : "text-muted-foreground/30"}`}>
                   <Star className="h-6 w-6 fill-current" />
                 </button>
               ))}

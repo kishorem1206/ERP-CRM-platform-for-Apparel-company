@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { Building2, ClipboardList, PackageCheck, ChevronRight } from "lucide-react";
 
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 const CARDS = [
   {

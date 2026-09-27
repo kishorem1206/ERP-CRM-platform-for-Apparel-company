@@ -42,6 +42,15 @@ Progressive upgrade of the existing Apparel Manufacturing CRM/ERP into a complet
 - Phase 0 audit initiated
 - Related docs: `ERP_UPGRADE_AUDIT.md`
 
+### Session 2 — 2026-09-05 → 2026-09-06
+Ad-hoc feature/bugfix session (not sequential phase execution against this plan). Full detail in `PROGRESS.md` under "Style Master & CRM/Reports Fixes"; summary:
+- Built the Style Master (production blueprint) per `docs/Garments_ERP_Style_Master_Specification.md` — sizes/colours/SKU, yarn/fabric requirements, configurable process workflow with per-process tolerance/units/rates, trim & packing-material planning. LOT creation now snapshots a Style's processes instead of a hard-coded 5-stage sequence. See `docs/PRODUCT.md` §11.1.
+- Fixed a client-side crash on `/crm/activities` (frontend/backend field-name mismatch: `activity_type` vs `type`) that also silently broke activity creation from the lead-detail page; added a Teams-style calendar view, two-way done/undone toggling, and a "Today's Activities" popup on `/dashboard`.
+- Fixed two subtle pre-existing frontend bugs found while building the popup — see `docs/PRODUCT.md` §14 "Known frontend gotchas" (global CSS animation breaking `position: fixed` containment; hydration mismatch from `new Date()` in a statically-prerendered page).
+- Fixed a real backend bug on stock ageing (`u.symbol` → `u.abbreviation`, was 500ing silently) and added value-based ageing charts.
+- Added a trim-type filter to `/inventory/lots`.
+- `docker-compose.yml`: bounded uvicorn's `--reload` graceful-shutdown timeout — dev server was hanging on open WebSocket connections during hot-reload.
+
 ---
 
 ## Master Session Rules (paste at start of every session)

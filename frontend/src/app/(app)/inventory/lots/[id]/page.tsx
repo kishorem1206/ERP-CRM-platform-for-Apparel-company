@@ -5,12 +5,12 @@ import { ArrowLeft } from "lucide-react";
 import api from "@/lib/api";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const BLUE     = "#4896FE";
-const LAVENDER = "#887CFD";
+const BLUE     = "#0049A7";
+const LAVENDER = "#0F78FF";
 
 // ── Type badge ────────────────────────────────────────────────────────────────
 const TYPE_HEX: Record<string, string> = {
-  yarn:   "#D97706",
+  yarn:   "#A096F7",
   fabric: BLUE,
   trim:   LAVENDER,
 };
@@ -20,7 +20,7 @@ function TypeDot({ type }: { type: string }) {
   const label = type.replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap capitalize"
+      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs font-bold whitespace-nowrap capitalize"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -131,7 +131,7 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
         <button onClick={() => router.back()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> Back to lots
         </button>
-        <p className="text-red-500 text-sm">Lot not found.</p>
+        <p className="text-[#1D0DB0] text-sm">Lot not found.</p>
       </div>
     );
   }
@@ -182,7 +182,7 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Fibre Composition</p>
                 <div className="flex gap-2 flex-wrap">
                   {lot.compositions.map((c) => (
-                    <span key={c.id} className="bg-muted px-2.5 py-1 rounded-full text-xs">
+                    <span key={c.id} className="bg-muted px-2.5 py-1 rounded text-xs">
                       {c.fibre_name} {c.percentage}%
                     </span>
                   ))}
@@ -218,7 +218,7 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Fibre Composition</p>
                 <div className="flex gap-2 flex-wrap">
                   {lot.compositions.map((c) => (
-                    <span key={c.id} className="bg-muted px-2.5 py-1 rounded-full text-xs">
+                    <span key={c.id} className="bg-muted px-2.5 py-1 rounded text-xs">
                       {c.fibre_name} {c.percentage}%
                     </span>
                   ))}
@@ -230,7 +230,7 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
               <div className="flex gap-2">
                 {lot.split_by_colour && (
                   <span
-                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold"
                     style={{ background: `${BLUE}18`, color: BLUE }}
                   >
                     Split by Colour
@@ -238,7 +238,7 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
                 )}
                 {lot.split_by_dia && (
                   <span
-                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold"
                     style={{ background: `${BLUE}18`, color: BLUE }}
                   >
                     Split by Dia
@@ -293,7 +293,7 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
 
             {lot.split_by_colour && (
               <span
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold"
                 style={{ background: `${LAVENDER}18`, color: LAVENDER }}
               >
                 Split by Colour

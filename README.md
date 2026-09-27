@@ -122,6 +122,49 @@ npm run dev        # http://localhost:3000
 
 ---
 
+## Restart & Cache Clear
+
+### Full restart (both frontend + backend)
+
+```bash
+cd "CRM platform"
+
+# Stop everything
+docker compose down
+
+# Clear caches
+rm -rf frontend/.next                                              # Next.js build cache
+find backend -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true  # Python bytecode
+
+# Start fresh (rebuilds backend image)
+docker compose up --build
+```
+
+> Use `docker compose up` (no `--build`) if you only changed frontend files and want a faster start.
+
+### Frontend-only restart (local npm dev server)
+
+```bash
+# Stop dev server (Ctrl+C), then:
+rm -rf frontend/.next
+cd frontend && npm run dev
+```
+
+### Useful dev commands
+
+| Goal | Command |
+|---|---|
+| Stop all services | `docker compose down` |
+| Start with image rebuild | `docker compose up --build` |
+| Start without rebuild | `docker compose up` |
+| Restart one service | `docker compose restart backend` |
+| Clear Next.js cache | `rm -rf frontend/.next` |
+| Tail backend logs | `docker compose logs -f backend` |
+| Tail frontend logs | `docker compose logs -f frontend` |
+| Open a backend shell | `docker compose exec backend bash` |
+
+---
+
 ## Database Migrations
 
 ```bash

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Calendar, ArrowRight } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
@@ -9,10 +10,10 @@ import {
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type SalesRow = Record<string, unknown> & {
   customer_name: string; customer_type: string; invoice_count: number;
@@ -29,7 +30,7 @@ const columns: Column<SalesRow>[] = [
     key: "customer_type", header: "Type",
     render: (r) => (
       <span
-        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap capitalize"
+        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap capitalize"
         style={{ background: `${INDIGO}18`, color: INDIGO }}
       >
         {r.customer_type}
@@ -46,7 +47,7 @@ const columns: Column<SalesRow>[] = [
   {
     key: "outstanding", header: "Outstanding",
     render: (r) => (
-      <span className={Number(r.outstanding) > 0 ? "text-red-600 font-semibold tabular-nums" : "text-emerald-600 tabular-nums"}>
+      <span className="font-semibold tabular-nums" style={{ color: Number(r.outstanding) > 0 ? "#1D0DB0" : "#0049A7" }}>
         {fmt(r.outstanding)}
       </span>
     ),
@@ -70,9 +71,35 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
 const today        = new Date().toISOString().slice(0, 10);
 const firstOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
 
+const PRESETS: { label: string; value: number | "ytd" }[] = [
+  { label: "7D", value: 7 },
+  { label: "30D", value: 30 },
+  { label: "90D", value: 90 },
+  { label: "YTD", value: "ytd" },
+];
+
 export default function SalesSummaryPage() {
   const [from, setFrom] = useState(firstOfMonth);
   const [to, setTo]     = useState(today);
+
+  const applyPreset = useCallback((days: number | "ytd") => {
+    const toStr = new Date().toISOString().slice(0, 10);
+    const fromStr = days === "ytd"
+      ? `${new Date().getFullYear()}-01-01`
+      : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    setFrom(fromStr);
+    setTo(toStr);
+  }, []);
+
+  const activePreset = (() => {
+    if (to !== today) return null;
+    const days = Math.round((new Date(today).getTime() - new Date(from).getTime()) / 86_400_000);
+    if (from === `${new Date().getFullYear()}-01-01`) return "ytd";
+    if (days === 7) return 7;
+    if (days === 30) return 30;
+    if (days === 90) return 90;
+    return null;
+  })();
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["report-sales", from, to],
@@ -111,40 +138,62 @@ export default function SalesSummaryPage() {
             Revenue, outstanding, and customer breakdown.
           </p>
         </div>
-      </div>
 
-      {/* Date filter */}
-      <div className="flex items-end gap-3 flex-wrap bg-card border border-border rounded-2xl p-5">
-        <div>
-          <label className="block text-xs font-medium mb-1 text-muted-foreground">From</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="rounded-xl border border-border bg-background px-3 py-2 text-sm" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl">
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => applyPreset(p.value)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150"
+                style={
+                  activePreset === p.value
+                    ? { background: "hsl(var(--card))", color: INDIGO, boxShadow: "var(--shadow-xs)" }
+                    : { color: "hsl(var(--muted-foreground))" }
+                }
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 bg-card border border-border rounded-xl pl-3 pr-1 py-1">
+            <Calendar className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="text-sm bg-transparent border-none outline-none w-[124px]"
+            />
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground/50 flex-shrink-0" />
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="text-sm bg-transparent border-none outline-none w-[124px]"
+            />
+            <button
+              onClick={() => refetch()}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 active:scale-95 flex-shrink-0"
+              style={{ background: INDIGO }}
+            >
+              Apply
+            </button>
+          </div>
         </div>
-        <div>
-          <label className="block text-xs font-medium mb-1 text-muted-foreground">To</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            className="rounded-xl border border-border bg-background px-3 py-2 text-sm" />
-        </div>
-        <button
-          onClick={() => refetch()}
-          className="rounded-xl px-5 py-2 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
-          style={{ background: INDIGO }}
-        >
-          Apply
-        </button>
       </div>
 
       {/* Stat cards */}
       {data && data.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {[
-            { label: "TAXABLE AMOUNT",  value: fmt(totals.taxable),     color: "text-foreground" },
-            { label: "TOTAL INVOICED",  value: fmt(totals.total),       color: "text-foreground" },
-            { label: "OUTSTANDING",     value: fmt(totals.outstanding), color: totals.outstanding > 0 ? "text-red-600" : "text-emerald-600" },
+            { label: "TAXABLE AMOUNT",  value: fmt(totals.taxable),     color: undefined },
+            { label: "TOTAL INVOICED",  value: fmt(totals.total),       color: undefined },
+            { label: "OUTSTANDING",     value: fmt(totals.outstanding), color: totals.outstanding > 0 ? "#1D0DB0" : "#0049A7" },
           ].map((kpi) => (
             <div key={kpi.label} className="bg-card border border-border rounded-2xl p-6">
               <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{kpi.label}</p>
-              <p className={`text-2xl font-bold tracking-tight tabular-nums mt-1 ${kpi.color}`}>{kpi.value}</p>
+              <p className="text-2xl font-bold tracking-tight tabular-nums mt-1" style={kpi.color ? { color: kpi.color } : undefined}>{kpi.value}</p>
             </div>
           ))}
         </div>

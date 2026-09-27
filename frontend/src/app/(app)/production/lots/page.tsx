@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import api from "@/lib/api";
@@ -7,7 +8,7 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
-const INDIGO = "#5347CE";
+const INDIGO = "#0049A7";
 
 type Lot = Record<string, unknown> & {
   id: string;
@@ -34,9 +35,9 @@ const STATUS_TABS = [
 ];
 
 const STATUS_HEX: Record<string, string> = {
-  draft: "#94A3B8", planned: "#4896FE", approved: "#887CFD",
-  in_production: "#16C8C7", qc: "#F59E0B", packing: "#F97316",
-  completed: "#10B981", cancelled: "#EF4444",
+  draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
+  in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
+  completed: "#0F78FF", cancelled: "#1D0DB0",
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -44,7 +45,7 @@ function StatusDot({ status }: { status: string }) {
   const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -74,9 +75,13 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
   const [customerId, setCustomerId] = useState("");
   const [orderRef, setOrderRef] = useState("");
   const [plannedQty, setPlannedQty] = useState("0");
+  const [colourId, setColourId] = useState("");
+  const [plannedWeightKg, setPlannedWeightKg] = useState("");
   const [deliveryDate, setDeliveryDate] = useState("");
   const [season, setSeason] = useState("");
   const [notes, setNotes] = useState("");
+  const [piecesPerBox, setPiecesPerBox] = useState("");
+  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; planned_amount: string }[]>([]);
   const [error, setError] = useState("");
 
   const { data: styles } = useQuery({
@@ -87,6 +92,10 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
     queryKey: ["customers-list"],
     queryFn: async () => (await api.get("/sales/customers?page_size=200")).data.data ?? [],
   });
+  const { data: colours } = useQuery({
+    queryKey: ["master-colours"],
+    queryFn: async () => (await api.get("/master/colours")).data.data as { id: string; name: string; hex_code: string | null }[],
+  });
 
   const mut = useMutation({
     mutationFn: () =>
@@ -95,9 +104,16 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         customer_id: customerId || null,
         order_ref: orderRef || null,
         planned_qty: parseInt(plannedQty) || 0,
+        colour_id: colourId || undefined,
+        planned_weight_kg: plannedWeightKg ? Number(plannedWeightKg) : undefined,
         delivery_date: deliveryDate || null,
         season: season || null,
         notes: notes || null,
+        pieces_per_box: piecesPerBox ? parseInt(piecesPerBox) : undefined,
+        additional_costs: costs.filter((c) => c.description.trim()).map((c) => ({
+          cost_type: c.cost_type, description: c.description.trim(),
+          planned_amount: c.planned_amount ? Number(c.planned_amount) : undefined,
+        })),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-lots"] });
@@ -127,7 +143,11 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
               <div className="mt-1">
                 <SearchableSelect
                   value={styleId}
-                  onChange={setStyleId}
+                  onChange={(v) => {
+                    setStyleId(v);
+                    const st = (styles ?? []).find((x: { id: string; pieces_per_box?: number | null }) => x.id === v);
+                    if (st?.pieces_per_box) setPiecesPerBox(String(st.pieces_per_box));
+                  }}
                   placeholder="None"
                   accent={INDIGO}
                   options={[
@@ -178,6 +198,60 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
                 className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Colour (optional)</label>
+              <div className="mt-1">
+                <SearchableSelect
+                  value={colourId}
+                  onChange={setColourId}
+                  placeholder="None"
+                  accent={INDIGO}
+                  options={[
+                    { value: "", label: "None" },
+                    ...(colours ?? []).map((c) => ({ value: c.id, label: c.name })),
+                  ]}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Planned Weight (kg, optional)</label>
+              <input type="number" step="0.001" value={plannedWeightKg} onChange={(e) => setPlannedWeightKg(e.target.value)}
+                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="e.g. 500" />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Pieces per Box (optional)</label>
+            <input type="number" min="1" value={piecesPerBox} onChange={(e) => setPiecesPerBox(e.target.value)}
+              className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              placeholder="e.g. 12 — defaults from the Style" />
+          </div>
+          <div>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-muted-foreground">Additional Costs & Agent Commission (optional)</label>
+              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", planned_amount: "" }])}
+                className="text-xs font-semibold" style={{ color: INDIGO }}>+ Add</button>
+            </div>
+            {costs.map((c) => (
+              <div key={c.key} className="flex gap-2 mt-1.5">
+                <div className="w-40 flex-shrink-0">
+                  <SearchableSelect
+                    value={c.cost_type}
+                    onChange={(v) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, cost_type: v as "additional" | "agent_commission" } : x))}
+                    placeholder="Type"
+                    accent={INDIGO}
+                    options={[{ value: "additional", label: "Additional" }, { value: "agent_commission", label: "Agent Commission" }]}
+                  />
+                </div>
+                <input value={c.description} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, description: e.target.value } : x))}
+                  placeholder="Description" className="flex-1 rounded border border-input bg-background px-2 py-1.5 text-xs" />
+                <input type="number" step="0.01" value={c.planned_amount} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, planned_amount: e.target.value } : x))}
+                  placeholder="₹ planned" className="w-24 rounded border border-input bg-background px-2 py-1.5 text-xs" />
+                <button type="button" onClick={() => setCosts((r) => r.filter((x) => x.key !== c.key))} className="text-muted-foreground px-1">×</button>
+              </div>
+            ))}
+          </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">Season</label>
             <input value={season} onChange={(e) => setSeason(e.target.value)}
@@ -206,6 +280,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function ProductionLotsPage() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
 
@@ -266,7 +341,12 @@ export default function ProductionLotsPage() {
             </p>
           </div>
         </div>
-        <DataTable columns={columns} data={data ?? []} loading={isLoading} />
+        <DataTable
+          columns={columns}
+          data={data ?? []}
+          loading={isLoading}
+          onRowClick={(row) => router.push(`/production/lots/${row.id}`)}
+        />
       </div>
     </div>
   );

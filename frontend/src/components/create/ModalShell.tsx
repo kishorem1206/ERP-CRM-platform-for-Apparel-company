@@ -69,7 +69,7 @@ export function Field({ label, required, children, hint }: { label: string; requ
   return (
     <div>
       <label className="block text-xs font-medium text-foreground mb-1">
-        {label}{required && <span className="text-red-500 ml-0.5">*</span>}
+        {label}{required && <span className="text-violet-500 ml-0.5">*</span>}
       </label>
       {children}
       {hint && <p className="text-[11px] text-muted-foreground mt-0.5">{hint}</p>}

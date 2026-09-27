@@ -6,6 +6,7 @@ python-multipart==0.0.9
 # Database
 sqlalchemy[asyncio]>=2.0.35
 asyncpg>=0.30.0
+psycopg2-binary>=2.9.0
 alembic>=1.13.2
 
 # Validation
@@ -30,9 +31,15 @@ langchain-core>=0.3.0
 
 # HTTP client
 httpx==0.27.2
+aiosmtplib>=3.0.0
 
 # Storage
 boto3==1.35.32
+
+# PDF reports
+weasyprint==62.3
+pydyf==0.11.0  # weasyprint 62.3 declares pydyf>=0.10.0 but breaks on pydyf 0.12's API change; pin the last compatible version
+jinja2==3.1.4
 
 # Observability
 sentry-sdk[fastapi]==2.14.0

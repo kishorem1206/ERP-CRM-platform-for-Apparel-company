@@ -59,7 +59,7 @@ export default function ResetPasswordPage() {
               placeholder="you@company.com"
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30"
             />
-            {errors.email && <p className="text-xs text-red-500">{errors.email.message}</p>}
+            {errors.email && <p className="text-xs text-violet-500">{errors.email.message}</p>}
           </div>
 
           <div className="space-y-1">
@@ -72,7 +72,7 @@ export default function ResetPasswordPage() {
               placeholder="000000"
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30 tracking-widest text-center"
             />
-            {errors.otp && <p className="text-xs text-red-500">{errors.otp.message}</p>}
+            {errors.otp && <p className="text-xs text-violet-500">{errors.otp.message}</p>}
           </div>
 
           <div className="space-y-1">
@@ -84,7 +84,7 @@ export default function ResetPasswordPage() {
               placeholder="••••••••"
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30"
             />
-            {errors.new_password && <p className="text-xs text-red-500">{errors.new_password.message}</p>}
+            {errors.new_password && <p className="text-xs text-violet-500">{errors.new_password.message}</p>}
           </div>
 
           <div className="space-y-1">
@@ -96,11 +96,11 @@ export default function ResetPasswordPage() {
               placeholder="••••••••"
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30"
             />
-            {errors.confirm && <p className="text-xs text-red-500">{errors.confirm.message}</p>}
+            {errors.confirm && <p className="text-xs text-violet-500">{errors.confirm.message}</p>}
           </div>
 
           {error && (
-            <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">
+            <p className="text-xs text-violet-500 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-md px-3 py-2">
               {error}
             </p>
           )}

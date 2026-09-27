@@ -127,7 +127,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
             value={form.supplier_id}
             onChange={(v) => set("supplier_id", v)}
             placeholder="— Select supplier —"
-            accent="#887CFD"
+            accent="#0F78FF"
             options={(vendors.data ?? []).map((v) => ({
               value: v.id,
               label: v.name,
@@ -229,7 +229,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
               value={form.warehouse_id}
               onChange={(v) => set("warehouse_id", v)}
               placeholder="— Skip —"
-              accent="#887CFD"
+              accent="#0F78FF"
               options={[
                 { value: "", label: "— Skip —" },
                 ...(warehouses.data ?? []).map((w) => ({
@@ -245,7 +245,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
                 value={form.product_id}
                 onChange={(v) => set("product_id", v)}
                 placeholder="— Select —"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={(products.data ?? []).map((p) => ({
                   value: p.id,
                   label: p.name,
@@ -257,7 +257,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
                 value={form.unit_id}
                 onChange={(v) => set("unit_id", v)}
                 placeholder="— Unit —"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={(units.data ?? []).map((u) => ({
                   value: u.id,
                   label: `${u.name} (${u.abbreviation})`,
@@ -266,11 +266,16 @@ export function AddTrimsModal({ open, onClose }: Props) {
             </Field>
           </div>
           {form.quantity && form.warehouse_id && form.product_id && form.unit_id && (
-            <p className="text-xs text-emerald-600">Will book {form.quantity} {form.trim_unit} into inventory on save.</p>
+            <p className="text-xs text-blue-600">Will book {form.quantity} {form.trim_unit} into inventory on save.</p>
+          )}
+          {form.quantity && !(form.warehouse_id && form.product_id && form.unit_id) && (
+            <p className="text-xs text-violet-600 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+              Quantity entered but Warehouse, Product, and Unit are all required to book stock. Without them the quantity will not be tracked in inventory.
+            </p>
           )}
         </div>
 
-        {err && <p className="text-xs text-red-500">{err}</p>}
+        {err && <p className="text-xs text-violet-500">{err}</p>}
       </form>
     </ModalShell>
   );

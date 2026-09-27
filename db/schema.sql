@@ -898,43 +898,88 @@ CREATE TABLE production_outputs (
 -- FINANCE
 -- =============================================================
 
-CREATE TABLE receipts (
+CREATE TABLE payments (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     company_id      UUID NOT NULL REFERENCES companies(id),
-    receipt_number  VARCHAR(50) NOT NULL,
+    payment_number  VARCHAR(50) NOT NULL,
     customer_id     UUID NOT NULL REFERENCES customers(id),
-    receipt_date    DATE NOT NULL,
+    payment_date    DATE NOT NULL,
     amount          NUMERIC(15,2) NOT NULL,
-    payment_method  VARCHAR(30) NOT NULL,
-    -- cash | bank_transfer | cheque | upi | card
+    payment_mode    VARCHAR(20) NOT NULL DEFAULT 'neft',
     reference       VARCHAR(100),
-    bank_name       VARCHAR(200),
+    bank_account    VARCHAR(100),
     notes           TEXT,
+    status          VARCHAR(20) NOT NULL DEFAULT 'recorded',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by      UUID REFERENCES users(id),
-    UNIQUE (company_id, receipt_number)
+    UNIQUE (company_id, payment_number)
 );
 
-CREATE TABLE receipt_allocations (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    receipt_id      UUID NOT NULL REFERENCES receipts(id),
-    invoice_id      UUID NOT NULL REFERENCES invoices(id),
-    allocated_amount NUMERIC(15,2) NOT NULL
+CREATE TABLE payment_allocations (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    payment_id          UUID NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+    invoice_id          UUID NOT NULL REFERENCES invoices(id),
+    allocated_amount    NUMERIC(15,2) NOT NULL
 );
 
-CREATE TABLE payments (
+CREATE TABLE vendor_payments (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     company_id      UUID NOT NULL REFERENCES companies(id),
     payment_number  VARCHAR(50) NOT NULL,
     vendor_id       UUID NOT NULL REFERENCES vendors(id),
     payment_date    DATE NOT NULL,
     amount          NUMERIC(15,2) NOT NULL,
-    payment_method  VARCHAR(30) NOT NULL,
+    payment_mode    VARCHAR(20) NOT NULL DEFAULT 'neft',
     reference       VARCHAR(100),
+    bank_account    VARCHAR(100),
     notes           TEXT,
+    status          VARCHAR(20) NOT NULL DEFAULT 'recorded',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by      UUID REFERENCES users(id),
     UNIQUE (company_id, payment_number)
+);
+
+CREATE TABLE vendor_payment_allocations (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    vendor_payment_id   UUID NOT NULL REFERENCES vendor_payments(id) ON DELETE CASCADE,
+    purchase_entry_id   UUID NOT NULL REFERENCES purchase_entries(id),
+    allocated_amount    NUMERIC(15,2) NOT NULL
+);
+
+CREATE TABLE credit_notes (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id          UUID NOT NULL REFERENCES companies(id),
+    credit_note_number  VARCHAR(50) NOT NULL,
+    customer_id         UUID NOT NULL REFERENCES customers(id),
+    invoice_id          UUID REFERENCES invoices(id),
+    credit_note_date    DATE NOT NULL,
+    reason              TEXT,
+    taxable_amount      NUMERIC(15,2) NOT NULL DEFAULT 0,
+    cgst_amount         NUMERIC(15,2) NOT NULL DEFAULT 0,
+    sgst_amount         NUMERIC(15,2) NOT NULL DEFAULT 0,
+    igst_amount         NUMERIC(15,2) NOT NULL DEFAULT 0,
+    total_amount        NUMERIC(15,2) NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'issued',
+    notes               TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by          UUID REFERENCES users(id),
+    UNIQUE (company_id, credit_note_number)
+);
+
+CREATE TABLE debit_notes (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id          UUID NOT NULL REFERENCES companies(id),
+    debit_note_number   VARCHAR(50) NOT NULL,
+    vendor_id           UUID NOT NULL REFERENCES vendors(id),
+    purchase_entry_id   UUID REFERENCES purchase_entries(id),
+    debit_note_date     DATE NOT NULL,
+    reason              TEXT,
+    total_amount        NUMERIC(15,2) NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'issued',
+    notes               TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by          UUID REFERENCES users(id),
+    UNIQUE (company_id, debit_note_number)
 );
 
 CREATE TABLE expense_categories (

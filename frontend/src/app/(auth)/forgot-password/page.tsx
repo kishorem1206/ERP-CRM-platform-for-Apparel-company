@@ -35,8 +35,8 @@ export default function ForgotPasswordPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="w-full max-w-sm space-y-6 text-center">
-          <div className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mx-auto">
-            <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center mx-auto">
+            <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
@@ -45,9 +45,9 @@ export default function ForgotPasswordPage() {
             If that email exists, a reset code has been sent.
           </p>
           {devOtp && (
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-3">
-              <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">Dev mode — OTP not emailed:</p>
-              <p className="text-2xl font-mono font-bold tracking-widest text-amber-800 dark:text-amber-300 mt-1">{devOtp}</p>
+            <div className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-lg px-4 py-3">
+              <p className="text-xs text-violet-700 dark:text-violet-400 font-medium">Dev mode — OTP not emailed:</p>
+              <p className="text-2xl font-mono font-bold tracking-widest text-violet-800 dark:text-violet-300 mt-1">{devOtp}</p>
             </div>
           )}
           <Link href="/reset-password" className="block text-sm text-primary hover:underline">
@@ -79,11 +79,11 @@ export default function ForgotPasswordPage() {
               placeholder="you@company.com"
               className="w-full border rounded-md px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30"
             />
-            {errors.email && <p className="text-xs text-red-500">{errors.email.message}</p>}
+            {errors.email && <p className="text-xs text-violet-500">{errors.email.message}</p>}
           </div>
 
           {error && (
-            <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">
+            <p className="text-xs text-violet-500 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-md px-3 py-2">
               {error}
             </p>
           )}

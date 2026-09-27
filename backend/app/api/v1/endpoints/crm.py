@@ -1,0 +1,1949 @@
+import base64
+import csv
+import io
+import logging
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from uuid import UUID
+
+import aiosmtplib
+from fastapi import APIRouter, Form, HTTPException, UploadFile
+from sqlalchemy import and_, delete, func, insert, literal_column, select, text
+from sqlalchemy.orm import selectinload
+
+from app.api.v1.deps import AuthUser, DBSession
+from app.models.crm import (
+    CrmActivity, CrmEmail, CrmEmailTemplate, CrmLead, CrmLeadImport,
+    CrmLeadSource, CrmLeadStageHistory, CrmLeadTag, CrmLeadType,
+    CrmNote, CrmOrganization, CrmPerson, CrmPipeline, CrmPipelineStage, CrmProduct,
+    CrmQuote, CrmQuoteItem, CrmSmtpConfig, CrmTag,
+)
+from app.models.user import User
+from app.schemas.base import ApiResponse, PaginatedMeta
+from app.schemas.crm import (
+    ActivityCreate, ActivityDoneUpdate, ActivityOut, ActivityUpdate,
+    CrmReportParams,
+    EmailCreate, EmailListOut, EmailOut,
+    EmailTemplateCreate, EmailTemplateOut, EmailTemplateUpdate,
+    LeadBulkActionIn,
+    LeadConvertIn, LeadCreate, LeadImportOut, LeadKanbanStageOut, LeadListOut, LeadOut,
+    LeadSourceOut, LeadStageUpdate, LeadStatusUpdate, LeadTypeOut, LeadUpdate,
+    NoteCreate, NoteOut, NoteUpdate,
+    OrganizationCreate, OrganizationListOut, OrganizationOut, OrganizationUpdate,
+    Person360Out, LeadForPerson360,
+    PersonCreate, PersonListOut, PersonOut, PersonUpdate,
+    PipelineOut,
+    ProductCreate, ProductOut, ProductUpdate,
+    QuoteCreate, QuoteItemOut, QuoteListOut, QuoteOut, QuoteStatusUpdate, QuoteUpdate,
+    SmtpConfigCreate, SmtpConfigOut,
+    StageHistoryOut,
+    TagCreate, TagOut,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# NOTE: password_encrypted uses base64 for obfuscation only.
+# Production should use AES-256 or a secrets manager (e.g. AWS Secrets Manager).
+def _enc(p: str) -> str:
+    return base64.b64encode(p.encode()).decode()
+
+
+def _dec(p: str) -> str:
+    return base64.b64decode(p.encode()).decode()
+
+router = APIRouter(prefix="/crm", tags=["crm"])
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+_LEAD_OPTS = [
+    selectinload(CrmLead.stage),
+    selectinload(CrmLead.person),
+    selectinload(CrmLead.organization),
+    selectinload(CrmLead.tags),
+]
+
+
+def _person_phone(person) -> str | None:
+    if not person:
+        return None
+    nums = person.contact_numbers or []
+    return nums[0]["value"] if nums else None
+
+
+def _person_email(person) -> str | None:
+    if not person:
+        return None
+    emails = person.emails or []
+    return emails[0]["value"] if emails else None
+
+
+def _lead_out(lead: CrmLead) -> LeadOut:
+    return LeadOut(
+        id=lead.id, company_id=lead.company_id, title=lead.title,
+        description=lead.description, lead_value=lead.lead_value,
+        temperature=lead.temperature,
+        status=lead.status, lost_reason=lead.lost_reason,
+        expected_close_date=lead.expected_close_date, closed_at=lead.closed_at,
+        pipeline_id=lead.pipeline_id, stage_id=lead.stage_id,
+        stage_name=lead.stage.name if lead.stage else None,
+        stage_color=lead.stage.color if lead.stage else None,
+        source_id=lead.source_id, type_id=lead.type_id,
+        person_id=lead.person_id,
+        person_name=lead.person.name if lead.person else None,
+        person_phone=_person_phone(lead.person),
+        person_email=_person_email(lead.person),
+        organization_id=lead.organization_id,
+        organization_name=lead.organization.name if lead.organization else None,
+        customer_id=lead.customer_id, assigned_to=lead.assigned_to,
+        created_by=lead.created_by, created_at=lead.created_at, updated_at=lead.updated_at,
+        tags=[TagOut.model_validate(t) for t in (lead.tags or [])],
+    )
+
+
+def _lead_list_out(lead: CrmLead) -> LeadListOut:
+    return LeadListOut(
+        id=lead.id, title=lead.title, lead_value=lead.lead_value,
+        temperature=lead.temperature, status=lead.status,
+        stage_id=lead.stage_id,
+        stage_name=lead.stage.name if lead.stage else None,
+        stage_color=lead.stage.color if lead.stage else None,
+        person_id=lead.person_id,
+        person_name=lead.person.name if lead.person else None,
+        person_phone=_person_phone(lead.person),
+        person_email=_person_email(lead.person),
+        organization_id=lead.organization_id,
+        organization_name=lead.organization.name if lead.organization else None,
+        assigned_to=lead.assigned_to, created_at=lead.created_at,
+    )
+
+
+async def _get_lead(lead_id: UUID, company_id: UUID, db) -> CrmLead:
+    result = await db.execute(
+        select(CrmLead).options(*_LEAD_OPTS)
+        .where(CrmLead.id == lead_id, CrmLead.company_id == company_id)
+    )
+    lead = result.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    return lead
+
+
+# ── Organizations ─────────────────────────────────────────────────────────────
+
+@router.get("/organizations")
+async def list_organizations(db: DBSession, user: AuthUser, search: str | None = None):
+    user.require("crm.view")
+    q = select(CrmOrganization).where(CrmOrganization.company_id == user.company_id)
+    if search:
+        q = q.where(CrmOrganization.name.ilike(f"%{search}%"))
+    result = await db.execute(q.order_by(CrmOrganization.name))
+    return ApiResponse(success=True, data=[OrganizationListOut.model_validate(o) for o in result.scalars().all()])
+
+
+@router.post("/organizations", status_code=201)
+async def create_organization(body: OrganizationCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    org = CrmOrganization(
+        company_id=user.company_id, name=body.name, website=body.website,
+        address=body.address, assigned_to=body.assigned_to,
+        created_by=user.user_id, created_at=now, updated_at=now,
+    )
+    db.add(org)
+    await db.commit()
+    await db.refresh(org)
+    return ApiResponse(success=True, data=OrganizationOut.model_validate(org), message="Organization created")
+
+
+@router.get("/organizations/{org_id}")
+async def get_organization(org_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmOrganization).where(CrmOrganization.id == org_id, CrmOrganization.company_id == user.company_id)
+    )
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    return ApiResponse(success=True, data=OrganizationOut.model_validate(org))
+
+
+@router.patch("/organizations/{org_id}")
+async def update_organization(org_id: UUID, body: OrganizationUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmOrganization).where(CrmOrganization.id == org_id, CrmOrganization.company_id == user.company_id)
+    )
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(org, field, val)
+    org.updated_at = _now()
+    await db.commit()
+    await db.refresh(org)
+    return ApiResponse(success=True, data=OrganizationOut.model_validate(org))
+
+
+@router.delete("/organizations/{org_id}")
+async def delete_organization(org_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    result = await db.execute(
+        select(CrmOrganization).where(CrmOrganization.id == org_id, CrmOrganization.company_id == user.company_id)
+    )
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    await db.delete(org)
+    await db.commit()
+    return ApiResponse(success=True, message="Organization deleted")
+
+
+# ── Persons ───────────────────────────────────────────────────────────────────
+
+@router.get("/persons")
+async def list_persons(db: DBSession, user: AuthUser, search: str | None = None):
+    user.require("crm.view")
+    q = (
+        select(CrmPerson, CrmOrganization.name)
+        .outerjoin(CrmOrganization, CrmOrganization.id == CrmPerson.organization_id)
+        .where(CrmPerson.company_id == user.company_id)
+    )
+    if search:
+        q = q.where(CrmPerson.name.ilike(f"%{search}%"))
+    result = await db.execute(q.order_by(CrmPerson.name))
+    data = []
+    for person, org_name in result.all():
+        out = PersonListOut.model_validate(person)
+        out.org_name = org_name
+        out.phone_numbers = person.contact_numbers
+        data.append(out)
+    return ApiResponse(success=True, data=data)
+
+
+@router.post("/persons", status_code=201)
+async def create_person(body: PersonCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    person = CrmPerson(
+        company_id=user.company_id, name=body.name, job_title=body.job_title,
+        emails=[e.model_dump() for e in body.emails],
+        contact_numbers=[c.model_dump() for c in body.contact_numbers],
+        whatsapp_number=body.whatsapp_number,
+        organization_id=body.organization_id, customer_id=body.customer_id,
+        assigned_to=body.assigned_to, created_by=user.user_id,
+        created_at=now, updated_at=now,
+    )
+    db.add(person)
+    await db.commit()
+    await db.refresh(person)
+    return ApiResponse(success=True, data=PersonOut.model_validate(person), message="Person created")
+
+
+@router.get("/persons/{person_id}")
+async def get_person(person_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmPerson).where(CrmPerson.id == person_id, CrmPerson.company_id == user.company_id)
+    )
+    person = result.scalar_one_or_none()
+    if not person:
+        raise HTTPException(404, "Person not found")
+    return ApiResponse(success=True, data=PersonOut.model_validate(person))
+
+
+@router.patch("/persons/{person_id}")
+async def update_person(person_id: UUID, body: PersonUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmPerson).where(CrmPerson.id == person_id, CrmPerson.company_id == user.company_id)
+    )
+    person = result.scalar_one_or_none()
+    if not person:
+        raise HTTPException(404, "Person not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(person, field, val)
+    person.updated_at = _now()
+    await db.commit()
+    await db.refresh(person)
+    return ApiResponse(success=True, data=PersonOut.model_validate(person))
+
+
+@router.delete("/persons/{person_id}")
+async def delete_person(person_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    result = await db.execute(
+        select(CrmPerson).where(CrmPerson.id == person_id, CrmPerson.company_id == user.company_id)
+    )
+    person = result.scalar_one_or_none()
+    if not person:
+        raise HTTPException(404, "Person not found")
+    await db.delete(person)
+    await db.commit()
+    return ApiResponse(success=True, message="Person deleted")
+
+
+@router.get("/persons/{person_id}/360")
+async def get_person_360(person_id: UUID, db: DBSession, user: AuthUser):
+    """Contact 360 — person + all leads (by pipeline with stage strip) + activities + notes."""
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmPerson)
+        .options(selectinload(CrmPerson.organization))
+        .where(CrmPerson.id == person_id, CrmPerson.company_id == user.company_id)
+    )
+    person = result.scalar_one_or_none()
+    if not person:
+        raise HTTPException(404, "Person not found")
+
+    # All leads for this person with pipeline+stage loaded
+    leads_result = await db.execute(
+        select(CrmLead)
+        .options(
+            selectinload(CrmLead.pipeline).selectinload(CrmPipeline.stages),
+            selectinload(CrmLead.stage),
+            selectinload(CrmLead.tags),
+        )
+        .where(CrmLead.person_id == person_id, CrmLead.company_id == user.company_id)
+        .order_by(CrmLead.created_at.desc())
+    )
+    leads = leads_result.scalars().all()
+
+    # Activities for this person
+    activities_result = await db.execute(
+        select(CrmActivity)
+        .where(CrmActivity.person_id == person_id, CrmActivity.company_id == user.company_id)
+        .order_by(CrmActivity.schedule_from.desc())
+        .limit(50)
+    )
+    activities = activities_result.scalars().all()
+
+    # Notes for this person
+    notes_result = await db.execute(
+        select(CrmNote)
+        .where(CrmNote.person_id == person_id, CrmNote.company_id == user.company_id)
+        .order_by(CrmNote.created_at.desc())
+    )
+    notes = notes_result.scalars().all()
+
+    leads_out = []
+    for lead in leads:
+        all_stages = [
+            {"id": str(s.id), "name": s.name, "color": s.color, "sort_order": s.sort_order,
+             "is_won": s.is_won, "is_lost": s.is_lost}
+            for s in (lead.pipeline.stages if lead.pipeline else [])
+        ]
+        leads_out.append(LeadForPerson360(
+            id=lead.id, title=lead.title, lead_value=lead.lead_value,
+            temperature=lead.temperature, status=lead.status,
+            pipeline_id=lead.pipeline_id,
+            pipeline_name=lead.pipeline.name if lead.pipeline else None,
+            stage_id=lead.stage_id,
+            stage_name=lead.stage.name if lead.stage else None,
+            stage_color=lead.stage.color if lead.stage else None,
+            all_stages=all_stages,
+            assigned_to=lead.assigned_to, created_at=lead.created_at,
+        ))
+
+    return ApiResponse(success=True, data=Person360Out(
+        id=person.id, name=person.name, job_title=person.job_title, city=person.city,
+        emails=person.emails or [], contact_numbers=person.contact_numbers or [],
+        whatsapp_number=person.whatsapp_number,
+        organization_id=person.organization_id,
+        organization_name=person.organization.name if person.organization else None,
+        assigned_to=person.assigned_to, created_at=person.created_at,
+        leads=leads_out,
+        activities=[ActivityOut.model_validate(a) for a in activities],
+        notes=[NoteOut.model_validate(n) for n in notes],
+    ))
+
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+
+@router.post("/notes", status_code=201)
+async def create_note(body: NoteCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    note = CrmNote(
+        company_id=user.company_id,
+        body=body.body,
+        person_id=body.person_id,
+        lead_id=body.lead_id,
+        organization_id=body.organization_id,
+        created_by=user.user_id,
+        created_by_name=getattr(user, "full_name", None),
+        created_at=now, updated_at=now,
+    )
+    db.add(note)
+    await db.commit()
+    await db.refresh(note)
+    return ApiResponse(success=True, data=NoteOut.model_validate(note), message="Note added")
+
+
+@router.get("/notes")
+async def list_notes(
+    db: DBSession, user: AuthUser,
+    person_id: UUID | None = None,
+    lead_id: UUID | None = None,
+    organization_id: UUID | None = None,
+):
+    user.require("crm.view")
+    filters = [CrmNote.company_id == user.company_id]
+    if person_id:
+        filters.append(CrmNote.person_id == person_id)
+    if lead_id:
+        filters.append(CrmNote.lead_id == lead_id)
+    if organization_id:
+        filters.append(CrmNote.organization_id == organization_id)
+    result = await db.execute(
+        select(CrmNote).where(*filters).order_by(CrmNote.created_at.desc())
+    )
+    return ApiResponse(success=True, data=[NoteOut.model_validate(n) for n in result.scalars().all()])
+
+
+@router.patch("/notes/{note_id}")
+async def update_note(note_id: UUID, body: NoteUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmNote).where(CrmNote.id == note_id, CrmNote.company_id == user.company_id)
+    )
+    note = result.scalar_one_or_none()
+    if not note:
+        raise HTTPException(404, "Note not found")
+    note.body = body.body
+    note.updated_at = _now()
+    await db.commit()
+    await db.refresh(note)
+    return ApiResponse(success=True, data=NoteOut.model_validate(note))
+
+
+@router.delete("/notes/{note_id}")
+async def delete_note(note_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmNote).where(CrmNote.id == note_id, CrmNote.company_id == user.company_id)
+    )
+    note = result.scalar_one_or_none()
+    if not note:
+        raise HTTPException(404, "Note not found")
+    await db.delete(note)
+    await db.commit()
+    return ApiResponse(success=True, message="Note deleted")
+
+
+# ── Pipelines ─────────────────────────────────────────────────────────────────
+
+@router.get("/pipelines")
+async def list_pipelines(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmPipeline)
+        .options(selectinload(CrmPipeline.stages))
+        .where(CrmPipeline.company_id == user.company_id)
+        .order_by(CrmPipeline.name)
+    )
+    return ApiResponse(success=True, data=[PipelineOut.model_validate(p) for p in result.scalars().all()])
+
+
+# ── Lead Sources / Types ──────────────────────────────────────────────────────
+
+@router.get("/lead-sources")
+async def list_lead_sources(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmLeadSource).where(CrmLeadSource.company_id == user.company_id).order_by(CrmLeadSource.name)
+    )
+    return ApiResponse(success=True, data=[LeadSourceOut.model_validate(s) for s in result.scalars().all()])
+
+
+@router.get("/lead-types")
+async def list_lead_types(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmLeadType).where(CrmLeadType.company_id == user.company_id).order_by(CrmLeadType.name)
+    )
+    return ApiResponse(success=True, data=[LeadTypeOut.model_validate(t) for t in result.scalars().all()])
+
+
+# ── Tags ──────────────────────────────────────────────────────────────────────
+
+@router.get("/tags")
+async def list_tags(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmTag).where(CrmTag.company_id == user.company_id).order_by(CrmTag.name)
+    )
+    return ApiResponse(success=True, data=[TagOut.model_validate(t) for t in result.scalars().all()])
+
+
+@router.post("/tags", status_code=201)
+async def create_tag(body: TagCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    tag = CrmTag(
+        company_id=user.company_id, name=body.name, color=body.color, created_at=_now(),
+    )
+    db.add(tag)
+    await db.commit()
+    await db.refresh(tag)
+    return ApiResponse(success=True, data=TagOut.model_validate(tag), message="Tag created")
+
+
+@router.delete("/tags/{tag_id}", status_code=204)
+async def delete_tag(tag_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmTag).where(CrmTag.id == tag_id, CrmTag.company_id == user.company_id)
+    )
+    tag = result.scalar_one_or_none()
+    if not tag:
+        raise HTTPException(404, "Tag not found")
+    await db.delete(tag)
+    await db.commit()
+
+
+# ── Leads ─────────────────────────────────────────────────────────────────────
+
+@router.get("/leads/kanban")
+async def leads_kanban(db: DBSession, user: AuthUser, pipeline_id: UUID | None = None):
+    user.require("crm.view")
+    pipeline_q = (
+        select(CrmPipeline)
+        .options(selectinload(CrmPipeline.stages))
+        .where(CrmPipeline.company_id == user.company_id)
+    )
+    if pipeline_id:
+        pipeline_q = pipeline_q.where(CrmPipeline.id == pipeline_id)
+    else:
+        pipeline_q = pipeline_q.where(CrmPipeline.is_default.is_(True))
+    pipeline_result = await db.execute(pipeline_q.limit(1))
+    pipeline = pipeline_result.scalar_one_or_none()
+    if not pipeline:
+        return ApiResponse(success=True, data=[])
+
+    leads_result = await db.execute(
+        select(CrmLead)
+        .options(*_LEAD_OPTS)
+        .where(
+            CrmLead.company_id == user.company_id,
+            CrmLead.pipeline_id == pipeline.id,
+            CrmLead.status == "open",
+        )
+    )
+    leads = leads_result.scalars().all()
+
+    stage_leads: dict[UUID, list[LeadListOut]] = {s.id: [] for s in pipeline.stages}
+    for lead in leads:
+        if lead.stage_id in stage_leads:
+            stage_leads[lead.stage_id].append(_lead_list_out(lead))
+
+    kanban = [
+        LeadKanbanStageOut(
+            stage_id=s.id, stage_name=s.name, stage_color=s.color,
+            sort_order=s.sort_order, is_won=s.is_won, is_lost=s.is_lost,
+            column_value=sum(
+                (Decimal(str(lead.lead_value or 0)) for lead in stage_leads.get(s.id, [])),
+                Decimal("0"),
+            ),
+            leads=stage_leads.get(s.id, []),
+        )
+        for s in pipeline.stages
+    ]
+    return ApiResponse(success=True, data=kanban)
+
+
+@router.get("/leads")
+async def list_leads(
+    db: DBSession, user: AuthUser,
+    stage_id: UUID | None = None, status: str | None = None,
+    assigned_to: UUID | None = None,
+    page: int = 1, page_size: int = 50,
+):
+    user.require("crm.view")
+    filters = [CrmLead.company_id == user.company_id]
+    if stage_id:
+        filters.append(CrmLead.stage_id == stage_id)
+    if status:
+        filters.append(CrmLead.status == status)
+    if assigned_to:
+        filters.append(CrmLead.assigned_to == assigned_to)
+
+    total_result = await db.execute(select(func.count(CrmLead.id)).where(*filters))
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        select(CrmLead)
+        .options(*_LEAD_OPTS)
+        .where(*filters)
+        .order_by(CrmLead.updated_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    leads = result.scalars().all()
+    return ApiResponse(
+        success=True,
+        data=[_lead_list_out(lead) for lead in leads],
+        meta=PaginatedMeta(page=page, page_size=page_size, total=total),
+    )
+
+
+@router.post("/leads", status_code=201)
+async def create_lead(body: LeadCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    lead = CrmLead(
+        company_id=user.company_id, title=body.title, description=body.description,
+        lead_value=body.lead_value, temperature=body.temperature, status="open",
+        expected_close_date=body.expected_close_date,
+        pipeline_id=body.pipeline_id, stage_id=body.stage_id,
+        source_id=body.source_id, type_id=body.type_id,
+        person_id=body.person_id, organization_id=body.organization_id,
+        customer_id=body.customer_id, assigned_to=body.assigned_to,
+        created_by=user.user_id, created_at=now, updated_at=now,
+    )
+    db.add(lead)
+    await db.commit()
+    lead = await _get_lead(lead.id, user.company_id, db)
+    return ApiResponse(success=True, data=_lead_out(lead), message="Lead created")
+
+
+@router.get("/leads/{lead_id}")
+async def get_lead(lead_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    return ApiResponse(success=True, data=_lead_out(lead))
+
+
+@router.patch("/leads/{lead_id}")
+async def update_lead(lead_id: UUID, body: LeadUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(lead, field, val)
+    lead.updated_at = _now()
+    await db.commit()
+    lead = await _get_lead(lead_id, user.company_id, db)
+    return ApiResponse(success=True, data=_lead_out(lead))
+
+
+@router.delete("/leads/{lead_id}")
+async def delete_lead(lead_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    await db.delete(lead)
+    await db.commit()
+    return ApiResponse(success=True, message="Lead deleted")
+
+
+@router.patch("/leads/{lead_id}/stage")
+async def update_lead_stage(lead_id: UUID, body: LeadStageUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    lead = await _get_lead(lead_id, user.company_id, db)
+
+    # Capture old stage name before changing
+    old_stage_id = lead.stage_id
+    old_stage_name = lead.stage.name if lead.stage else None
+
+    # Resolve new stage name
+    new_stage_name: str | None = None
+    if body.stage_id:
+        stage_result = await db.execute(select(CrmPipelineStage).where(CrmPipelineStage.id == body.stage_id))
+        new_stage = stage_result.scalar_one_or_none()
+        new_stage_name = new_stage.name if new_stage else None
+
+    lead.stage_id = body.stage_id
+    if body.pipeline_id:
+        lead.pipeline_id = body.pipeline_id
+    lead.updated_at = _now()
+
+    # Record stage history
+    history = CrmLeadStageHistory(
+        lead_id=lead.id,
+        from_stage_id=old_stage_id,
+        to_stage_id=body.stage_id,
+        from_stage_name=old_stage_name,
+        to_stage_name=new_stage_name,
+        changed_by=user.user_id,
+        changed_by_name=user.full_name if hasattr(user, "full_name") else None,
+        changed_at=_now(),
+    )
+    db.add(history)
+
+    await db.commit()
+    lead = await _get_lead(lead_id, user.company_id, db)
+    return ApiResponse(success=True, data=_lead_out(lead))
+
+
+@router.get("/leads/{lead_id}/stage-history")
+async def get_stage_history(lead_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmLeadStageHistory)
+        .where(CrmLeadStageHistory.lead_id == lead_id)
+        .order_by(CrmLeadStageHistory.changed_at)
+    )
+    return ApiResponse(success=True, data=[StageHistoryOut.model_validate(h) for h in result.scalars().all()])
+
+
+@router.patch("/leads/{lead_id}/status")
+async def update_lead_status(lead_id: UUID, body: LeadStatusUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    if body.status not in {"open", "won", "lost"}:
+        raise HTTPException(400, "status must be open, won, or lost")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    lead.status = body.status
+    if body.status in {"won", "lost"}:
+        lead.closed_at = _now()
+        if body.status == "lost" and body.lost_reason:
+            lead.lost_reason = body.lost_reason
+    lead.updated_at = _now()
+    await db.commit()
+    lead = await _get_lead(lead_id, user.company_id, db)
+    return ApiResponse(success=True, data=_lead_out(lead))
+
+
+# ── Activities ────────────────────────────────────────────────────────────────
+
+@router.get("/activities")
+async def list_activities(
+    db: DBSession, user: AuthUser,
+    lead_id: UUID | None = None, person_id: UUID | None = None,
+    activity_type: str | None = None,
+    date_from: datetime | None = None, date_to: datetime | None = None,
+    unscheduled: bool = False,
+    page_size: int = 100,
+):
+    user.require("crm.view")
+    filters = [CrmActivity.company_id == user.company_id]
+    if lead_id:
+        filters.append(CrmActivity.lead_id == lead_id)
+    if person_id:
+        filters.append(CrmActivity.person_id == person_id)
+    if activity_type:
+        filters.append(CrmActivity.type == activity_type)
+    if unscheduled:
+        filters.append(CrmActivity.schedule_from.is_(None))
+    else:
+        if date_from:
+            filters.append(CrmActivity.schedule_from >= date_from)
+        if date_to:
+            filters.append(CrmActivity.schedule_from <= date_to)
+
+    lead_alias = CrmLead
+    assignee = User
+    result = await db.execute(
+        select(CrmActivity, lead_alias.title, CrmPerson.name, assignee.full_name)
+        .outerjoin(lead_alias, lead_alias.id == CrmActivity.lead_id)
+        .outerjoin(CrmPerson, CrmPerson.id == CrmActivity.person_id)
+        .outerjoin(assignee, assignee.id == CrmActivity.assigned_to)
+        .where(*filters)
+        .order_by(CrmActivity.created_at.desc() if unscheduled else CrmActivity.schedule_from.desc())
+        .limit(page_size)
+    )
+    data = []
+    for activity, lead_title, person_name, assigned_to_name in result.all():
+        out = ActivityOut.model_validate(activity)
+        out.lead_title = lead_title
+        out.person_name = person_name
+        out.assigned_to_name = assigned_to_name
+        data.append(out)
+    return ApiResponse(success=True, data=data)
+
+
+@router.post("/activities", status_code=201)
+async def create_activity(body: ActivityCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    activity = CrmActivity(
+        company_id=user.company_id, title=body.title, type=body.type,
+        comment=body.comment, location=body.location,
+        schedule_from=body.schedule_from, schedule_to=body.schedule_to,
+        lead_id=body.lead_id, person_id=body.person_id,
+        assigned_to=body.assigned_to, created_by=user.user_id,
+        created_at=now, updated_at=now,
+    )
+    db.add(activity)
+    await db.commit()
+    await db.refresh(activity)
+    return ApiResponse(success=True, data=ActivityOut.model_validate(activity), message="Activity created")
+
+
+@router.patch("/activities/{activity_id}")
+async def update_activity(activity_id: UUID, body: ActivityUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmActivity).where(CrmActivity.id == activity_id, CrmActivity.company_id == user.company_id)
+    )
+    activity = result.scalar_one_or_none()
+    if not activity:
+        raise HTTPException(404, "Activity not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(activity, field, val)
+    activity.updated_at = _now()
+    await db.commit()
+    await db.refresh(activity)
+    return ApiResponse(success=True, data=ActivityOut.model_validate(activity))
+
+
+@router.patch("/activities/{activity_id}/done")
+async def mark_activity_done(activity_id: UUID, db: DBSession, user: AuthUser, body: ActivityDoneUpdate | None = None):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmActivity).where(CrmActivity.id == activity_id, CrmActivity.company_id == user.company_id)
+    )
+    activity = result.scalar_one_or_none()
+    if not activity:
+        raise HTTPException(404, "Activity not found")
+    activity.is_done = body.is_done if body is not None else True
+    activity.updated_at = _now()
+    await db.commit()
+    await db.refresh(activity)
+    return ApiResponse(success=True, data=ActivityOut.model_validate(activity))
+
+
+@router.delete("/activities/{activity_id}")
+async def delete_activity(activity_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmActivity).where(CrmActivity.id == activity_id, CrmActivity.company_id == user.company_id)
+    )
+    activity = result.scalar_one_or_none()
+    if not activity:
+        raise HTTPException(404, "Activity not found")
+    await db.delete(activity)
+    await db.commit()
+    return ApiResponse(success=True, message="Activity deleted")
+
+
+# ── Products ──────────────────────────────────────────────────────────────────
+
+@router.get("/products")
+async def list_products(db: DBSession, user: AuthUser, is_active: bool = True, search: str | None = None):
+    user.require("crm.view")
+    q = select(CrmProduct).where(CrmProduct.company_id == user.company_id, CrmProduct.is_active == is_active)
+    if search:
+        q = q.where(CrmProduct.name.ilike(f"%{search}%"))
+    result = await db.execute(q.order_by(CrmProduct.name))
+    return ApiResponse(success=True, data=[ProductOut.model_validate(p) for p in result.scalars().all()])
+
+
+@router.post("/products", status_code=201)
+async def create_product(body: ProductCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    product = CrmProduct(
+        company_id=user.company_id, name=body.name, description=body.description,
+        sku=body.sku, price=body.price, currency=body.currency, unit=body.unit,
+        created_by=user.user_id, created_at=now, updated_at=now,
+    )
+    db.add(product)
+    await db.commit()
+    await db.refresh(product)
+    return ApiResponse(success=True, data=ProductOut.model_validate(product), message="Product created")
+
+
+@router.patch("/products/{product_id}")
+async def update_product(product_id: UUID, body: ProductUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmProduct).where(CrmProduct.id == product_id, CrmProduct.company_id == user.company_id)
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(product, field, val)
+    product.updated_at = _now()
+    await db.commit()
+    await db.refresh(product)
+    return ApiResponse(success=True, data=ProductOut.model_validate(product))
+
+
+# ── Quotes ────────────────────────────────────────────────────────────────────
+
+_QUOTE_OPTS = [
+    selectinload(CrmQuote.lead),
+    selectinload(CrmQuote.person),
+    selectinload(CrmQuote.organization),
+    selectinload(CrmQuote.items).selectinload(CrmQuoteItem.product),
+]
+
+
+def _quote_out(quote: CrmQuote) -> QuoteOut:
+    return QuoteOut(
+        id=quote.id, company_id=quote.company_id, quote_number=quote.quote_number,
+        title=quote.title, status=quote.status,
+        lead_id=quote.lead_id, lead_title=quote.lead.title if quote.lead else None,
+        person_id=quote.person_id, person_name=quote.person.name if quote.person else None,
+        organization_id=quote.organization_id, org_name=quote.organization.name if quote.organization else None,
+        valid_until=quote.valid_until, currency=quote.currency,
+        subtotal=quote.subtotal, discount_percent=quote.discount_percent,
+        discount_amount=quote.discount_amount, tax_amount=quote.tax_amount, total_amount=quote.total_amount,
+        notes=quote.notes, terms=quote.terms, sales_order_id=quote.sales_order_id,
+        assigned_to=quote.assigned_to, created_by=quote.created_by,
+        sent_at=quote.sent_at, accepted_at=quote.accepted_at,
+        created_at=quote.created_at, updated_at=quote.updated_at,
+        items=[QuoteItemOut.model_validate(i) for i in (quote.items or [])],
+    )
+
+
+def _quote_list_out(quote: CrmQuote) -> QuoteListOut:
+    return QuoteListOut(
+        id=quote.id, quote_number=quote.quote_number, title=quote.title, status=quote.status,
+        lead_title=quote.lead.title if quote.lead else None,
+        person_name=quote.person.name if quote.person else None,
+        org_name=quote.organization.name if quote.organization else None,
+        total_amount=quote.total_amount, valid_until=quote.valid_until, created_at=quote.created_at,
+    )
+
+
+async def _get_quote(quote_id: UUID, company_id: UUID, db) -> CrmQuote:
+    result = await db.execute(
+        select(CrmQuote).options(*_QUOTE_OPTS)
+        .where(CrmQuote.id == quote_id, CrmQuote.company_id == company_id)
+    )
+    quote = result.scalar_one_or_none()
+    if not quote:
+        raise HTTPException(404, "Quote not found")
+    return quote
+
+
+def _build_items(items_in):
+    rows = []
+    subtotal = Decimal("0")
+    for idx, item in enumerate(items_in):
+        total = round(item.quantity * item.unit_price * (1 - item.discount_percent / 100), 4)
+        subtotal += total
+        rows.append({
+            "product_id": item.product_id, "name": item.name, "description": item.description,
+            "quantity": item.quantity, "unit_price": item.unit_price,
+            "discount_percent": item.discount_percent, "total": total, "sort_order": idx,
+        })
+    return rows, subtotal
+
+
+@router.get("/quotes")
+async def list_quotes(
+    db: DBSession, user: AuthUser,
+    lead_id: UUID | None = None, status: str | None = None,
+    page: int = 1, page_size: int = 50,
+):
+    user.require("crm.view")
+    filters = [CrmQuote.company_id == user.company_id]
+    if lead_id:
+        filters.append(CrmQuote.lead_id == lead_id)
+    if status:
+        filters.append(CrmQuote.status == status)
+
+    total_result = await db.execute(select(func.count(CrmQuote.id)).where(*filters))
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        select(CrmQuote).options(*_QUOTE_OPTS).where(*filters)
+        .order_by(CrmQuote.created_at.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )
+    quotes = result.scalars().all()
+    return ApiResponse(
+        success=True,
+        data=[_quote_list_out(q) for q in quotes],
+        meta=PaginatedMeta(page=page, page_size=page_size, total=total),
+    )
+
+
+@router.post("/quotes", status_code=201)
+async def create_quote(body: QuoteCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    seq_result = await db.execute(text("SELECT nextval('crm_quote_seq')"))
+    quote_number = f"QUOTE-{seq_result.scalar()}"
+    now = _now()
+    rows, subtotal = _build_items(body.items)
+    discount_amount = round(subtotal * body.discount_percent / 100, 4)
+    total_amount = subtotal - discount_amount + body.tax_amount
+    quote = CrmQuote(
+        company_id=user.company_id, quote_number=quote_number, title=body.title,
+        status="draft", lead_id=body.lead_id, person_id=body.person_id,
+        organization_id=body.organization_id, valid_until=body.valid_until,
+        currency=body.currency, subtotal=subtotal, discount_percent=body.discount_percent,
+        discount_amount=discount_amount, tax_amount=body.tax_amount, total_amount=total_amount,
+        notes=body.notes, terms=body.terms, assigned_to=body.assigned_to,
+        created_by=user.user_id, created_at=now, updated_at=now,
+    )
+    db.add(quote)
+    await db.flush()
+    for item_data in rows:
+        db.add(CrmQuoteItem(quote_id=quote.id, **item_data))
+    await db.commit()
+    quote = await _get_quote(quote.id, user.company_id, db)
+    return ApiResponse(success=True, data=_quote_out(quote), message="Quote created")
+
+
+@router.get("/quotes/{quote_id}")
+async def get_quote(quote_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    quote = await _get_quote(quote_id, user.company_id, db)
+    return ApiResponse(success=True, data=_quote_out(quote))
+
+
+@router.patch("/quotes/{quote_id}")
+async def update_quote(quote_id: UUID, body: QuoteUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    quote = await _get_quote(quote_id, user.company_id, db)
+    if quote.status in {"accepted", "declined"}:
+        raise HTTPException(400, "Cannot edit an accepted or declined quote")
+    items_provided = "items" in body.model_fields_set
+    for field, val in body.model_dump(exclude_unset=True, exclude={"items"}).items():
+        setattr(quote, field, val)
+    if items_provided:
+        await db.execute(delete(CrmQuoteItem).where(CrmQuoteItem.quote_id == quote.id))
+        rows, subtotal = _build_items(body.items or [])
+        quote.subtotal = subtotal
+        await db.flush()
+        for item_data in rows:
+            db.add(CrmQuoteItem(quote_id=quote.id, **item_data))
+    else:
+        subtotal = quote.subtotal
+    discount_amount = round(subtotal * quote.discount_percent / 100, 4)
+    quote.discount_amount = discount_amount
+    quote.total_amount = subtotal - discount_amount + quote.tax_amount
+    quote.updated_at = _now()
+    await db.commit()
+    quote = await _get_quote(quote_id, user.company_id, db)
+    return ApiResponse(success=True, data=_quote_out(quote))
+
+
+@router.delete("/quotes/{quote_id}")
+async def delete_quote(quote_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    quote = await _get_quote(quote_id, user.company_id, db)
+    if quote.status in {"accepted", "declined"}:
+        raise HTTPException(400, "Cannot delete an accepted or declined quote")
+    await db.delete(quote)
+    await db.commit()
+    return ApiResponse(success=True, message="Quote deleted")
+
+
+@router.patch("/quotes/{quote_id}/status")
+async def update_quote_status(quote_id: UUID, body: QuoteStatusUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    valid_statuses = {"sent", "accepted", "declined", "expired"}
+    if body.status not in valid_statuses:
+        raise HTTPException(400, f"status must be one of: {', '.join(sorted(valid_statuses))}")
+    quote = await _get_quote(quote_id, user.company_id, db)
+    quote.status = body.status
+    now = _now()
+    if body.status == "sent" and not quote.sent_at:
+        quote.sent_at = now
+    if body.status == "accepted" and not quote.accepted_at:
+        quote.accepted_at = now
+    quote.updated_at = now
+    await db.commit()
+    quote = await _get_quote(quote_id, user.company_id, db)
+    return ApiResponse(success=True, data=_quote_out(quote))
+
+
+@router.post("/quotes/{quote_id}/duplicate", status_code=201)
+async def duplicate_quote(quote_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    quote = await _get_quote(quote_id, user.company_id, db)
+    seq_result = await db.execute(text("SELECT nextval('crm_quote_seq')"))
+    quote_number = f"QUOTE-{seq_result.scalar()}"
+    now = _now()
+    new_quote = CrmQuote(
+        company_id=user.company_id, quote_number=quote_number, title=quote.title,
+        status="draft", lead_id=quote.lead_id, person_id=quote.person_id,
+        organization_id=quote.organization_id, valid_until=quote.valid_until,
+        currency=quote.currency, subtotal=quote.subtotal, discount_percent=quote.discount_percent,
+        discount_amount=quote.discount_amount, tax_amount=quote.tax_amount, total_amount=quote.total_amount,
+        notes=quote.notes, terms=quote.terms, assigned_to=quote.assigned_to,
+        created_by=user.user_id, created_at=now, updated_at=now,
+    )
+    db.add(new_quote)
+    await db.flush()
+    for item in quote.items:
+        db.add(CrmQuoteItem(
+            quote_id=new_quote.id, product_id=item.product_id, name=item.name,
+            description=item.description, quantity=item.quantity, unit_price=item.unit_price,
+            discount_percent=item.discount_percent, total=item.total, sort_order=item.sort_order,
+        ))
+    await db.commit()
+    new_quote = await _get_quote(new_quote.id, user.company_id, db)
+    return ApiResponse(success=True, data=_quote_out(new_quote), message="Quote duplicated")
+
+
+# ── Dashboard ──────────────────────────────────────────────────────────────────
+
+@router.get("/dashboard")
+async def crm_dashboard(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    now = _now()
+
+    # Pipeline summary: count + sum open leads per stage, across all company pipelines
+    pipeline_rows = await db.execute(
+        select(
+            CrmPipelineStage.id,
+            CrmPipelineStage.name,
+            CrmPipelineStage.sort_order,
+            CrmPipelineStage.is_won,
+            CrmPipelineStage.is_lost,
+            func.count(CrmLead.id).label("lead_count"),
+            func.coalesce(func.sum(CrmLead.lead_value), Decimal("0")).label("total_value"),
+        )
+        .join(CrmPipeline, CrmPipeline.id == CrmPipelineStage.pipeline_id)
+        .outerjoin(
+            CrmLead,
+            and_(
+                CrmLead.stage_id == CrmPipelineStage.id,
+                CrmLead.status == "open",
+                CrmLead.company_id == user.company_id,
+            ),
+        )
+        .where(CrmPipeline.company_id == user.company_id)
+        .group_by(
+            CrmPipelineStage.id,
+            CrmPipelineStage.name,
+            CrmPipelineStage.sort_order,
+            CrmPipelineStage.is_won,
+            CrmPipelineStage.is_lost,
+        )
+        .order_by(CrmPipelineStage.sort_order)
+    )
+    pipeline_summary = [
+        {
+            "stage_id": str(row.id),
+            "stage_name": row.name,
+            "sort_order": row.sort_order,
+            "is_won": row.is_won,
+            "is_lost": row.is_lost,
+            "lead_count": row.lead_count,
+            "total_value": float(row.total_value),
+        }
+        for row in pipeline_rows
+    ]
+
+    # Status counts
+    status_rows = await db.execute(
+        select(CrmLead.status, func.count(CrmLead.id).label("cnt"))
+        .where(CrmLead.company_id == user.company_id)
+        .group_by(CrmLead.status)
+    )
+    status_counts: dict[str, int] = {"open": 0, "won": 0, "lost": 0}
+    for row in status_rows:
+        if row.status in status_counts:
+            status_counts[row.status] = row.cnt
+
+    # Activities due in next 24 hours (not yet overdue)
+    due_result = await db.execute(
+        select(func.count(CrmActivity.id))
+        .where(
+            CrmActivity.company_id == user.company_id,
+            CrmActivity.is_done.is_(False),
+            CrmActivity.schedule_from >= now,
+            CrmActivity.schedule_from <= now + timedelta(hours=24),
+        )
+    )
+    activities_due: int = due_result.scalar() or 0
+
+    # Activities overdue (past due, not done)
+    overdue_result = await db.execute(
+        select(func.count(CrmActivity.id))
+        .where(
+            CrmActivity.company_id == user.company_id,
+            CrmActivity.is_done.is_(False),
+            CrmActivity.schedule_from < now,
+        )
+    )
+    activities_overdue: int = overdue_result.scalar() or 0
+
+    # Last 5 created leads with stage name
+    recent_result = await db.execute(
+        select(CrmLead, CrmPipelineStage.name.label("stage_label"))
+        .outerjoin(CrmPipelineStage, CrmPipelineStage.id == CrmLead.stage_id)
+        .where(CrmLead.company_id == user.company_id)
+        .order_by(CrmLead.created_at.desc())
+        .limit(5)
+    )
+    recent_leads = [
+        {
+            "id": str(row.CrmLead.id),
+            "title": row.CrmLead.title,
+            "status": row.CrmLead.status,
+            "stage_name": row.stage_label,
+            "lead_value": float(row.CrmLead.lead_value or 0),
+            "created_at": row.CrmLead.created_at.isoformat() if row.CrmLead.created_at else None,
+        }
+        for row in recent_result
+    ]
+
+    # Conversion rate
+    won = status_counts["won"]
+    lost = status_counts["lost"]
+    conversion_rate = round(won / (won + lost) * 100, 1) if (won + lost) > 0 else 0.0
+
+    # Total pipeline value (open leads)
+    pipeline_val_result = await db.execute(
+        select(func.coalesce(func.sum(CrmLead.lead_value), Decimal("0")))
+        .where(CrmLead.company_id == user.company_id, CrmLead.status == "open")
+    )
+    total_pipeline_value = float(pipeline_val_result.scalar() or 0)
+
+    # Won value last 30 days
+    won_val_result = await db.execute(
+        select(func.coalesce(func.sum(CrmLead.lead_value), Decimal("0")))
+        .where(
+            CrmLead.company_id == user.company_id,
+            CrmLead.status == "won",
+            CrmLead.closed_at >= now - timedelta(days=30),
+        )
+    )
+    won_value_30d = float(won_val_result.scalar() or 0)
+
+    return ApiResponse(
+        success=True,
+        data={
+            "pipeline_summary": pipeline_summary,
+            "status_counts": status_counts,
+            "activities_due": activities_due,
+            "activities_overdue": activities_overdue,
+            "recent_leads": recent_leads,
+            "conversion_rate": conversion_rate,
+            "total_pipeline_value": total_pipeline_value,
+            "won_value_30d": won_value_30d,
+        },
+    )
+
+
+# ── Lead → Sales Order Conversion ─────────────────────────────────────────────
+
+@router.post("/leads/{lead_id}/convert")
+async def convert_lead_to_sales_order(lead_id: UUID, body: LeadConvertIn, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    user.require("sales.create")
+
+    lead = await _get_lead(lead_id, user.company_id, db)
+
+    if lead.status == "won" and lead.sales_order_id is not None:
+        raise HTTPException(400, "Lead already converted")
+
+    from app.schemas.sales import SalesOrderCreate
+    from app.services.sales import SalesService
+
+    notes_text = f"Converted from CRM Lead: {lead.title}"
+    if body.notes:
+        notes_text = notes_text + "\n" + body.notes
+
+    so_create = SalesOrderCreate(
+        customer_id=body.customer_id,
+        quotation_id=None,
+        order_date=body.order_date,
+        expected_delivery=body.expected_delivery,
+        notes=notes_text,
+        intrastate=body.intrastate,
+        items=[],
+    )
+
+    so = await SalesService(db).create_sales_order(so_create, user.company_id, user.user_id)
+
+    lead.status = "won"
+    lead.sales_order_id = so.id
+    lead.closed_at = _now()
+    lead.updated_at = _now()
+    await db.commit()
+
+    return ApiResponse(
+        success=True,
+        data={"sales_order_id": str(so.id), "order_number": so.order_number},
+    )
+
+
+# ── SMTP Config ───────────────────────────────────────────────────────────────
+
+async def _get_smtp_config(company_id: UUID, db) -> CrmSmtpConfig | None:
+    result = await db.execute(
+        select(CrmSmtpConfig).where(CrmSmtpConfig.company_id == company_id)
+    )
+    return result.scalar_one_or_none()
+
+
+@router.get("/email/smtp-config")
+async def get_smtp_config(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    cfg = await _get_smtp_config(user.company_id, db)
+    if not cfg:
+        raise HTTPException(404, "SMTP not configured")
+    out = SmtpConfigOut.model_validate(cfg)
+    # Mask password — never return plaintext
+    return ApiResponse(success=True, data={**out.model_dump(), "password": "••••••••"})
+
+
+@router.post("/email/smtp-config", status_code=200)
+async def upsert_smtp_config(body: SmtpConfigCreate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    now = _now()
+    cfg = await _get_smtp_config(user.company_id, db)
+    if cfg:
+        cfg.host = body.host
+        cfg.port = body.port
+        cfg.username = body.username
+        cfg.password_encrypted = _enc(body.password)
+        cfg.from_name = body.from_name
+        cfg.from_email = body.from_email
+        cfg.use_tls = body.use_tls
+        cfg.is_verified = False
+        cfg.updated_at = now
+    else:
+        cfg = CrmSmtpConfig(
+            company_id=user.company_id,
+            host=body.host,
+            port=body.port,
+            username=body.username,
+            password_encrypted=_enc(body.password),
+            from_name=body.from_name,
+            from_email=body.from_email,
+            use_tls=body.use_tls,
+            is_verified=False,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(cfg)
+    await db.commit()
+    await db.refresh(cfg)
+    out = SmtpConfigOut.model_validate(cfg)
+    return ApiResponse(success=True, data={**out.model_dump(), "password": "••••••••"}, message="SMTP config saved")
+
+
+@router.post("/email/smtp-config/test")
+async def test_smtp_config(db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    cfg = await _get_smtp_config(user.company_id, db)
+    if not cfg:
+        raise HTTPException(400, "SMTP not configured")
+
+    try:
+        password = _dec(cfg.password_encrypted)
+        msg = MIMEText("This is a test email from your CRM system.", "plain")
+        msg["Subject"] = "CRM SMTP Test"
+        msg["From"] = f"{cfg.from_name} <{cfg.from_email}>" if cfg.from_name else cfg.from_email
+        msg["To"] = cfg.from_email
+
+        await aiosmtplib.send(
+            msg,
+            hostname=cfg.host,
+            port=cfg.port,
+            username=cfg.username,
+            password=password,
+            use_tls=cfg.use_tls,
+        )
+        cfg.is_verified = True
+        cfg.updated_at = _now()
+        await db.commit()
+        return ApiResponse(success=True, message="Test email sent successfully")
+    except Exception as e:
+        logger.error("SMTP test failed: %s", e)
+        raise HTTPException(400, f"SMTP test failed: {e}") from e
+
+
+# ── Emails ────────────────────────────────────────────────────────────────────
+
+@router.get("/emails")
+async def list_emails(
+    db: DBSession, user: AuthUser,
+    lead_id: UUID | None = None,
+    person_id: UUID | None = None,
+    page: int = 1, page_size: int = 50,
+):
+    user.require("crm.view")
+    filters = [CrmEmail.company_id == user.company_id]
+    if lead_id:
+        filters.append(CrmEmail.lead_id == lead_id)
+    if person_id:
+        filters.append(CrmEmail.person_id == person_id)
+
+    total_result = await db.execute(select(func.count(CrmEmail.id)).where(*filters))
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        select(CrmEmail)
+        .where(*filters)
+        .order_by(CrmEmail.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    emails = result.scalars().all()
+    return ApiResponse(
+        success=True,
+        data=[EmailListOut.model_validate(e) for e in emails],
+        meta=PaginatedMeta(page=page, page_size=page_size, total=total),
+    )
+
+
+@router.post("/emails", status_code=201)
+async def send_email(body: EmailCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+
+    cfg = await _get_smtp_config(user.company_id, db)
+    if not cfg:
+        raise HTTPException(400, "SMTP not configured")
+
+    from_address = f"{cfg.from_name} <{cfg.from_email}>" if cfg.from_name else cfg.from_email
+    now = _now()
+
+    # Save as draft first
+    email_record = CrmEmail(
+        company_id=user.company_id,
+        direction="out",
+        subject=body.subject,
+        body_html=body.body_html,
+        body_text=body.body_text,
+        from_address=from_address,
+        to_addresses=body.to_addresses,
+        cc_addresses=body.cc_addresses,
+        bcc_addresses=body.bcc_addresses,
+        status="draft",
+        in_reply_to=body.in_reply_to,
+        lead_id=body.lead_id,
+        person_id=body.person_id,
+        quote_id=body.quote_id,
+        created_by=user.user_id,
+        created_at=now,
+    )
+    db.add(email_record)
+    await db.flush()
+
+    # Attempt to send
+    try:
+        password = _dec(cfg.password_encrypted)
+
+        if body.body_html:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(body.body_text, "plain"))
+            msg.attach(MIMEText(body.body_html, "html"))
+        else:
+            msg = MIMEText(body.body_text, "plain")
+
+        msg["Subject"] = body.subject
+        msg["From"] = from_address
+        msg["To"] = ", ".join(body.to_addresses)
+        if body.cc_addresses:
+            msg["Cc"] = ", ".join(body.cc_addresses)
+        if body.in_reply_to:
+            msg["In-Reply-To"] = body.in_reply_to
+
+        all_recipients = body.to_addresses + body.cc_addresses + body.bcc_addresses
+
+        await aiosmtplib.send(
+            msg,
+            hostname=cfg.host,
+            port=cfg.port,
+            username=cfg.username,
+            password=password,
+            use_tls=cfg.use_tls,
+            recipients=all_recipients,
+        )
+
+        email_record.status = "sent"
+        email_record.sent_at = _now()
+    except Exception as e:
+        logger.error("Email send failed: %s", e)
+        email_record.status = "failed"
+        email_record.error_message = str(e)
+
+    await db.commit()
+    await db.refresh(email_record)
+    return ApiResponse(success=True, data=EmailOut.model_validate(email_record))
+
+
+@router.get("/emails/{email_id}")
+async def get_email(email_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmEmail).where(CrmEmail.id == email_id, CrmEmail.company_id == user.company_id)
+    )
+    email_record = result.scalar_one_or_none()
+    if not email_record:
+        raise HTTPException(404, "Email not found")
+    return ApiResponse(success=True, data=EmailOut.model_validate(email_record))
+
+
+# ── Email Templates (Phase 4) ─────────────────────────────────────────────────
+
+@router.get("/email-templates")
+async def list_email_templates(
+    db: DBSession, user: AuthUser, category: str | None = None,
+):
+    user.require("crm.view")
+    q = select(CrmEmailTemplate).where(
+        CrmEmailTemplate.company_id == user.company_id,
+        CrmEmailTemplate.is_active.is_(True),
+    )
+    if category:
+        q = q.where(CrmEmailTemplate.category == category)
+    result = await db.execute(q.order_by(CrmEmailTemplate.name))
+    return ApiResponse(success=True, data=[EmailTemplateOut.model_validate(t) for t in result.scalars().all()])
+
+
+@router.post("/email-templates", status_code=201)
+async def create_email_template(body: EmailTemplateCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    tmpl = CrmEmailTemplate(
+        company_id=user.company_id,
+        name=body.name,
+        subject=body.subject,
+        body_text=body.body_text,
+        body_html=body.body_html,
+        category=body.category,
+        created_by=user.user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(tmpl)
+    await db.commit()
+    await db.refresh(tmpl)
+    return ApiResponse(success=True, data=EmailTemplateOut.model_validate(tmpl), message="Email template created")
+
+
+@router.patch("/email-templates/{template_id}")
+async def update_email_template(template_id: UUID, body: EmailTemplateUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmEmailTemplate).where(
+            CrmEmailTemplate.id == template_id,
+            CrmEmailTemplate.company_id == user.company_id,
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+    if not tmpl:
+        raise HTTPException(404, "Email template not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(tmpl, field, val)
+    tmpl.updated_at = _now()
+    await db.commit()
+    await db.refresh(tmpl)
+    return ApiResponse(success=True, data=EmailTemplateOut.model_validate(tmpl))
+
+
+@router.delete("/email-templates/{template_id}", status_code=200)
+async def delete_email_template(template_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmEmailTemplate).where(
+            CrmEmailTemplate.id == template_id,
+            CrmEmailTemplate.company_id == user.company_id,
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+    if not tmpl:
+        raise HTTPException(404, "Email template not found")
+    tmpl.is_active = False
+    tmpl.updated_at = _now()
+    await db.commit()
+    return ApiResponse(success=True, message="Email template deleted")
+
+
+# ── CSV Lead Import (Phase 4) ─────────────────────────────────────────────────
+
+def _parse_date(value: str) -> date | None:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(value.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_decimal(value: str) -> Decimal:
+    try:
+        return Decimal(value.strip())
+    except (InvalidOperation, AttributeError):
+        return Decimal("0")
+
+
+@router.post("/leads/import", status_code=201)
+async def import_leads_csv(
+    db: DBSession,
+    user: AuthUser,
+    file: UploadFile,
+    pipeline_id: str = Form(...),
+    stage_id: str = Form(...),
+    assigned_to: str | None = Form(default=None),
+):
+    user.require("crm.create")
+
+    # Validate file type
+    filename = file.filename or ""
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(400, "File must be a CSV (.csv extension required)")
+
+    content = await file.read()
+    try:
+        text_content = content.decode("utf-8-sig")  # handle BOM
+    except UnicodeDecodeError:
+        text_content = content.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text_content))
+    # Normalize headers to lowercase
+    raw_rows = list(reader)
+    if len(raw_rows) > 1000:
+        raise HTTPException(400, "CSV exceeds 1000-row limit")
+
+    # Normalize row keys to lowercase
+    rows = [{k.lower().strip(): v for k, v in row.items()} for row in raw_rows]
+
+    try:
+        p_id = UUID(pipeline_id)
+        s_id = UUID(stage_id)
+        a_id = UUID(assigned_to) if assigned_to else None
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid UUID in form fields: {exc}") from exc
+
+    now = _now()
+    imported = 0
+    errors: list[dict] = []
+
+    for idx, row in enumerate(rows, start=1):
+        title = row.get("title", "").strip()
+        if not title:
+            errors.append({"row": idx, "error": "Missing required field: title"})
+            continue
+        try:
+            lead = CrmLead(
+                company_id=user.company_id,
+                title=title,
+                description=row.get("description", "").strip() or None,
+                lead_value=_parse_decimal(row.get("lead_value", "0")),
+                expected_close_date=_parse_date(row.get("expected_close_date", "")),
+                pipeline_id=p_id,
+                stage_id=s_id,
+                assigned_to=a_id,
+                status="open",
+                created_by=user.user_id,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(lead)
+            imported += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"row": idx, "error": str(exc)})
+
+    import_record = CrmLeadImport(
+        company_id=user.company_id,
+        filename=filename,
+        total_rows=len(rows),
+        imported_rows=imported,
+        failed_rows=len(errors),
+        status="done",
+        errors=errors,
+        pipeline_id=p_id,
+        stage_id=s_id,
+        assigned_to=a_id,
+        created_by=user.user_id,
+        created_at=now,
+        completed_at=_now(),
+    )
+    db.add(import_record)
+    await db.commit()
+    await db.refresh(import_record)
+    return ApiResponse(success=True, data=LeadImportOut.model_validate(import_record))
+
+
+@router.get("/leads/import/history")
+async def list_import_history(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmLeadImport)
+        .where(CrmLeadImport.company_id == user.company_id)
+        .order_by(CrmLeadImport.created_at.desc())
+        .limit(100)
+    )
+    return ApiResponse(success=True, data=[LeadImportOut.model_validate(r) for r in result.scalars().all()])
+
+
+# ── Bulk Actions (Phase 4) ────────────────────────────────────────────────────
+
+@router.post("/leads/bulk-action")
+async def bulk_action_leads(body: LeadBulkActionIn, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+
+    if len(body.lead_ids) > 500:
+        raise HTTPException(400, "Cannot process more than 500 leads at once")
+
+    if body.action not in {"assign", "stage", "tag", "archive"}:
+        raise HTTPException(400, "action must be one of: assign, stage, tag, archive")
+
+    # Fetch leads belonging to this company only
+    result = await db.execute(
+        select(CrmLead).where(
+            CrmLead.id.in_(body.lead_ids),
+            CrmLead.company_id == user.company_id,
+        )
+    )
+    leads = result.scalars().all()
+    count = len(leads)
+
+    if body.action == "assign":
+        if not body.value:
+            raise HTTPException(400, "value (user UUID) required for action=assign")
+        try:
+            assignee_id = UUID(body.value)
+        except ValueError as exc:
+            raise HTTPException(400, f"Invalid UUID for assign: {exc}") from exc
+        for lead in leads:
+            lead.assigned_to = assignee_id
+            lead.updated_at = _now()
+
+    elif body.action == "stage":
+        if not body.value:
+            raise HTTPException(400, "value (stage UUID) required for action=stage")
+        try:
+            stage_uuid = UUID(body.value)
+        except ValueError as exc:
+            raise HTTPException(400, f"Invalid UUID for stage: {exc}") from exc
+        for lead in leads:
+            lead.stage_id = stage_uuid
+            lead.updated_at = _now()
+
+    elif body.action == "tag":
+        if not body.value:
+            raise HTTPException(400, "value (tag name) required for action=tag")
+        tag_name = body.value.strip()
+        # Find or create the tag
+        tag_result = await db.execute(
+            select(CrmTag).where(
+                CrmTag.company_id == user.company_id,
+                CrmTag.name == tag_name,
+            )
+        )
+        tag = tag_result.scalar_one_or_none()
+        if not tag:
+            tag = CrmTag(
+                company_id=user.company_id,
+                name=tag_name,
+                created_at=_now(),
+            )
+            db.add(tag)
+            await db.flush()
+
+        # Add tag to each lead (skip if already tagged)
+        existing_result = await db.execute(
+            select(CrmLeadTag.lead_id).where(
+                CrmLeadTag.tag_id == tag.id,
+                CrmLeadTag.lead_id.in_([lead.id for lead in leads]),
+            )
+        )
+        already_tagged = {row for row in existing_result.scalars().all()}
+        for lead in leads:
+            if lead.id not in already_tagged:
+                db.add(CrmLeadTag(lead_id=lead.id, tag_id=tag.id))
+
+    elif body.action == "archive":
+        now = _now()
+        for lead in leads:
+            lead.status = "lost"
+            lead.closed_at = now
+            lead.updated_at = now
+
+    await db.commit()
+    return ApiResponse(success=True, data={"affected": count})
+
+
+# ── CRM Reports (Phase 4) ─────────────────────────────────────────────────────
+
+def _apply_date_filters(q, date_from: date | None, date_to: date | None):
+    if date_from:
+        q = q.where(CrmLead.created_at >= datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc))
+    if date_to:
+        q = q.where(CrmLead.created_at < datetime(date_to.year, date_to.month, date_to.day + 1, tzinfo=timezone.utc))
+    return q
+
+
+@router.get("/reports/pipeline")
+async def report_pipeline(
+    db: DBSession, user: AuthUser,
+    date_from: date | None = None, date_to: date | None = None,
+):
+    user.require("crm.view")
+    q = (
+        select(
+            CrmPipelineStage.id.label("stage_id"),
+            CrmPipelineStage.name.label("stage_name"),
+            CrmPipelineStage.sort_order,
+            CrmPipelineStage.is_won,
+            CrmPipelineStage.is_lost,
+            func.count(CrmLead.id).label("lead_count"),
+            func.coalesce(func.sum(CrmLead.lead_value), Decimal("0")).label("total_value"),
+        )
+        .join(CrmPipeline, CrmPipeline.id == CrmPipelineStage.pipeline_id)
+        .outerjoin(
+            CrmLead,
+            and_(
+                CrmLead.stage_id == CrmPipelineStage.id,
+                CrmLead.company_id == user.company_id,
+            ),
+        )
+        .where(CrmPipeline.company_id == user.company_id)
+        .group_by(
+            CrmPipelineStage.id, CrmPipelineStage.name,
+            CrmPipelineStage.sort_order, CrmPipelineStage.is_won, CrmPipelineStage.is_lost,
+        )
+        .order_by(CrmPipelineStage.sort_order)
+    )
+    result = await db.execute(q)
+    return ApiResponse(success=True, data=[
+        {
+            "stage_id": str(row.stage_id),
+            "stage_name": row.stage_name,
+            "sort_order": row.sort_order,
+            "is_won": row.is_won,
+            "is_lost": row.is_lost,
+            "lead_count": row.lead_count,
+            "total_value": float(row.total_value),
+        }
+        for row in result
+    ])
+
+
+@router.get("/reports/sources")
+async def report_sources(
+    db: DBSession, user: AuthUser,
+    date_from: date | None = None, date_to: date | None = None,
+):
+    user.require("crm.view")
+    q = (
+        select(
+            CrmLeadSource.id.label("source_id"),
+            CrmLeadSource.name.label("source_name"),
+            func.count(CrmLead.id).label("count"),
+            func.coalesce(func.sum(CrmLead.lead_value), Decimal("0")).label("total_value"),
+            func.count(CrmLead.id).filter(CrmLead.status == "won").label("won_count"),
+        )
+        .outerjoin(CrmLead, and_(
+            CrmLead.source_id == CrmLeadSource.id,
+            CrmLead.company_id == user.company_id,
+        ))
+        .where(CrmLeadSource.company_id == user.company_id)
+        .group_by(CrmLeadSource.id, CrmLeadSource.name)
+        .order_by(func.count(CrmLead.id).desc())
+    )
+    result = await db.execute(q)
+    return ApiResponse(success=True, data=[
+        {
+            "source_id": str(row.source_id),
+            "source_name": row.source_name,
+            "count": row.count,
+            "total_value": float(row.total_value),
+            "won_count": row.won_count,
+        }
+        for row in result
+    ])
+
+
+@router.get("/reports/activities")
+async def report_activities(
+    db: DBSession, user: AuthUser,
+    date_from: date | None = None, date_to: date | None = None,
+):
+    user.require("crm.view")
+    q = (
+        select(
+            CrmActivity.type,
+            func.count(CrmActivity.id).label("count"),
+            func.count(CrmActivity.id).filter(CrmActivity.is_done.is_(True)).label("done_count"),
+        )
+        .where(CrmActivity.company_id == user.company_id)
+        .group_by(CrmActivity.type)
+        .order_by(CrmActivity.type)
+    )
+    result = await db.execute(q)
+    rows = []
+    for row in result:
+        completion_rate = round(row.done_count / row.count * 100, 1) if row.count > 0 else 0.0
+        rows.append({
+            "type": row.type,
+            "count": row.count,
+            "done_count": row.done_count,
+            "completion_rate": completion_rate,
+        })
+    return ApiResponse(success=True, data=rows)
+
+
+@router.get("/reports/quotes")
+async def report_quotes(
+    db: DBSession, user: AuthUser,
+    date_from: date | None = None, date_to: date | None = None,
+):
+    user.require("crm.view")
+    q = (
+        select(
+            CrmQuote.status,
+            func.count(CrmQuote.id).label("count"),
+            func.coalesce(func.sum(CrmQuote.total_amount), Decimal("0")).label("total_value"),
+        )
+        .where(CrmQuote.company_id == user.company_id)
+        .group_by(CrmQuote.status)
+    )
+    if date_from:
+        q = q.where(CrmQuote.created_at >= datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc))
+    if date_to:
+        q = q.where(CrmQuote.created_at < datetime(date_to.year, date_to.month, date_to.day + 1, tzinfo=timezone.utc))
+
+    result = await db.execute(q)
+    by_status: dict[str, dict] = {
+        s: {"count": 0, "total_value": Decimal("0")}
+        for s in ("draft", "sent", "accepted", "declined", "expired")
+    }
+    for row in result:
+        if row.status in by_status:
+            by_status[row.status]["count"] = row.count
+            by_status[row.status]["total_value"] = row.total_value
+
+    sent_like = ("sent", "accepted", "declined", "expired")
+    return ApiResponse(success=True, data={
+        **{s: by_status[s]["count"] for s in by_status},
+        "accepted_value": float(by_status["accepted"]["total_value"]),
+        "total_sent_value": float(sum((by_status[s]["total_value"] for s in sent_like), Decimal("0"))),
+    })
+
+
+@router.get("/reports/monthly-trend")
+async def report_monthly_trend(
+    db: DBSession, user: AuthUser,
+    date_from: date | None = None, date_to: date | None = None,
+):
+    user.require("crm.view")
+    # Group/order by the "month" label rather than repeating the date_trunc(...)
+    # expression — each repeated call binds "month" as a separate parameter,
+    # which Postgres can't statically prove is identical to the SELECT-list
+    # expression, and rejects with "must appear in the GROUP BY clause".
+    month_col = func.date_trunc("month", CrmLead.created_at).label("month")
+    q = (
+        select(
+            month_col,
+            func.count().label("count"),
+            func.coalesce(func.sum(CrmLead.lead_value), 0).label("value"),
+        )
+        .where(CrmLead.company_id == user.company_id)
+        .group_by(literal_column('"month"'))
+        .order_by(literal_column('"month"').asc())
+        .limit(12)
+    )
+    if date_from:
+        q = q.where(CrmLead.created_at >= datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc))
+    if date_to:
+        q = q.where(CrmLead.created_at < datetime(date_to.year, date_to.month, date_to.day + 1, tzinfo=timezone.utc))
+
+    result = await db.execute(q)
+    return ApiResponse(success=True, data=[
+        {
+            "month": row.month.strftime("%Y-%m") if row.month else None,
+            "count": row.count,
+            "value": float(row.value),
+        }
+        for row in result
+    ])

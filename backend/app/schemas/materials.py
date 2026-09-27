@@ -169,7 +169,8 @@ class LotOut(BaseModel):
     compositions: list[CompositionItemOut] = []
     fabric_variants: list[FabricVariantOut] = []
     trim_variants: list[TrimVariantOut] = []
-    model_config = {"from_attributes": True}
+    stock_qty: Optional[Decimal] = None
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class FabricRunOut(BaseModel):

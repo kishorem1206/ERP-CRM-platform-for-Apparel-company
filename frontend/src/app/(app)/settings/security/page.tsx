@@ -4,10 +4,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Key, Smartphone, CheckCircle, AlertCircle } from "lucide-react";
 import api from "@/lib/api";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ function ChangePasswordSection() {
           </div>
         ))}
         {msg && (
-          <div className={`flex items-start gap-2 text-xs rounded-xl px-3 py-2 ${msg.ok ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400" : "bg-red-50 dark:bg-red-950/30 text-red-600"}`}>
+          <div className={`flex items-start gap-2 text-xs rounded-xl px-3 py-2 ${msg.ok ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400" : "bg-violet-50 dark:bg-violet-950/30 text-violet-600"}`}>
             {msg.ok ? <CheckCircle className="w-3 h-3 mt-0.5 shrink-0" /> : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />}
             {msg.text}
           </div>
@@ -141,7 +141,7 @@ function TwoFASection({ enabled, email }: { enabled: boolean; email: string }) {
     ? `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(setupData.uri)}`
     : null;
 
-  const statusColor = enabled ? "#10B981" : "#94A3B8";
+  const statusColor = enabled ? "#0F78FF" : "#94A3B8";
 
   return (
     <div className="bg-card border border-border rounded-2xl p-6 space-y-4">
@@ -166,7 +166,7 @@ function TwoFASection({ enabled, email }: { enabled: boolean; email: string }) {
       </p>
 
       {msg && (
-        <div className={`flex items-start gap-2 text-xs rounded-xl px-3 py-2 ${msg.ok ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400" : "bg-red-50 dark:bg-red-950/30 text-red-600"}`}>
+        <div className={`flex items-start gap-2 text-xs rounded-xl px-3 py-2 ${msg.ok ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400" : "bg-violet-50 dark:bg-violet-950/30 text-violet-600"}`}>
           {msg.ok ? <CheckCircle className="w-3 h-3 mt-0.5 shrink-0" /> : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />}
           {msg.text}
         </div>
@@ -185,7 +185,7 @@ function TwoFASection({ enabled, email }: { enabled: boolean; email: string }) {
           ) : (
             <button
               onClick={() => { setStep("disable"); setMsg(null); }}
-              className="border border-red-300 text-red-600 rounded-xl px-4 py-2 text-sm font-medium hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+              className="border border-violet-300 text-violet-600 rounded-xl px-4 py-2 text-sm font-medium hover:bg-violet-50 dark:hover:bg-violet-950/30 transition-colors"
             >
               Disable 2FA
             </button>
@@ -253,7 +253,7 @@ function TwoFASection({ enabled, email }: { enabled: boolean; email: string }) {
           <div className="flex gap-2">
             <button
               type="submit"
-              className="bg-red-600 text-white rounded-xl px-4 py-2 text-sm font-semibold hover:bg-red-700 transition-colors"
+              className="bg-violet-600 text-white rounded-xl px-4 py-2 text-sm font-semibold hover:bg-violet-700 transition-colors"
             >
               Disable 2FA
             </button>

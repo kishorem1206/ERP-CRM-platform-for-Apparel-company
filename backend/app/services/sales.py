@@ -89,7 +89,11 @@ class SalesService:
         result = await self.db.execute(
             select(Customer)
             .where(Customer.id == cid, Customer.company_id == company_id, Customer.deleted_at.is_(None))
-            .options(selectinload(Customer.addresses), selectinload(Customer.contacts))
+            .options(
+                selectinload(Customer.addresses),
+                selectinload(Customer.contacts),
+                selectinload(Customer.details),
+            )
         )
         return result.scalar_one_or_none()
 

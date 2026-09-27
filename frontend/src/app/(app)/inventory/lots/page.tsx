@@ -7,12 +7,12 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const BLUE     = "#4896FE";
-const LAVENDER = "#887CFD";
+const BLUE     = "#0049A7";
+const LAVENDER = "#0F78FF";
 
 // ── Type badge using StatusDot pattern ───────────────────────────────────────
 const TYPE_HEX: Record<string, string> = {
-  yarn:   "#D97706",
+  yarn:   "#A096F7",
   fabric: BLUE,
   trim:   LAVENDER,
 };
@@ -22,7 +22,7 @@ function TypeDot({ type }: { type: string }) {
   const label = type.replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap capitalize"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap capitalize"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -41,6 +41,7 @@ interface Lot {
   yarn_count: string | null;
   construction: string | null;
   trim_type: string | null;
+  trim_unit: string | null;
   colour: string | null;
   gsm: number | null;
   bags: number | null;
@@ -49,6 +50,7 @@ interface Lot {
   invoice_number: string | null;
   invoice_date: string | null;
   supplier_id: string | null;
+  stock_qty: number | null;
 }
 
 const TYPE_FILTERS = [
@@ -77,21 +79,36 @@ function lotSummary(lot: Lot): string {
 export default function LotsPage() {
   const router = useRouter();
   const [typeFilter, setTypeFilter] = useState("");
+  const [trimType, setTrimType] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["material-lots", typeFilter, page],
+    queryKey: ["material-lots", typeFilter, typeFilter === "trim" ? trimType : "", page],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page), page_size: "50" });
       if (typeFilter) params.set("material_type", typeFilter);
+      if (typeFilter === "trim" && trimType) params.set("trim_type", trimType);
       const r = await api.get(`/materials/lots?${params}`);
       return r.data;
     },
   });
 
+  const { data: trimTypeCounts } = useQuery({
+    queryKey: ["material-lots-trim-types"],
+    queryFn: async () => (await api.get("/materials/lots/trim-types")).data.data as { trim_type: string; count: number }[],
+    enabled: typeFilter === "trim",
+  });
+
   const lots: Lot[] = data?.data ?? [];
   const total: number = data?.meta?.total ?? 0;
+  const trimTotalCount = (trimTypeCounts ?? []).reduce((sum, t) => sum + t.count, 0);
+
+  function selectTypeFilter(value: string) {
+    setTypeFilter(value);
+    setTrimType("");
+    setPage(1);
+  }
 
   const filtered = search
     ? lots.filter((l) =>
@@ -138,6 +155,10 @@ export default function LotsPage() {
         if (lot.material_type === "yarn" && lot.bags && lot.kg_per_bag) {
           return `${(Number(lot.bags) * Number(lot.kg_per_bag)).toFixed(1)} kg`;
         }
+        if (lot.stock_qty != null && lot.stock_qty !== 0) {
+          const unit = lot.trim_unit || (lot.material_type === "fabric" ? "kg" : "");
+          return `${Number(lot.stock_qty).toLocaleString("en-IN")}${unit ? " " + unit : ""}`;
+        }
         return "—";
       },
     },
@@ -179,7 +200,7 @@ export default function LotsPage() {
           {TYPE_FILTERS.map((t) => (
             <button
               key={t.value}
-              onClick={() => { setTypeFilter(t.value); setPage(1); }}
+              onClick={() => selectTypeFilter(t.value)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
                 typeFilter === t.value
                   ? "bg-card text-foreground shadow-sm"
@@ -191,6 +212,35 @@ export default function LotsPage() {
           ))}
         </div>
       </div>
+
+      {/* Trim-type sub-filter — only shown on the Trims tab */}
+      {typeFilter === "trim" && (
+        <div className="flex flex-wrap gap-1.5 -mt-4">
+          <button
+            onClick={() => { setTrimType(""); setPage(1); }}
+            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              trimType === ""
+                ? "bg-primary/10 text-primary border-primary/40"
+                : "bg-background border-border text-muted-foreground hover:border-foreground/30"
+            }`}
+          >
+            All Types{trimTotalCount ? ` (${trimTotalCount})` : ""}
+          </button>
+          {(trimTypeCounts ?? []).map(({ trim_type: tt, count }) => (
+            <button
+              key={tt}
+              onClick={() => { setTrimType(tt); setPage(1); }}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                trimType === tt
+                  ? "bg-primary/10 text-primary border-primary/40"
+                  : "bg-background border-border text-muted-foreground hover:border-foreground/30"
+              }`}
+            >
+              {tt} ({count})
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Table card */}
       <div className="bg-card border border-border rounded-2xl overflow-hidden">

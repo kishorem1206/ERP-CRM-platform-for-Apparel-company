@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_API: str = "300/minute"
     RATE_LIMIT_AGENT: str = "30/minute"
 
+    # WhatsApp Business Cloud API
+    WHATSAPP_ACCESS_TOKEN: str = ""
+    WHATSAPP_PHONE_NUMBER_ID: str = ""
+    WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""
+    WHATSAPP_VERIFY_TOKEN: str = "change-me-whatsapp-verify-token"
+
     # Company defaults
     DEFAULT_CURRENCY: str = "INR"
     DEFAULT_HSN: str = "6111"

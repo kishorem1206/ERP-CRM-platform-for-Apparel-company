@@ -5,10 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 export default function AdjustPage() {
   const [form, setForm] = useState({
@@ -85,12 +85,12 @@ export default function AdjustPage() {
         </p>
 
         {status === "success" && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
+          <div className="rounded-xl border px-4 py-3 text-sm" style={{ background: "#0F78FF0D", borderColor: "#0F78FF4D", color: "#0049A7" }}>
             {message}
           </div>
         )}
         {status === "error" && (
-          <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 px-4 py-3 text-sm text-red-700">
+          <div className="rounded-xl border px-4 py-3 text-sm" style={{ background: "#1D0DB00D", borderColor: "#1D0DB04D", color: "#1D0DB0" }}>
             {message}
           </div>
         )}
@@ -102,7 +102,7 @@ export default function AdjustPage() {
               value={form.product_id}
               onChange={(v) => set("product_id", v)}
               placeholder="— select product —"
-              accent="#887CFD"
+              accent="#0F78FF"
               options={[
                 { value: "", label: "— select product —" },
                 ...(masterData?.products ?? []).map((p: Record<string, unknown>) => ({
@@ -119,7 +119,7 @@ export default function AdjustPage() {
               value={form.warehouse_id}
               onChange={(v) => set("warehouse_id", v)}
               placeholder="— select warehouse —"
-              accent="#887CFD"
+              accent="#0F78FF"
               options={[
                 { value: "", label: "— select warehouse —" },
                 ...(masterData?.warehouses ?? []).map((w: Record<string, unknown>) => ({
@@ -142,12 +142,12 @@ export default function AdjustPage() {
                 value={form.unit_id}
                 onChange={(v) => set("unit_id", v)}
                 placeholder="— unit —"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={[
                   { value: "", label: "— unit —" },
                   ...(masterData?.units ?? []).map((u: Record<string, unknown>) => ({
                     value: u.id as string,
-                    label: `${u.name as string} (${u.symbol as string})`,
+                    label: `${u.name as string} (${u.abbreviation as string})`,
                   })),
                 ]}
               />

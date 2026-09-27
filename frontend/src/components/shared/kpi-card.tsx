@@ -26,7 +26,7 @@ export function KpiCard({ label, value, sub, icon: Icon, trend, iconColor = "tex
           <span
             className={cn(
               "flex items-center gap-0.5 text-xs font-medium",
-              positive ? "text-green-600" : "text-red-500"
+              positive ? "text-blue-600" : "text-violet-500"
             )}
           >
             {positive ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}

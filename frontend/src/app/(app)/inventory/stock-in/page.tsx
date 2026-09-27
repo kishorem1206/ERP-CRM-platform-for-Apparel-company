@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
-const TEAL = "#16C8C7";
+const TEAL = "#8174F5";
 
 const MATERIAL_TYPE_OPTIONS = [
   { value: "raw_material", label: "Raw Material" },
@@ -89,12 +89,12 @@ export default function StockInPage() {
       {/* Form card */}
       <div className="bg-card border border-border rounded-2xl p-6 max-w-xl space-y-5">
         {status === "success" && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
+          <div className="rounded-xl border px-4 py-3 text-sm" style={{ background: "#0F78FF0D", borderColor: "#0F78FF4D", color: "#0049A7" }}>
             {message}
           </div>
         )}
         {status === "error" && (
-          <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 px-4 py-3 text-sm text-red-700">
+          <div className="rounded-xl border px-4 py-3 text-sm" style={{ background: "#1D0DB00D", borderColor: "#1D0DB04D", color: "#1D0DB0" }}>
             {message}
           </div>
         )}

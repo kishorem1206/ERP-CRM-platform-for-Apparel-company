@@ -1,17 +1,17 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, X } from "lucide-react";
+import { Pencil, Plus, Search, X } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type ProductType = "finished_good" | "yarn" | "fabric" | "trim" | "packing" | "raw_material";
 
@@ -42,14 +42,15 @@ const TYPE_LABELS: Record<ProductType, string> = {
 
 const TYPE_FILTERS = [
   { label: "All", value: "" },
-  { label: "Styles", value: "finished_good" },
+  { label: "Finished Goods", value: "finished_good" },
   { label: "Yarn", value: "yarn" },
   { label: "Fabric", value: "fabric" },
   { label: "Trims", value: "trim" },
   { label: "Packing", value: "packing" },
+  { label: "Raw Material", value: "raw_material" },
 ];
 
-const columns: Column<Record<string, unknown>>[] = [
+function getColumns(onEdit: (id: string) => void): Column<Record<string, unknown>>[] { return [
   { key: "code", header: "Code", sortable: true },
   { key: "name", header: "Name", sortable: true },
   {
@@ -84,7 +85,20 @@ const columns: Column<Record<string, unknown>>[] = [
     header: "Status",
     render: (row) => <StatusBadge status={row.is_active ? "active" : "inactive"} />,
   },
-];
+  {
+    key: "edit",
+    header: "",
+    render: (row) => (
+      <button
+        onClick={(e) => { e.stopPropagation(); onEdit(row.id as string); }}
+        className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground"
+        title="Edit product"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+    ),
+  },
+]; }
 
 // ── Add Product Modal ─────────────────────────────────────────────────────────
 
@@ -103,15 +117,15 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
 
   const { data: categories } = useQuery<MasterItem[]>({
     queryKey: ["master-categories"],
-    queryFn: async () => (await api.get("/categories")).data.data,
+    queryFn: async () => (await api.get("/master/categories")).data.data,
   });
   const { data: units } = useQuery<MasterItem[]>({
     queryKey: ["master-units"],
-    queryFn: async () => (await api.get("/units")).data.data,
+    queryFn: async () => (await api.get("/master/units")).data.data,
   });
   const { data: hsnList } = useQuery<HsnItem[]>({
     queryKey: ["master-hsn"],
-    queryFn: async () => (await api.get("/hsn")).data.data,
+    queryFn: async () => (await api.get("/master/hsn")).data.data,
   });
 
   const mutation = useMutation({
@@ -182,13 +196,13 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
           {/* Core fields */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
-              <label className="text-xs font-medium">Code <span className="text-red-500">*</span></label>
+              <label className="text-xs font-medium">Code <span className="text-[#1D0DB0]">*</span></label>
               <input value={form.code} onChange={(e) => set("code", e.target.value)}
                 placeholder="e.g. FAB-30VL" required
                 className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium">Name <span className="text-red-500">*</span></label>
+              <label className="text-xs font-medium">Name <span className="text-[#1D0DB0]">*</span></label>
               <input value={form.name} onChange={(e) => set("name", e.target.value)}
                 placeholder="e.g. 30s VL Single Jersey" required
                 className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
@@ -197,12 +211,12 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
 
           <div className="grid grid-cols-3 gap-4">
             <div className="space-y-1">
-              <label className="text-xs font-medium">Type <span className="text-red-500">*</span></label>
+              <label className="text-xs font-medium">Type <span className="text-[#1D0DB0]">*</span></label>
               <SearchableSelect
                 value={form.product_type}
                 onChange={(v) => set("product_type", v)}
                 placeholder="Select type"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={Object.entries(TYPE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
               />
             </div>
@@ -212,7 +226,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                 value={form.category_id}
                 onChange={(v) => set("category_id", v)}
                 placeholder="— select —"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={[
                   { value: "", label: "— select —" },
                   ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -225,7 +239,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                 value={form.unit_id}
                 onChange={(v) => set("unit_id", v)}
                 placeholder="— select —"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={[
                   { value: "", label: "— select —" },
                   ...(units ?? []).map((u) => ({ value: u.id, label: u.name })),
@@ -241,7 +255,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                 value={form.hsn_id}
                 onChange={(v) => set("hsn_id", v)}
                 placeholder="— select —"
-                accent="#887CFD"
+                accent="#0F78FF"
                 options={[
                   { value: "", label: "— select —" },
                   ...(hsnList ?? []).map((h) => ({
@@ -336,7 +350,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
           </div>
 
           {error && (
-            <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2">
+            <p className="text-xs rounded-xl px-3 py-2" style={{ background: "#1D0DB00D", borderColor: "#1D0DB04D", color: "#1D0DB0", border: "1px solid" }}>
               {error}
             </p>
           )}
@@ -359,6 +373,317 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ── Edit Product Modal ──────────────────────────────────────────────────────────
+
+interface ProductDetail {
+  id: string; code: string; name: string; product_type: ProductType;
+  category_id: string | null; unit_id: string | null; hsn_id: string | null;
+  mrp: string | null; dealer_price: string | null; cost_price: string | null;
+  description: string | null; fabric_type: string | null; fabric_composition: string | null;
+  gsm: string | null; construction: string | null; fit: string | null; season: string | null;
+  gender: string | null; is_active: boolean;
+}
+
+function EditProductModal({ productId, onClose }: { productId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [form, setForm] = useState<typeof EMPTY_FORM | null>(null);
+  const [isActive, setIsActive] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const { data: product, isLoading } = useQuery<ProductDetail>({
+    queryKey: ["product", productId],
+    queryFn: async () => (await api.get(`/products/${productId}`)).data.data,
+  });
+
+  const { data: categories } = useQuery<MasterItem[]>({
+    queryKey: ["master-categories"],
+    queryFn: async () => (await api.get("/master/categories")).data.data,
+  });
+  const { data: units } = useQuery<MasterItem[]>({
+    queryKey: ["master-units"],
+    queryFn: async () => (await api.get("/master/units")).data.data,
+  });
+  const { data: hsnList } = useQuery<HsnItem[]>({
+    queryKey: ["master-hsn"],
+    queryFn: async () => (await api.get("/master/hsn")).data.data,
+  });
+
+  useEffect(() => {
+    if (!product) return;
+    setForm({
+      code: product.code, name: product.name, product_type: product.product_type,
+      category_id: product.category_id ?? "", unit_id: product.unit_id ?? "", hsn_id: product.hsn_id ?? "",
+      cost_price: product.cost_price ?? "", mrp: product.mrp ?? "", dealer_price: product.dealer_price ?? "",
+      fabric_type: product.fabric_type ?? "", fabric_composition: product.fabric_composition ?? "",
+      gsm: product.gsm ?? "", construction: product.construction ?? "",
+      fit: product.fit ?? "", season: product.season ?? "", gender: product.gender ?? "",
+      description: product.description ?? "",
+    });
+    setIsActive(product.is_active);
+  }, [product]);
+
+  const mutation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => api.patch(`/products/${productId}`, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["product", productId] });
+      onClose();
+    },
+    onError: (err: unknown) => {
+      const detail = (err as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+      setError(
+        typeof detail === "string" ? detail :
+        typeof detail === "object" && detail !== null ? JSON.stringify(detail) :
+        "Failed to update product."
+      );
+    },
+  });
+
+  function set(k: keyof typeof EMPTY_FORM, v: string) {
+    setForm((f) => (f ? { ...f, [k]: v } : f));
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form) return;
+    setError(null);
+    if (!form.name.trim()) { setError("Name is required."); return; }
+
+    const payload: Record<string, unknown> = {
+      name: form.name.trim(),
+      category_id: form.category_id || null,
+      unit_id: form.unit_id || null,
+      hsn_id: form.hsn_id || null,
+      mrp: form.mrp ? Number(form.mrp) : null,
+      dealer_price: form.dealer_price ? Number(form.dealer_price) : null,
+      cost_price: form.cost_price ? Number(form.cost_price) : null,
+      description: form.description || null,
+      fabric_type: form.fabric_type || null,
+      fabric_composition: form.fabric_composition || null,
+      gsm: form.gsm ? Number(form.gsm) : null,
+      construction: form.construction || null,
+      fit: form.fit || null,
+      season: form.season || null,
+      gender: form.gender || null,
+      is_active: isActive,
+    };
+
+    mutation.mutate(payload);
+  }
+
+  const isFabric = form?.product_type === "fabric";
+  const isFinished = form?.product_type === "finished_good";
+
+  return (
+    <ModalPortal>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
+      <div className="bg-card border rounded-2xl w-full max-w-2xl shadow-xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b sticky top-0 bg-card z-10">
+          <h2 className="text-base font-semibold">Edit Product</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {isLoading || !form ? (
+          <div className="px-6 py-10 text-sm text-muted-foreground">Loading…</div>
+        ) : (
+        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Code</label>
+              <input value={form.code} disabled
+                className="w-full border rounded-xl px-3 py-2 text-sm bg-muted text-muted-foreground outline-none" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Name <span className="text-[#1D0DB0]">*</span></label>
+              <input value={form.name} onChange={(e) => set("name", e.target.value)}
+                required
+                className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Type</label>
+              <input value={TYPE_LABELS[form.product_type]} disabled
+                className="w-full border rounded-xl px-3 py-2 text-sm bg-muted text-muted-foreground outline-none" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Category</label>
+              <SearchableSelect
+                value={form.category_id}
+                onChange={(v) => set("category_id", v)}
+                placeholder="— select —"
+                accent="#0F78FF"
+                options={[
+                  { value: "", label: "— select —" },
+                  ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+                ]}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Unit</label>
+              <SearchableSelect
+                value={form.unit_id}
+                onChange={(v) => set("unit_id", v)}
+                placeholder="— select —"
+                accent="#0F78FF"
+                options={[
+                  { value: "", label: "— select —" },
+                  ...(units ?? []).map((u) => ({ value: u.id, label: u.name })),
+                ]}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">HSN Code</label>
+              <SearchableSelect
+                value={form.hsn_id}
+                onChange={(v) => set("hsn_id", v)}
+                placeholder="— select —"
+                accent="#0F78FF"
+                options={[
+                  { value: "", label: "— select —" },
+                  ...(hsnList ?? []).map((h) => ({
+                    value: h.id,
+                    label: `${h.hsn} — ${h.description ?? ""} (${h.gst_rate}% GST)`,
+                  })),
+                ]}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Status</label>
+              <div className="flex items-center gap-2 h-[38px]">
+                <button
+                  type="button"
+                  onClick={() => setIsActive((v) => !v)}
+                  className="flex items-center gap-2 text-sm font-medium"
+                >
+                  <span
+                    className="w-9 h-5 rounded-full relative transition-colors"
+                    style={{ background: isActive ? LAVENDER : "hsl(var(--muted))" }}
+                  >
+                    <span
+                      className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                      style={{ left: isActive ? "18px" : "2px" }}
+                    />
+                  </span>
+                  {isActive ? "Active" : "Inactive"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Pricing */}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pricing</p>
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { key: "cost_price" as const, label: "Cost Price" },
+                { key: "mrp" as const, label: "MRP" },
+                { key: "dealer_price" as const, label: "Dealer Price" },
+              ].map(({ key, label }) => (
+                <div key={key} className="space-y-1">
+                  <label className="text-xs font-medium">{label}</label>
+                  <input type="number" min="0" step="0.01" value={form[key]}
+                    onChange={(e) => set(key, e.target.value)}
+                    placeholder="0.00"
+                    className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Fabric fields */}
+          {isFabric && (
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Fabric Details</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Fabric Type</label>
+                  <input value={form.fabric_type} onChange={(e) => set("fabric_type", e.target.value)}
+                    placeholder="e.g. Single Jersey"
+                    className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Composition</label>
+                  <input value={form.fabric_composition} onChange={(e) => set("fabric_composition", e.target.value)}
+                    placeholder="e.g. 30s Viscose Lycra"
+                    className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">GSM</label>
+                  <input type="number" min="0" step="0.01" value={form.gsm}
+                    onChange={(e) => set("gsm", e.target.value)} placeholder="160"
+                    className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Construction</label>
+                  <input value={form.construction} onChange={(e) => set("construction", e.target.value)}
+                    placeholder="e.g. S/J - 30&quot; dia"
+                    className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Finished good fields */}
+          {isFinished && (
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Style Details</p>
+              <div className="grid grid-cols-3 gap-4">
+                {[
+                  { key: "fit" as const, label: "Fit", placeholder: "e.g. Regular" },
+                  { key: "season" as const, label: "Season", placeholder: "e.g. Summer 2025" },
+                  { key: "gender" as const, label: "Gender", placeholder: "e.g. Men / Women / Kids" },
+                ].map(({ key, label, placeholder }) => (
+                  <div key={key} className="space-y-1">
+                    <label className="text-xs font-medium">{label}</label>
+                    <input value={form[key]} onChange={(e) => set(key, e.target.value)}
+                      placeholder={placeholder}
+                      className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Description */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Description</label>
+            <textarea value={form.description} onChange={(e) => set("description", e.target.value)}
+              rows={2} placeholder="Optional notes..."
+              className="w-full border rounded-xl px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary/30 resize-none" />
+          </div>
+
+          {error && (
+            <p className="text-xs rounded-xl px-3 py-2" style={{ background: "#1D0DB00D", borderColor: "#1D0DB04D", color: "#1D0DB0", border: "1px solid" }}>
+              {error}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose}
+              className="border rounded-xl px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+              Cancel
+            </button>
+            <button type="submit" disabled={mutation.isPending}
+              className="text-white rounded-xl px-4 py-2 text-sm font-semibold transition-all hover:opacity-90 active:scale-95 disabled:opacity-60"
+              style={{ background: LAVENDER }}>
+              {mutation.isPending ? "Saving…" : "Save Changes"}
+            </button>
+          </div>
+        </form>
+        )}
+      </div>
+    </div>
+    </ModalPortal>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ProductsPage() {
@@ -366,6 +691,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["products", typeFilter, search],
@@ -381,6 +707,7 @@ export default function ProductsPage() {
   return (
     <div className="p-8 space-y-8">
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} />}
+      {editingProductId && <EditProductModal productId={editingProductId} onClose={() => setEditingProductId(null)} />}
 
       {/* Page header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -441,7 +768,7 @@ export default function ProductsPage() {
       </div>
 
       {error && (
-        <p className="text-sm text-red-500">
+        <p className="text-sm text-[#1D0DB0]">
           Failed to load products. Is the backend running?
         </p>
       )}
@@ -460,11 +787,12 @@ export default function ProductsPage() {
         </div>
         <div className="p-0">
           <DataTable
-            columns={columns}
+            columns={getColumns((id) => setEditingProductId(id))}
             data={(data ?? []) as unknown as Record<string, unknown>[]}
             loading={isLoading}
             emptyMessage="No products found. Click '+ Add Product' to create one."
             rowKey={(row) => row.id as string}
+            onRowClick={(row) => setEditingProductId(row.id as string)}
             pageSize={25}
           />
         </div>

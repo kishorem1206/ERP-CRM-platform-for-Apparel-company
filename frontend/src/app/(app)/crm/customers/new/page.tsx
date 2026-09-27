@@ -10,7 +10,7 @@ import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const INDIGO = "#5347CE";
+const INDIGO = "#0049A7";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -282,7 +282,7 @@ export default function NewCustomerPage() {
                 value={form.customer_type}
                 onChange={(v) => setForm((f) => ({ ...f, customer_type: v }))}
                 placeholder="Select type"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "domestic", label: "Domestic" },
                   { value: "export", label: "Export" },
@@ -314,7 +314,7 @@ export default function NewCustomerPage() {
                 value={form.nature_of_business_id}
                 onChange={(v) => setForm((f) => ({ ...f, nature_of_business_id: v }))}
                 placeholder="— Select —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— Select —" },
                   ...nobList.map((n) => ({ value: n.id, label: n.name })),
@@ -326,7 +326,7 @@ export default function NewCustomerPage() {
                 value={form.contact_type}
                 onChange={(v) => setForm((f) => ({ ...f, contact_type: v }))}
                 placeholder="— Select —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— Select —" },
                   { value: "buyer", label: "Buyer" },
@@ -557,7 +557,7 @@ export default function NewCustomerPage() {
                 value={form.sales_person_id}
                 onChange={(v) => setForm((f) => ({ ...f, sales_person_id: v }))}
                 placeholder="— None —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— None —" },
                   ...userList.map((u) => ({ value: u.id, label: u.full_name })),
@@ -569,7 +569,7 @@ export default function NewCustomerPage() {
                 value={form.accounts_manager_id}
                 onChange={(v) => setForm((f) => ({ ...f, accounts_manager_id: v }))}
                 placeholder="— None —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— None —" },
                   ...userList.map((u) => ({ value: u.id, label: u.full_name })),
@@ -581,7 +581,7 @@ export default function NewCustomerPage() {
                 value={form.agent_id}
                 onChange={(v) => setForm((f) => ({ ...f, agent_id: v }))}
                 placeholder="— None —"
-                accent="#5347CE"
+                accent="#0049A7"
                 options={[
                   { value: "", label: "— None —" },
                   ...userList.map((u) => ({ value: u.id, label: u.full_name })),
@@ -607,7 +607,7 @@ export default function NewCustomerPage() {
                 <button
                   key={n} type="button"
                   onClick={() => setForm((f) => ({ ...f, customer_rating: n }))}
-                  className={`p-1 rounded transition-colors ${form.customer_rating >= n ? "text-amber-400" : "text-muted-foreground/30 hover:text-amber-300"}`}
+                  className={`p-1 rounded transition-colors ${form.customer_rating >= n ? "text-violet-400" : "text-muted-foreground/30 hover:text-violet-300"}`}
                 >
                   <Star className="h-6 w-6 fill-current" />
                 </button>

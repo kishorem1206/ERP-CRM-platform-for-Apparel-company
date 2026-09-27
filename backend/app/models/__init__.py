@@ -20,10 +20,23 @@ from app.models.sales import (
     Delivery, DeliveryItem, Invoice,
 )
 from app.models.production import (
-    Style, ProductionLot, ProductionLotSize,
-    ProductionStage, ProductionStageEntry,
+    Style, StyleSize, StyleColour, StyleYarn, StyleFabric,
+    StyleProcess, StyleSubProcess, StyleTrim, StylePackingMaterial,
+    StyleAdditionalCost,
+    ProductionLot, ProductionLotSize,
+    ProductionStage, ProductionStageEntry, ProductionStageChallan,
+    LotAdditionalCost, FabricProcessingEntry, InternalWorker,
     MaterialIssue, MaterialIssueItem, ProductionOutput,
 )
+from app.models.crm import (
+    CrmOrganization, CrmPerson, CrmPipeline, CrmPipelineStage,
+    CrmLeadSource, CrmLeadType, CrmLead, CrmTag, CrmLeadTag, CrmPersonTag,
+    CrmActivity, CrmProduct, CrmQuote, CrmQuoteItem,
+    CrmEmail, CrmEmailAttachment, CrmSmtpConfig,
+    CrmEmailTemplate, CrmLeadImport,
+    CrmLeadStageHistory, CrmNote,
+)
+from app.models.whatsapp import WhatsappContact, WhatsappMessage, WhatsappTemplate
 from app.models.notification import Notification
 from app.models.finance import (
     Payment, PaymentAllocation,
@@ -45,11 +58,22 @@ __all__ = [
     "Quotation", "QuotationItem",
     "SalesOrder", "SalesOrderItem",
     "Delivery", "DeliveryItem", "Invoice",
-    "Style", "ProductionLot", "ProductionLotSize",
-    "ProductionStage", "ProductionStageEntry",
+    "Style", "StyleSize", "StyleColour", "StyleYarn", "StyleFabric",
+    "StyleProcess", "StyleSubProcess", "StyleTrim", "StylePackingMaterial",
+    "StyleAdditionalCost",
+    "ProductionLot", "ProductionLotSize",
+    "ProductionStage", "ProductionStageEntry", "ProductionStageChallan",
+    "LotAdditionalCost", "FabricProcessingEntry",
     "MaterialIssue", "MaterialIssueItem", "ProductionOutput",
     "Payment", "PaymentAllocation",
     "VendorPayment", "VendorPaymentAllocation",
     "CreditNote", "DebitNote",
+    "CrmOrganization", "CrmPerson", "CrmPipeline", "CrmPipelineStage",
+    "CrmLeadSource", "CrmLeadType", "CrmLead", "CrmTag", "CrmLeadTag", "CrmPersonTag",
+    "CrmActivity", "CrmProduct", "CrmQuote", "CrmQuoteItem",
+    "CrmEmail", "CrmEmailAttachment", "CrmSmtpConfig",
+    "CrmEmailTemplate", "CrmLeadImport",
+    "CrmLeadStageHistory", "CrmNote",
+    "WhatsappContact", "WhatsappMessage", "WhatsappTemplate",
     "Notification",
 ]

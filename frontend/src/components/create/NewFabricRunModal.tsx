@@ -103,7 +103,7 @@ export function NewFabricRunModal({ open, onClose }: Props) {
             value={form.input_lot_id}
             onChange={(v) => set("input_lot_id", v)}
             placeholder="— None —"
-            accent="#16C8C7"
+            accent="#8174F5"
             options={[
               { value: "", label: "— None —" },
               ...yarnFabricLots.map((l) => ({
@@ -141,7 +141,7 @@ export function NewFabricRunModal({ open, onClose }: Props) {
           />
         </Field>
 
-        {err && <p className="text-xs text-red-500">{err}</p>}
+        {err && <p className="text-xs text-violet-500">{err}</p>}
       </form>
     </ModalShell>
   );

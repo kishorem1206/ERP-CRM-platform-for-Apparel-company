@@ -5,10 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type GSTOutputEntry = Record<string, unknown> & {
   invoice_date: string;
@@ -126,7 +126,7 @@ export default function GSTRegisterPage() {
           <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">NET GST PAYABLE</p>
           <p
             className="text-2xl font-bold tracking-tight tabular-nums mt-1"
-            style={{ color: netGST >= 0 ? "#EF4444" : "#10B981" }}
+            style={{ color: netGST >= 0 ? "#1D0DB0" : "#0F78FF" }}
           >
             {fmt(Math.abs(netGST))}
           </p>

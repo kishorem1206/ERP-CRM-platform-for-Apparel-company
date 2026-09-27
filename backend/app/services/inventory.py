@@ -220,14 +220,14 @@ class InventoryService:
                     p.product_type,
                     w.id::text   AS warehouse_id,
                     w.name       AS warehouse_name,
-                    u.symbol     AS unit_symbol,
+                    u.abbreviation     AS unit_symbol,
                     SUM(it.quantity * it.direction) AS balance
                 FROM inventory_transactions it
                 JOIN products   p ON p.id = it.product_id
                 JOIN warehouses w ON w.id = it.warehouse_id
                 JOIN units      u ON u.id = it.unit_id
                 WHERE it.company_id = :cid
-                GROUP BY p.id, p.name, p.product_type, w.id, w.name, u.symbol
+                GROUP BY p.id, p.name, p.product_type, w.id, w.name, u.abbreviation
                 HAVING SUM(it.quantity * it.direction) != 0
                 ORDER BY w.name, p.name
             """),

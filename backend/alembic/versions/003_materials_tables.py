@@ -12,7 +12,7 @@ these objects.
 from alembic import op
 
 revision = "003_materials_tables"
-down_revision = "002_b2b_customer_enhancements"
+down_revision = "002_b2b_customer"
 branch_labels = None
 depends_on = None
 

@@ -8,17 +8,17 @@ import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const INDIGO = "#5347CE";
+const INDIGO = "#0049A7";
 
 // ── StatusDot ─────────────────────────────────────────────────────────────────
 const STATUS_HEX: Record<string, string> = {
-  draft: "#94A3B8", planned: "#4896FE", approved: "#887CFD",
-  in_production: "#16C8C7", qc: "#F59E0B", packing: "#F97316",
-  completed: "#10B981", cancelled: "#EF4444",
-  pending: "#4896FE", received: "#10B981", partial: "#F59E0B",
-  paid: "#10B981", unpaid: "#EF4444", overdue: "#EF4444",
-  sent: "#887CFD", confirmed: "#10B981", delivered: "#10B981",
-  converted: "#10B981", domestic: "#4896FE", export: "#5347CE",
+  draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
+  in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
+  completed: "#0F78FF", cancelled: "#1D0DB0",
+  pending: "#0049A7", received: "#0F78FF", partial: "#A096F7",
+  paid: "#0F78FF", unpaid: "#1D0DB0", overdue: "#1D0DB0",
+  sent: "#0F78FF", confirmed: "#0F78FF", delivered: "#0F78FF",
+  converted: "#0F78FF", domestic: "#0049A7", export: "#0049A7",
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -26,7 +26,7 @@ function StatusDot({ status }: { status: string }) {
   const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -72,7 +72,7 @@ const columns: Column<Record<string, unknown>>[] = [
     header: "Balance",
     className: "text-right font-medium",
     render: (row) => (
-      <span className={Number(row.balance_amount) > 0 ? "text-destructive" : "text-green-600"}>
+      <span className={Number(row.balance_amount) > 0 ? "text-destructive" : "text-[#0F78FF]"}>
         {fmt(row.balance_amount)}
       </span>
     ),
@@ -142,7 +142,7 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
               value={customerId}
               onChange={(v) => setCustomerId(v)}
               placeholder="Select customer…"
-              accent="#5347CE"
+              accent="#0049A7"
               options={[
                 { value: "", label: "Select customer…" },
                 ...(customers ?? []).map((c: { id: string; legal_name: string }) => ({
@@ -158,7 +158,7 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
               value={soId}
               onChange={(v) => setSoId(v)}
               placeholder="None"
-              accent="#5347CE"
+              accent="#0049A7"
               options={[
                 { value: "", label: "None" },
                 ...(salesOrders ?? []).map((s: { id: string; order_number: string }) => ({
@@ -174,7 +174,7 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
               value={deliveryId}
               onChange={(v) => setDeliveryId(v)}
               placeholder="None"
-              accent="#5347CE"
+              accent="#0049A7"
               options={[
                 { value: "", label: "None" },
                 ...(deliveries ?? []).map((d: { id: string; delivery_number: string }) => ({

@@ -4,10 +4,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Save } from "lucide-react";
 import api from "@/lib/api";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type CompanyData = {
   id: string;
@@ -152,12 +152,12 @@ export default function CompanySettingsPage() {
       </div>
 
       {success && (
-        <div className="rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 text-emerald-800 dark:text-emerald-400 px-4 py-3 text-sm">
+        <div className="rounded-2xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-blue-800 dark:text-blue-400 px-4 py-3 text-sm">
           {success}
         </div>
       )}
       {error && (
-        <div className="rounded-2xl bg-red-50 dark:bg-red-950/30 border border-red-200 text-red-700 px-4 py-3 text-sm">
+        <div className="rounded-2xl bg-violet-50 dark:bg-violet-950/30 border border-violet-200 text-violet-700 px-4 py-3 text-sm">
           {error}
         </div>
       )}

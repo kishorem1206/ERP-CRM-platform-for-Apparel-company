@@ -156,7 +156,7 @@ export function AddFabricModal({ open, onClose }: Props) {
             value={form.supplier_id}
             onChange={(v) => set("supplier_id", v)}
             placeholder="— Select supplier —"
-            accent="#4896FE"
+            accent="#0049A7"
             options={(vendors.data ?? []).map((v) => ({
               value: v.id,
               label: v.name,
@@ -237,14 +237,14 @@ export function AddFabricModal({ open, onClose }: Props) {
                 <div key={i} className="flex gap-2 items-center">
                   <Input placeholder="Fibre" value={c.fibre_name} onChange={(e) => setComp(i, "fibre_name", e.target.value)} className="flex-1" />
                   <Input type="number" placeholder="%" value={c.percentage} onChange={(e) => setComp(i, "percentage", e.target.value)} className="w-20" min={0.1} max={100} step={0.01} />
-                  <button type="button" onClick={() => rmComp(i)} className="text-muted-foreground hover:text-red-500"><X className="h-4 w-4" /></button>
+                  <button type="button" onClick={() => rmComp(i)} className="text-muted-foreground hover:text-violet-500"><X className="h-4 w-4" /></button>
                 </div>
               ))}
               <button type="button" onClick={addComp} className="flex items-center gap-1 text-xs text-primary hover:underline">
                 <Plus className="h-3 w-3" /> Add fibre
               </button>
               {form.compositions.length > 0 && pctTotal !== 100 && (
-                <p className="text-xs text-amber-600">Total: {pctTotal}% (must equal 100%)</p>
+                <p className="text-xs text-violet-600">Total: {pctTotal}% (must equal 100%)</p>
               )}
             </div>
           )}
@@ -316,7 +316,7 @@ export function AddFabricModal({ open, onClose }: Props) {
               value={form.warehouse_id}
               onChange={(v) => set("warehouse_id", v)}
               placeholder="— Skip —"
-              accent="#4896FE"
+              accent="#0049A7"
               options={[
                 { value: "", label: "— Skip —" },
                 ...(warehouses.data ?? []).map((w) => ({
@@ -332,7 +332,7 @@ export function AddFabricModal({ open, onClose }: Props) {
                 value={form.product_id}
                 onChange={(v) => set("product_id", v)}
                 placeholder="— Select —"
-                accent="#4896FE"
+                accent="#0049A7"
                 options={(products.data ?? []).map((p) => ({
                   value: p.id,
                   label: p.name,
@@ -353,7 +353,7 @@ export function AddFabricModal({ open, onClose }: Props) {
                 value={form.unit_id}
                 onChange={(v) => set("unit_id", v)}
                 placeholder="— Unit —"
-                accent="#4896FE"
+                accent="#0049A7"
                 options={(units.data ?? []).map((u) => ({
                   value: u.id,
                   label: u.abbreviation,
@@ -362,11 +362,11 @@ export function AddFabricModal({ open, onClose }: Props) {
             </Field>
           </div>
           {form.quantity && form.warehouse_id && form.product_id && form.unit_id && (
-            <p className="text-xs text-emerald-600">Will book {form.quantity} units into inventory on save.</p>
+            <p className="text-xs text-blue-600">Will book {form.quantity} units into inventory on save.</p>
           )}
         </div>
 
-        {err && <p className="text-xs text-red-500">{err}</p>}
+        {err && <p className="text-xs text-violet-500">{err}</p>}
       </form>
     </ModalShell>
   );

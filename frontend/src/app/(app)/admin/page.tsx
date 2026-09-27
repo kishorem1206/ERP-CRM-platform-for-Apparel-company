@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { Building2, Users, Shield, ChevronRight } from "lucide-react";
+import { Building2, Users, Shield, Database, ChevronRight } from "lucide-react";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 const CARDS = [
   {
@@ -12,6 +13,13 @@ const CARDS = [
     title: "Company Settings",
     description: "Update GSTIN, address, state code, and operational defaults",
     accent: INDIGO,
+  },
+  {
+    href: "/admin/master-data",
+    icon: Database,
+    title: "Master Data",
+    description: "Manage units, categories, colours, sizes, warehouses, and HSN codes",
+    accent: TEAL,
   },
   {
     href: "/admin/users",
@@ -44,7 +52,7 @@ export default function AdminPage() {
       </div>
 
       {/* Nav cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {CARDS.map(({ href, icon: Icon, title, description, accent }) => (
           <Link
             key={href}

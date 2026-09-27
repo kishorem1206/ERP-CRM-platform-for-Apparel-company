@@ -5,10 +5,10 @@ import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import api from "@/lib/api";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 type Permission = { id: string; code: string; description: string | null };
 
@@ -95,7 +95,7 @@ export default function RoleDetailPage({ params }: { params: { id: string } }) {
           </p>
           <h1 className="text-2xl font-bold tracking-tight">{role?.name ?? "Role"}</h1>
           {role?.is_system && (
-            <p className="text-xs font-medium mt-0.5" style={{ color: "#F59E0B" }}>
+            <p className="text-xs font-medium mt-0.5" style={{ color: "#A096F7" }}>
               System role — permissions locked
             </p>
           )}
@@ -103,7 +103,7 @@ export default function RoleDetailPage({ params }: { params: { id: string } }) {
       </div>
 
       {success && (
-        <div className="rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 text-emerald-800 dark:text-emerald-400 px-4 py-3 text-sm">
+        <div className="rounded-2xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-blue-800 dark:text-blue-400 px-4 py-3 text-sm">
           {success}
         </div>
       )}

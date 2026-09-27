@@ -8,17 +8,17 @@ type Status =
 
 const colorMap: Record<string, string> = {
   draft:     "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
-  pending:   "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-  approved:  "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-  rejected:  "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  pending:   "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  approved:  "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  rejected:  "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
   active:    "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   inactive:  "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
-  cancelled: "bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300",
-  completed: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+  cancelled: "bg-violet-100 text-violet-600 dark:bg-violet-900/40 dark:text-violet-300",
+  completed: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   open:      "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   closed:    "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
-  delivered: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
-  partial:   "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+  delivered: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  partial:   "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
 };
 
 interface StatusBadgeProps {
@@ -34,7 +34,7 @@ export function StatusBadge({ status, label, className }: StatusBadgeProps) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+        "inline-flex items-center rounded px-2 py-0.5 text-[11px] font-bold capitalize",
         color,
         className
       )}

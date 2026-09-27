@@ -182,9 +182,14 @@ customer_payments
 
 **Production**
 ```
-production_lots           -- garment production run
+styles                    -- Style Master: the production blueprint (see §11.1)
+style_sizes, style_colours              -- applicable size chart / colour variants
+style_yarns, style_fabrics              -- material requirements, referencing materials masters
+style_processes, style_sub_processes    -- configurable process workflow, per-process tolerance/units/rates
+style_trims, style_packing_materials    -- trim & packing-material planning
+production_lots           -- garment production run (snapshots a Style at creation time)
 production_lot_sizes      -- size-wise qty breakdown
-production_stages         -- cutting, making, finishing, qc, packing
+production_stages         -- snapshotted from style_processes at LOT creation (tolerance/units/rates frozen)
 production_stage_entries  -- daily log entries per stage
 fabric_runs               -- yarn → grey → dyed → finished fabric
 fabric_run_stages
@@ -654,6 +659,45 @@ inventory_lot (raw material)
 Query: "Which customers received garments made from fabric lot FL-2026-042?"
 → Join chain: `inventory_lot → material_issues → production_lots → production_outputs → inventory_transactions → delivery_items → invoices → customers`
 
+### 11.1 Style Master (Production Blueprint)
+
+Full specification: `docs/Garments_ERP_Style_Master_Specification.md` — treat it as the source of truth; do not simplify or remove its concepts without explicit business-owner approval.
+
+**Core principle:** `Style Master = what/how a garment is supposed to be produced`; `LOT = actual execution of that Style`. A LOT must snapshot the Style's configuration at creation time — editing a Style later must never retroactively change an already-created LOT.
+
+```
+STYLE MASTER
+  ├── Basic Information (name, code, garment type, gender, season, final_output_unit)
+  ├── Sizes & Colours (style_sizes / style_colours → Size Master / Colour Master) → SKU = Style + variant dimensions
+  ├── Yarn Requirements (style_yarns → references inventory_lots as the Yarn Master)
+  ├── Fabric Requirements (style_fabrics → references inventory_lots as the Fabric Master)
+  ├── Production Workflow (style_processes) — a CONFIGURABLE, ordered, addable/removable list.
+  │     Never a fixed universal sequence: each process carries its own
+  │     tolerance_pct, input_unit, output_unit, conversion_rule, min/max/planned_rate,
+  │     and an ordered list of sub-processes (style_sub_processes) e.g. Stitching → Power Table / Snitex / Helpers.
+  ├── Trim Planning (style_trims → references inventory_lots as the Trim Master; category: Sizable / Non-Sizable)
+  └── Packing Material Planning (style_packing_materials; consumption_stage e.g. "After Ironing")
+        │
+        │  POST /production/lots (style_id = ...)
+        ▼
+PRODUCTION LOT (snapshot, frozen at creation)
+  ├── final_output_unit, style_version  — copied from the Style at creation time
+  └── production_stages — one row per ENABLED style_process (ordered by seq), each carrying its own
+        frozen tolerance_pct / input_unit / output_unit / conversion_rule / min_rate / max_rate / planned_rate
+        (columns on production_stages, not a live join back to style_processes)
+```
+
+**Why stages are snapshotted, not referenced live:** `ProductionService.create_lot()` copies each enabled `StyleProcess`'s fields onto a new `ProductionStage` row at LOT-creation time (`style_process_id` is kept only as provenance, not as the source of truth for tolerance/units/rates). This is what makes "edit Style → LOT unaffected" hold: the LOT's stages are independent rows from the moment they're created. If a Style has no configured processes (or no `style_id`), `create_lot()` falls back to a generic 5-stage sequence (Cutting/Making/Finishing/QC/Packing) so the LOT is still usable — this fallback is the *only* place anything resembling a fixed workflow exists, and only for Styles that were never given a real process list.
+
+**Do-not-regress list** (mirrors the spec's guardrails — check before touching this area):
+- Don't hard-code one universal process sequence for all Styles.
+- Don't hard-code one global tolerance % — it's per-process (`style_processes.tolerance_pct`).
+- Don't assume Pieces is the only unit anywhere in the workflow — units are per-process (`input_unit`/`output_unit`) and the Style's `final_output_unit` is one of Pieces/Dozen/Sets/Boxes.
+- Don't let a Style edit change an existing LOT's stages — LOTs must keep reading their own `production_stages` snapshot, never re-deriving from `style_processes` after creation.
+- Don't turn yarn/fabric/trim references back into free text — they link to `inventory_lots` (the materials masters) via `lot_id`.
+
+API: `POST /production/styles` (creates the full nested blueprint in one transaction), `GET /production/styles`, `GET /production/styles/{id}` (full detail). Frontend: `/production/styles`, `/production/styles/new` (7-section form), `/production/styles/[id]`.
+
 ---
 
 ## 12. Background Jobs (Celery + Redis)
@@ -758,6 +802,11 @@ frontend/src/
 - ⌘K command palette for global navigation + search
 - Unsaved changes warning on complex forms
 - All destructive actions require a typed confirmation (e.g. "type lot name to close")
+
+### Known frontend gotchas
+
+- **`position: fixed` inside page content is NOT viewport-relative.** `globals.css` has `main > * { animation: fade-in 0.28s ease both; }` for the page-entrance effect. Because of `animation-fill-mode: both`, every page's root div permanently keeps `transform: translateY(0)` after the animation ends — and per the CSS spec, *any* non-`none` transform on an ancestor creates a new containing block for `position: fixed` descendants. A corner-anchored fixed element (e.g. `fixed bottom-6 right-6`) rendered inline inside a page's own JSX will silently position itself relative to the page's scrollable content instead of the real viewport — invisible below the fold on any page taller than the viewport. **Fix:** render such elements through `components/shared/modal-portal.tsx`'s `ModalPortal` (portals to `document.body`), the same pattern already used for `ModalShell` and other overlays. Don't "fix" this by editing the global animation rule — other pages may depend on it.
+- **Statically-prerendered pages must not call `new Date()` (or anything else non-deterministic) directly in JSX.** Pages without dynamic route params (e.g. `/dashboard`) are prerendered at build time by default; a `new Date()` baked into that build-time HTML will always mismatch the client's real time on hydration. Don't paper over the resulting hydration warning with `suppressHydrationWarning` — React then trusts the server value *permanently* and the element never updates again (worse than the warning). Instead, gate the dynamic value behind a `useState`/`useEffect` mount check so both the server and the pre-mount client render a stable placeholder, and the real value appears only after mount.
 
 ---
 

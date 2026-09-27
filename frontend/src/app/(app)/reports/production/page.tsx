@@ -8,20 +8,20 @@ import {
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
-const INDIGO = "#5347CE";
-const BLUE   = "#4896FE";
-const TEAL   = "#16C8C7";
-const GREEN  = "#22C55E";
-const AMBER  = "#F59E0B";
-const RED    = "#EF4444";
+const INDIGO = "#0049A7";
+const BLUE   = "#0049A7";
+const TEAL   = "#8174F5";
+const GREEN  = "#0F78FF";
+const AMBER  = "#A096F7";
+const RED    = "#1D0DB0";
 
 const STATUS_HEX: Record<string, string> = {
   draft:         "#CBD5E1",
   planned:       BLUE,
-  approved:      "#887CFD",
+  approved:      "#0F78FF",
   in_production: TEAL,
   qc:            AMBER,
-  packing:       "#F97316",
+  packing:       "#A096F7",
   completed:     GREEN,
   cancelled:     RED,
 };
@@ -31,7 +31,7 @@ function StatusDot({ status }: { status: string }) {
   const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -59,7 +59,7 @@ const columns: Column<EffRow>[] = [
   {
     key: "variance", header: "Variance",
     render: (r) => (
-      <span className={`tabular-nums font-medium ${r.variance >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+      <span className="tabular-nums font-medium" style={{ color: r.variance >= 0 ? "#0049A7" : "#1D0DB0" }}>
         {r.variance >= 0 ? "+" : ""}{r.variance}
       </span>
     ),
@@ -145,15 +145,15 @@ export default function ProductionEfficiencyPage() {
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "TOTAL LOTS",      value: rows.length,       color: "text-foreground" },
-          { label: "IN PRODUCTION",   value: inProd.length,     color: "text-teal-600" },
-          { label: "COMPLETED",       value: completed.length,  color: "text-emerald-600" },
+          { label: "TOTAL LOTS",      value: rows.length,       color: undefined },
+          { label: "IN PRODUCTION",   value: inProd.length,     color: "#0049A7" },
+          { label: "COMPLETED",       value: completed.length,  color: "#0049A7" },
           { label: "AVG EFFICIENCY",  value: avgEff ? `${avgEff}%` : "—",
-            color: avgEff >= 90 ? "text-emerald-600" : avgEff >= 70 ? "text-amber-600" : "text-red-600" },
+            color: avgEff >= 90 ? "#0049A7" : "#1D0DB0" },
         ].map((kpi) => (
           <div key={kpi.label} className="bg-card border border-border rounded-2xl p-6">
             <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{kpi.label}</p>
-            <p className={`text-2xl font-bold tracking-tight tabular-nums mt-1 ${kpi.color}`}>{kpi.value}</p>
+            <p className="text-2xl font-bold tracking-tight tabular-nums mt-1" style={kpi.color ? { color: kpi.color } : undefined}>{kpi.value}</p>
           </div>
         ))}
       </div>

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Search, Bell, CheckCheck, Package, CreditCard, Factory, Info, Users, Building2, Box } from "lucide-react";
+import { Search, Bell, CheckCheck, Package, CreditCard, Factory, Info, Users, Building2, Box, Truck, Receipt } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 type Notif = {
   id: string;
-  notification_type: "low_stock" | "overdue_payment" | "production_delay" | "system";
+  notification_type: "low_stock" | "overdue_payment" | "production_delay" | "job_work_overdue" | "job_work_bill_pending" | "system";
   title: string;
   body: string;
   is_read: boolean;
@@ -16,9 +16,11 @@ type Notif = {
 };
 
 const TYPE_ICON: Record<string, React.ReactNode> = {
-  low_stock:        <Package className="h-4 w-4 text-orange-500" />,
-  overdue_payment:  <CreditCard className="h-4 w-4 text-red-500" />,
-  production_delay: <Factory className="h-4 w-4 text-amber-500" />,
+  low_stock:        <Package className="h-4 w-4 text-violet-500" />,
+  overdue_payment:  <CreditCard className="h-4 w-4 text-violet-500" />,
+  production_delay: <Factory className="h-4 w-4 text-violet-500" />,
+  job_work_overdue: <Truck className="h-4 w-4 text-violet-500" />,
+  job_work_bill_pending: <Receipt className="h-4 w-4 text-violet-500" />,
   system:           <Info className="h-4 w-4 text-blue-500" />,
 };
 
@@ -193,7 +195,7 @@ export function Topbar() {
           >
             <Bell className="h-4 w-4" />
             {unread > 0 && (
-              <span className="absolute top-1 right-1 h-4 w-4 flex items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white leading-none">
+              <span className="absolute top-1 right-1 h-4 w-4 flex items-center justify-center rounded-full bg-violet-500 text-[9px] font-bold text-white leading-none">
                 {unread > 9 ? "9+" : unread}
               </span>
             )}

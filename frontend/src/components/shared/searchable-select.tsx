@@ -1,5 +1,6 @@
 "use client";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp, Check } from "lucide-react";
 
 export interface SelectOption {
@@ -18,8 +19,8 @@ interface Props {
   disabled?: boolean;
 }
 
-const DEFAULT_ACCENT = "#5347CE";
-const SELECTED_COLOR = "#16A34A"; // green for confirmed selection
+const DEFAULT_ACCENT = "#0049A7";
+const SELECTED_COLOR = "#0F78FF"; // vivid blue for confirmed selection
 
 export function SearchableSelect({
   options,
@@ -32,7 +33,9 @@ export function SearchableSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [hovered, setHovered] = useState<string | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selected = options.find((o) => o.value === value) ?? null;
@@ -45,28 +48,57 @@ export function SearchableSelect({
       )
     : options;
 
-  // Close on outside click
+  // Close on outside click (trigger or portaled dropdown)
   useEffect(() => {
     function handle(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        close();
-      }
+      const target = e.target as Node;
+      if (ref.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      close();
     }
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, []);
 
-  // Escape key
+  // Escape key — closes just the dropdown, and must not also close a parent
+  // modal (ModalShell listens for Escape too, at the window level).
   useEffect(() => {
     function handle(e: KeyboardEvent) {
-      if (e.key === "Escape" && open) close();
+      if (e.key === "Escape" && open) {
+        e.stopPropagation();
+        close();
+      }
     }
     document.addEventListener("keydown", handle);
     return () => document.removeEventListener("keydown", handle);
   }, [open]);
 
+  // Keep the portaled dropdown anchored to the trigger; close on scroll/resize
+  // so it never drifts or gets clipped by an ancestor's overflow-hidden.
+  useEffect(() => {
+    if (!open) return;
+    function updateCoords() {
+      const rect = ref.current?.getBoundingClientRect();
+      if (rect) setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+    }
+    updateCoords();
+    function handleScroll(e: Event) {
+      if (dropdownRef.current?.contains(e.target as Node)) return;
+      close();
+    }
+    window.addEventListener("resize", updateCoords);
+    window.addEventListener("scroll", handleScroll, true);
+    return () => {
+      window.removeEventListener("resize", updateCoords);
+      window.removeEventListener("scroll", handleScroll, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   function openDropdown() {
     if (disabled) return;
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect) setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
     setOpen(true);
     setQuery("");
     setTimeout(() => inputRef.current?.focus(), 20);
@@ -153,11 +185,12 @@ export function SearchableSelect({
         </span>
       </div>
 
-      {/* ── Dropdown panel ──────────────────────────────── */}
-      {open && (
+      {/* ── Dropdown panel — portaled so ancestor overflow-hidden can't clip it ── */}
+      {open && coords && createPortal(
         <div
-          className="absolute z-50 mt-1.5 w-full bg-background border border-border rounded-xl shadow-2xl overflow-hidden"
-          style={{ minWidth: "200px" }}
+          ref={dropdownRef}
+          className="fixed z-[10000] bg-background border border-border rounded-xl shadow-2xl overflow-hidden"
+          style={{ top: coords.top, left: coords.left, width: coords.width, minWidth: "200px" }}
         >
           <div className="max-h-60 overflow-y-auto py-1.5">
             {filtered.length === 0 ? (
@@ -209,7 +242,8 @@ export function SearchableSelect({
               })
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

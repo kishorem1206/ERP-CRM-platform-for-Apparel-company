@@ -6,13 +6,13 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 
-const INDIGO   = "#5347CE";
-const LAVENDER = "#887CFD";
-const BLUE     = "#4896FE";
-const TEAL     = "#16C8C7";
+const INDIGO   = "#0049A7";
+const LAVENDER = "#0F78FF";
+const BLUE     = "#0049A7";
+const TEAL     = "#8174F5";
 
 function StatusDot({ active }: { active: boolean }) {
-  const color = active ? "#10B981" : "#94A3B8";
+  const color = active ? "#0F78FF" : "#94A3B8";
   const label = active ? "Active" : "Inactive";
   return (
     <span
@@ -126,7 +126,7 @@ function AssignRolesModal({
             </button>
           </div>
           <div className="p-5 space-y-4">
-            {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 px-3 py-2 text-sm">{error}</div>}
+            {error && <div className="rounded-xl bg-violet-50 border border-violet-200 text-violet-700 px-3 py-2 text-sm">{error}</div>}
             <div className="space-y-1 max-h-60 overflow-y-auto border rounded-xl p-2">
               {(allRoles ?? []).map((r) => (
                 <label key={r.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted px-2 py-1 rounded-lg">
@@ -235,7 +235,7 @@ export default function UsersPage() {
               onClick={() => toggleActive(r)}
               disabled={toggling === r.id}
               title={r.is_active ? "Deactivate" : "Activate"}
-              className={`p-1.5 rounded-lg transition-colors ${r.is_active ? "hover:bg-red-50 dark:hover:bg-red-950/30 text-red-500" : "hover:bg-green-50 dark:hover:bg-green-950/30 text-green-600"}`}
+              className={`p-1.5 rounded-lg transition-colors ${r.is_active ? "hover:bg-violet-50 dark:hover:bg-violet-950/30 text-violet-500" : "hover:bg-blue-50 dark:hover:bg-blue-950/30 text-blue-600"}`}
             >
               {r.is_active ? <Ban className="h-4 w-4" /> : <Check className="h-4 w-4" />}
             </button>
@@ -267,7 +267,7 @@ export default function UsersPage() {
       </div>
 
       {success && (
-        <div className="rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 text-emerald-800 dark:text-emerald-400 px-4 py-3 text-sm">
+        <div className="rounded-2xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-blue-800 dark:text-blue-400 px-4 py-3 text-sm">
           {success}
         </div>
       )}
@@ -308,7 +308,7 @@ export default function UsersPage() {
             </div>
 
             <div className="p-5 space-y-4">
-              {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 px-3 py-2 text-sm">{error}</div>}
+              {error && <div className="rounded-xl bg-violet-50 border border-violet-200 text-violet-700 px-3 py-2 text-sm">{error}</div>}
 
               {[
                 { label: "Email *", key: "email", type: "email" },

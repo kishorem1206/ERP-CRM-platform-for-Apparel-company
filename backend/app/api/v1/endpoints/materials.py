@@ -2,8 +2,10 @@
 from uuid import UUID
 
 from fastapi import APIRouter
+from sqlalchemy import func, select
 
 from app.api.v1.deps import AuthUser, DBSession
+from app.models.inventory import InventoryTransaction
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.materials import (
     FabricCreate, FabricRunCreate, FabricRunOut,
@@ -54,19 +56,49 @@ async def create_fabric_run(body: FabricRunCreate, db: DBSession, user: AuthUser
     return ApiResponse(success=True, data=FabricRunOut.model_validate(run))
 
 
+@router.get("/lots/trim-types")
+async def list_trim_types(db: DBSession, user: AuthUser):
+    user.require("materials.view")
+    svc = MaterialsService(db)
+    rows = await svc.list_trim_types(user.company_id)
+    return ApiResponse(success=True, data=[{"trim_type": t, "count": c} for t, c in rows])
+
+
 @router.get("/lots")
 async def list_lots(
     db: DBSession, user: AuthUser,
     material_type: str | None = None,
+    trim_type: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ):
     user.require("materials.view")
     svc = MaterialsService(db)
-    rows, total = await svc.list_lots(user.company_id, material_type=material_type, page=page, page_size=page_size)
+    rows, total = await svc.list_lots(
+        user.company_id, material_type=material_type, trim_type=trim_type,
+        page=page, page_size=page_size,
+    )
+
+    # Compute stock per lot from the ledger
+    lot_ids = [r.id for r in rows]
+    stock_map: dict[str, float] = {}
+    if lot_ids:
+        stock_rows = await db.execute(
+            select(InventoryTransaction.lot_id, func.sum(InventoryTransaction.quantity).label("qty"))
+            .where(InventoryTransaction.lot_id.in_(lot_ids))
+            .group_by(InventoryTransaction.lot_id)
+        )
+        stock_map = {str(row.lot_id): float(row.qty or 0) for row in stock_rows}
+
+    data = []
+    for r in rows:
+        out = LotOut.model_validate(r)
+        out.stock_qty = stock_map.get(str(r.id))
+        data.append(out)
+
     return ApiResponse(
         success=True,
-        data=[LotOut.model_validate(r) for r in rows],
+        data=data,
         meta=PaginatedMeta(page=page, page_size=page_size, total=total),
     )
 

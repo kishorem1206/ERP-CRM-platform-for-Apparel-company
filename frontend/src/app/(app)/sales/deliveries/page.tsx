@@ -8,18 +8,18 @@ import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-const TEAL = "#16C8C7";
+const TEAL = "#8174F5";
 
 // ── StatusDot ─────────────────────────────────────────────────────────────────
 const STATUS_HEX: Record<string, string> = {
-  draft: "#94A3B8", planned: "#4896FE", approved: "#887CFD",
-  in_production: "#16C8C7", qc: "#F59E0B", packing: "#F97316",
-  completed: "#10B981", cancelled: "#EF4444",
-  pending: "#4896FE", received: "#10B981", partial: "#F59E0B",
-  paid: "#10B981", unpaid: "#EF4444", overdue: "#EF4444",
-  sent: "#887CFD", confirmed: "#10B981", delivered: "#10B981",
-  converted: "#10B981", domestic: "#4896FE", export: "#5347CE",
-  dispatched: "#16C8C7",
+  draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
+  in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
+  completed: "#0F78FF", cancelled: "#1D0DB0",
+  pending: "#0049A7", received: "#0F78FF", partial: "#A096F7",
+  paid: "#0F78FF", unpaid: "#1D0DB0", overdue: "#1D0DB0",
+  sent: "#0F78FF", confirmed: "#0F78FF", delivered: "#0F78FF",
+  converted: "#0F78FF", domestic: "#0049A7", export: "#0049A7",
+  dispatched: "#8174F5",
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -27,7 +27,7 @@ function StatusDot({ status }: { status: string }) {
   const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
       style={{ background: `${color}18`, color }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -155,7 +155,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
                 value={soId}
                 onChange={(v) => { setSoId(v); setItemQtys({}); }}
                 placeholder="Select confirmed sales order…"
-                accent="#16C8C7"
+                accent="#8174F5"
                 options={[
                   { value: "", label: "Select confirmed sales order…" },
                   ...(salesOrders ?? []).map((s: { id: string; order_number: string; customer_name?: string }) => ({
@@ -171,7 +171,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
                 value={warehouseId}
                 onChange={(v) => setWarehouseId(v)}
                 placeholder="Select warehouse…"
-                accent="#16C8C7"
+                accent="#8174F5"
                 options={[
                   { value: "", label: "Select warehouse…" },
                   ...(warehouses ?? []).map((w: { id: string; name: string }) => ({

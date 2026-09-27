@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4;
+    margin: 20mm 16mm 18mm 16mm;
+    @top-center {
+      content: "{{ company.name if company else '' }}  •  Production Report  •  {{ lot.lot_number }}";
+      font-size: 8pt; color: #64748B; font-family: 'DejaVu Sans', sans-serif;
+      border-bottom: 0.5pt solid #E2E8F0; padding-bottom: 5pt; width: 100%;
+    }
+    @bottom-left {
+      content: "Generated on {{ generated_at.strftime('%d %b %Y, %H:%M') }} UTC  •  Confidential — Internal Use Only";
+      font-size: 7.5pt; color: #94A3B8; font-family: 'DejaVu Sans', sans-serif;
+    }
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 7.5pt; color: #94A3B8; font-family: 'DejaVu Sans', sans-serif;
+    }
+  }
+  @page :first {
+    @top-center { content: none; }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'DejaVu Sans', sans-serif;
+    font-size: 9.5pt;
+    color: #1A2233;
+    margin: 0;
+    line-height: 1.45;
+  }
+
+  /* ── Palette (matches the app UI exactly) ─────────────────────────── */
+  :root {
+    --blue-deep: #0F233D;
+    --blue: #0049A7;
+    --blue-vivid: #0F78FF;
+    --blue-light: #8FC0FF;
+    --blue-tint: #E7EFF9;
+    --purple-deep: #1D0DB0;
+    --purple: #8174F5;
+    --purple-light: #A096F7;
+    --purple-tint: #E9E8F8;
+    --ink: #1A2233;
+    --muted: #64748B;
+    --faint: #94A3B8;
+    --border: #E2E8F0;
+  }
+
+  .page-break { break-before: page; page-break-before: always; }
+  .avoid-break { break-inside: avoid; page-break-inside: avoid; }
+
+  /* ── Report header (page 1 only) ──────────────────────────────────── */
+  .report-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 2pt solid var(--blue); padding-bottom: 12pt; margin-bottom: 16pt;
+  }
+  .report-header .company-block { display: flex; align-items: center; gap: 10pt; }
+  .report-header img.logo { max-height: 42pt; max-width: 120pt; }
+  .report-header .company-name { font-size: 13pt; font-weight: 700; color: var(--blue-deep); }
+  .report-header .company-meta { font-size: 8pt; color: var(--muted); margin-top: 2pt; }
+  .report-header .title-block { text-align: right; }
+  .report-title { font-size: 15pt; font-weight: 700; color: var(--blue); letter-spacing: 0.3pt; }
+  .status-badge {
+    display: inline-block; font-size: 8pt; font-weight: 700; letter-spacing: 0.4pt;
+    text-transform: uppercase; padding: 3pt 9pt; border-radius: 3pt; margin-top: 5pt;
+  }
+  .status-final { background: #0F78FF18; color: var(--blue-vivid); }
+  .status-draft { background: #A096F718; color: var(--purple-light); }
+
+  .lot-meta-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10pt;
+    margin-bottom: 18pt;
+  }
+  .lot-meta-item .label { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.4pt; color: var(--faint); font-weight: 700; }
+  .lot-meta-item .value { font-size: 10pt; font-weight: 600; color: var(--ink); margin-top: 2pt; }
+
+  /* ── Section titles ────────────────────────────────────────────────── */
+  .section { margin-bottom: 18pt; }
+  .section-title {
+    font-size: 10.5pt; font-weight: 700; color: var(--blue-deep);
+    text-transform: uppercase; letter-spacing: 0.4pt;
+    border-bottom: 1pt solid var(--border); padding-bottom: 4pt; margin-bottom: 10pt;
+    break-after: avoid; page-break-after: avoid;
+  }
+  .section-subtitle { font-size: 8pt; color: var(--muted); margin: -8pt 0 10pt 0; break-after: avoid; page-break-after: avoid; }
+
+  /* ── KPI cards ─────────────────────────────────────────────────────── */
+  .kpi-row { display: flex; gap: 8pt; margin-bottom: 10pt; }
+  .kpi-card {
+    flex: 1; background: #F8FAFC; border: 0.75pt solid var(--border); border-radius: 5pt;
+    padding: 9pt 10pt;
+  }
+  .kpi-card .kpi-label { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.3pt; color: var(--faint); font-weight: 700; }
+  .kpi-card .kpi-value { font-size: 13pt; font-weight: 700; color: var(--blue-deep); margin-top: 3pt; }
+  .kpi-card .kpi-sub { font-size: 7.5pt; color: var(--muted); margin-top: 1pt; }
+  .kpi-card.accent { background: var(--blue-tint); border-color: var(--blue-light); }
+  .kpi-card.accent .kpi-value { color: var(--blue); }
+  .kpi-card .positive { color: var(--blue-vivid); }
+  .kpi-card .negative { color: var(--purple-deep); }
+
+  /* ── Tables ────────────────────────────────────────────────────────── */
+  table.data { width: 100%; border-collapse: collapse; margin-bottom: 6pt; }
+  table.data thead { display: table-header-group; }
+  table.data th {
+    text-align: left; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.3pt;
+    color: var(--muted); font-weight: 700; padding: 5pt 7pt; border-bottom: 1pt solid var(--border);
+    background: #F8FAFC;
+  }
+  table.data td {
+    padding: 5pt 7pt; font-size: 8.75pt; border-bottom: 0.5pt solid #EEF2F6; vertical-align: top;
+  }
+  table.data tr { break-inside: avoid; page-break-inside: avoid; }
+  table.data .num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.data tr.total-row td { font-weight: 700; border-top: 1.25pt solid var(--blue); border-bottom: none; background: var(--blue-tint); }
+  .pos { color: var(--blue-vivid); font-weight: 600; }
+  .neg { color: var(--purple-deep); font-weight: 600; }
+  .muted-cell { color: var(--faint); }
+
+  /* ── Stage flow ────────────────────────────────────────────────────── */
+  .flow { display: flex; flex-wrap: wrap; gap: 0; align-items: stretch; }
+  .flow-stage {
+    border: 0.75pt solid var(--border); border-radius: 5pt; padding: 8pt 10pt;
+    min-width: 108pt; margin: 0 10pt 10pt 0; background: #FAFBFD;
+    break-inside: avoid; page-break-inside: avoid;
+  }
+  .flow-stage .stage-name { font-size: 8.5pt; font-weight: 700; color: var(--blue-deep); }
+  .flow-stage .stage-line { font-size: 7.75pt; color: var(--muted); margin-top: 3pt; }
+  .flow-stage .stage-line b { color: var(--ink); }
+  .flow-stage .stage-reject { color: var(--purple-deep); font-weight: 700; }
+
+  /* ── Waterfall ─────────────────────────────────────────────────────── */
+  .waterfall { width: 100%; border-collapse: collapse; }
+  .waterfall td { padding: 5pt 8pt; font-size: 9pt; }
+  .waterfall td.op { width: 18pt; text-align: center; color: var(--faint); font-weight: 700; }
+  .waterfall td.label { color: var(--muted); }
+  .waterfall td.amount { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .waterfall tr.final td { border-top: 1.5pt solid var(--blue); font-weight: 700; font-size: 11pt; color: var(--blue-deep); padding-top: 8pt; }
+
+  .note-box {
+    font-size: 8pt; color: var(--muted); background: #F8FAFC; border-left: 2.5pt solid var(--blue-light);
+    padding: 7pt 10pt; margin-top: 8pt; border-radius: 3pt;
+  }
+  .warn-box {
+    font-size: 8pt; color: var(--purple-light); background: #A096F718;
+    padding: 6pt 9pt; margin-top: 6pt; border-radius: 3pt;
+  }
+  .formula { font-size: 8pt; color: var(--muted); margin-top: 3pt; }
+  .formula b { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════ PAGE 1 — HEADER + SUMMARY ══════════════════════════ -->
+
+<div class="report-header">
+  <div class="company-block">
+    {% if company and company.logo_url %}<img class="logo" src="{{ company.logo_url }}">{% endif %}
+    <div>
+      <div class="company-name">{{ company.name if company else "—" }}</div>
+      {% if company %}
+      <div class="company-meta">
+        {{ [company.address, company.city, company.state] | select | join(', ') }}
+        {% if company.gstin %} &nbsp;•&nbsp; GSTIN: {{ company.gstin }}{% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="title-block">
+    <div class="report-title">PRODUCTION &amp; COSTING REPORT</div>
+    <span class="status-badge {{ 'status-final' if is_final else 'status-draft' }}">
+      {{ "Final Production Report" if is_final else "Draft / In-Progress Production Report" }}
+    </span>
+  </div>
+</div>
+
+<div class="lot-meta-grid">
+  <div class="lot-meta-item"><div class="label">Lot / Production Order</div><div class="value">{{ lot.lot_number }}</div></div>
+  <div class="lot-meta-item"><div class="label">Style</div><div class="value">{{ lot.style.name if lot.style else "—" }}</div></div>
+  <div class="lot-meta-item"><div class="label">Product / SKU</div><div class="value">{{ output_products | join(', ') if output_products else "—" }}</div></div>
+  <div class="lot-meta-item"><div class="label">Buyer / Customer</div><div class="value">{{ customer.legal_name if customer else "—" }}</div></div>
+  <div class="lot-meta-item"><div class="label">Production Date</div><div class="value">{{ lot.created_at.strftime('%d %b %Y') if lot.created_at else "—" }}</div></div>
+  <div class="lot-meta-item"><div class="label">Completion Date</div><div class="value">{{ lot.closed_at.strftime('%d %b %Y') if lot.closed_at else "—" }}</div></div>
+  <div class="lot-meta-item"><div class="label">Order Ref</div><div class="value">{{ lot.order_ref or "—" }}</div></div>
+  <div class="lot-meta-item"><div class="label">Status</div><div class="value">{{ lot.status | replace('_', ' ') | title }}</div></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Production Summary</div>
+  <div class="kpi-row">
+    <div class="kpi-card"><div class="kpi-label">Planned Qty</div><div class="kpi-value">{{ lot.planned_qty | qty }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Actual Output</div><div class="kpi-value">{{ cost_summary.total_output_qty | qty }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">First Quality</div><div class="kpi-value">{{ cost_summary.first_quality_qty | qty }}</div>{% if lot.pieces_per_box %}{% set full = (cost_summary.first_quality_qty // lot.pieces_per_box) | int %}{% set rem = (cost_summary.first_quality_qty % lot.pieces_per_box) | int %}<div class="kpi-sub">{{ full + (1 if rem else 0) }} boxes ({{ full }} × {{ lot.pieces_per_box }}{% if rem %} + {{ rem }}{% endif %})</div>{% endif %}</div>
+    <div class="kpi-card"><div class="kpi-label">Rejected</div><div class="kpi-value" style="color: var(--purple-deep);">{{ cost_summary.rejected_qty | qty }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Yield</div><div class="kpi-value">{{ cost_summary.yield_pct | pct if cost_summary.yield_pct is not none else "—" }}</div></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Profitability Summary</div>
+  <div class="kpi-row">
+    <div class="kpi-card accent"><div class="kpi-label">Cost / Piece</div><div class="kpi-value">{{ cost_summary.cost_per_first_quality_piece | inr(2) if cost_summary.cost_per_first_quality_piece is not none else "—" }}</div></div>
+    <div class="kpi-card accent"><div class="kpi-label">Selling Price / Piece</div><div class="kpi-value">{{ cost_summary.actual_selling_price_per_piece | inr(2) if cost_summary.actual_selling_price_per_piece is not none else "Not configured" }}</div></div>
+    <div class="kpi-card accent"><div class="kpi-label">Profit / Piece</div><div class="kpi-value {{ 'positive' if cost_summary.profit_per_piece is not none and cost_summary.profit_per_piece >= 0 else 'negative' }}">{{ cost_summary.profit_per_piece | inr(2) if cost_summary.profit_per_piece is not none else "—" }}</div></div>
+    <div class="kpi-card accent"><div class="kpi-label">Gross Margin</div><div class="kpi-value {{ 'positive' if cost_summary.gross_margin_pct is not none and cost_summary.gross_margin_pct >= 0 else 'negative' }}">{{ cost_summary.gross_margin_pct | pct if cost_summary.gross_margin_pct is not none else "—" }}</div></div>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi-card"><div class="kpi-label">Total Actual Cost</div><div class="kpi-value">{{ cost_summary.total_actual | inr }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Revenue</div><div class="kpi-value">{{ cost_summary.actual_revenue | inr if cost_summary.actual_revenue is not none else "—" }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Profit</div><div class="kpi-value {{ 'positive' if cost_summary.actual_profit is not none and cost_summary.actual_profit >= 0 else 'negative' }}">{{ cost_summary.actual_profit | inr if cost_summary.actual_profit is not none else "—" }}</div></div>
+  </div>
+  {% if cost_summary.actual_selling_price_per_piece is none %}
+  <div class="warn-box">Selling price not configured — profit and margin figures above cannot be calculated until a selling price is set (sales order, product MRP, or set directly on the lot).</div>
+  {% endif %}
+</div>
+
+<!-- ══════════════════════════ PAGE 2 — FLOW + ASSIGNMENTS ══════════════════════════ -->
+
+<div class="section">
+  <div class="section-title">Production Flow</div>
+  <div class="section-subtitle">Actual quantity movement, stage by stage — not the original planned quantity</div>
+  <div class="flow">
+    {% for s in stage_rows %}
+    <div class="flow-stage">
+      <div class="stage-name">{{ loop.index }}. {{ s.name }}</div>
+      {% if s.assigned %}
+      <div class="stage-line">Planned: <b>{{ s.planned_qty | qty if s.planned_qty is not none else "—" }}</b></div>
+      <div class="stage-line">Sent OUT: <b>{{ s.sent_qty | qty }}</b></div>
+      <div class="stage-line">First Quality: <b>{{ s.received_qty | qty }}</b></div>
+      {% if s.rejected_qty %}<div class="stage-line stage-reject">Rejected: {{ s.rejected_qty | qty }}</div>{% endif %}
+      {% else %}
+      <div class="stage-line">Planned: <b>{{ s.planned_qty | qty if s.planned_qty is not none else "—" }}</b></div>
+      <div class="stage-line">Input: <b>{{ s.input_qty | qty }}</b></div>
+      <div class="stage-line">Output: <b>{{ s.output_qty | qty }}</b></div>
+      {% if s.rejected_qty %}<div class="stage-line stage-reject">Rejected: {{ s.rejected_qty | qty }}</div>{% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% if assignment_rows %}
+<div class="section">
+  <div class="section-title">Vendor / Internal Worker Assignments</div>
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Stage</th><th>Assignment</th><th>Assigned To</th><th>Challan</th>
+        <th class="num">OUT</th><th class="num">IN</th><th class="num">Rejected</th>
+        <th class="num">Rate</th><th class="num">Actual Cost</th><th>Bill Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in assignment_rows %}
+      <tr>
+        <td>{{ r.stage }}</td>
+        <td>{{ "Vendor" if r.assignment_type == "vendor" else ("Internal Worker" if r.assignment_type == "internal_worker" else "In-house") }}</td>
+        <td>{{ r.assignee }}</td>
+        <td>{{ r.challan_number or "—" }}</td>
+        <td class="num">{{ r.out_qty | qty if r.out_qty is not none else "—" }}</td>
+        <td class="num">{{ r.in_qty | qty if r.in_qty is not none else "—" }}</td>
+        <td class="num">{{ r.rejected_qty | qty if r.rejected_qty else "0" }}</td>
+        <td class="num">{{ r.rate | inr(2) if r.rate is not none else "—" }}</td>
+        <td class="num">{{ r.actual_cost | inr(2) if r.actual_cost is not none else "—" }}</td>
+        <td>
+          {% if r.is_vendor and r.bill_status %}{{ r.bill_status }}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if rejection_rows %}
+<div class="section avoid-break">
+  <div class="section-title">Quality / Yield Analysis</div>
+  <table class="data">
+    <thead>
+      <tr><th>Stage</th><th class="num">Input</th><th class="num">Accepted</th><th class="num">Rejected</th><th class="num">Rejection %</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rejection_rows %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td class="num">{{ r.input | qty }}</td>
+        <td class="num">{{ r.accepted | qty }}</td>
+        <td class="num">{{ r.rejected | qty }}</td>
+        <td class="num">{{ r.rejection_pct | pct }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="kpi-row" style="margin-top: 8pt;">
+    <div class="kpi-card"><div class="kpi-label">Final First Quality Qty</div><div class="kpi-value">{{ cost_summary.first_quality_qty | qty }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Rejected</div><div class="kpi-value" style="color: var(--purple-deep);">{{ cost_summary.rejected_qty | qty }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Final Yield</div><div class="kpi-value">{{ cost_summary.yield_pct | pct if cost_summary.yield_pct is not none else "—" }}</div></div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ══════════════════════════ PAGE 3 — COST BREAKDOWN ══════════════════════════ -->
+
+<div class="section">
+  <div class="section-title">Cost Breakdown</div>
+  <div class="section-subtitle">Every production cost component, planned vs actual</div>
+  <table class="data">
+    <thead>
+      <tr><th>Component</th><th class="num">Planned</th><th class="num">Actual</th><th class="num">Variance</th><th class="num">Variance %</th></tr>
+    </thead>
+    <tbody>
+      {% for c in cost_summary.components %}
+      <tr>
+        <td>{{ c.name }}{% if c.note %}<br><span class="muted-cell" style="font-size:7pt;">{{ c.note }}</span>{% endif %}</td>
+        <td class="num">{{ c.planned_amount | inr(2) if c.planned_amount is not none else "—" }}</td>
+        <td class="num">{{ c.actual_amount | inr(2) if c.actual_amount is not none else "—" }}</td>
+        <td class="num {{ 'neg' if c.variance_amount is not none and c.variance_amount > 0 else ('pos' if c.variance_amount is not none and c.variance_amount < 0 else '') }}">
+          {{ (c.variance_amount | inr(2)) if c.variance_amount is not none else "—" }}
+        </td>
+        <td class="num {{ 'neg' if c.variance_pct is not none and c.variance_pct > 0 else ('pos' if c.variance_pct is not none and c.variance_pct < 0 else '') }}">
+          {{ (c.variance_pct | pct) if c.variance_pct is not none else "—" }}
+        </td>
+      </tr>
+      {% endfor %}
+      <tr class="total-row">
+        <td>Total Cost</td>
+        <td class="num">{{ cost_summary.total_planned | inr(2) if cost_summary.total_planned is not none else "—" }}</td>
+        <td class="num">{{ cost_summary.total_actual | inr(2) }}</td>
+        <td class="num">
+          {% if cost_summary.total_planned is not none %}{{ (cost_summary.total_actual - cost_summary.total_planned) | inr(2) }}{% else %}—{% endif %}
+        </td>
+        <td class="num">
+          {% if cost_summary.total_planned %}{{ (((cost_summary.total_actual - cost_summary.total_planned) / cost_summary.total_planned) * 100) | pct }}{% else %}—{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  {% if cost_summary.missing_rate_warnings %}
+  <div class="warn-box">
+    {% for w in cost_summary.missing_rate_warnings %}{{ w }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ══════════════════════════ PAGE 4 — COST/PIECE + MATERIAL ══════════════════════════ -->
+
+<div class="section">
+  <div class="section-title">Cost / Piece Build-Up</div>
+  <div class="section-subtitle">How the final cost per saleable piece was calculated</div>
+  {% if cost_per_piece_rows %}
+  <table class="data">
+    <thead><tr><th>Component</th><th class="num">₹ / Piece</th></tr></thead>
+    <tbody>
+      {% for r in cost_per_piece_rows %}
+      <tr><td>{{ r.name }}</td><td class="num">{{ r.per_piece | inr(2) }}</td></tr>
+      {% endfor %}
+      <tr class="total-row"><td>Total Cost / Piece</td><td class="num">{{ cost_summary.cost_per_first_quality_piece | inr(2) }}</td></tr>
+    </tbody>
+  </table>
+  <div class="formula">Total Actual Cost <b>{{ cost_summary.total_actual | inr }}</b> ÷ First Quality Quantity <b>{{ cost_summary.first_quality_qty | qty }}</b> = <b>{{ cost_summary.cost_per_first_quality_piece | inr(2) }} / pc</b></div>
+  {% else %}
+  <div class="note-box">No saleable output has been recorded yet — cost per piece cannot be calculated.</div>
+  {% endif %}
+</div>
+
+{% if material_rows %}
+<div class="section">
+  <div class="section-title">Material / Fabric Cost</div>
+  <table class="data">
+    <thead>
+      <tr><th>Material</th><th>Issue No.</th><th class="num">Quantity</th><th class="num">Rate</th><th class="num">Cost</th></tr>
+    </thead>
+    <tbody>
+      {% for r in material_rows %}
+      <tr>
+        <td>{{ r.product_name }}</td>
+        <td>{{ r.issue_number }}</td>
+        <td class="num">{{ r.issued_qty }}</td>
+        <td class="num">{{ r.unit_cost | inr(2) }}</td>
+        <td class="num">{{ r.total_cost | inr(2) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="note-box">Wastage/tolerance is applied on top of material cost — see Cost Breakdown for the amount and the % basis used.</div>
+</div>
+{% endif %}
+
+<!-- ══════════════════════════ PAGE 5 — SELLING & PROFITABILITY ══════════════════════════ -->
+
+<div class="section">
+  <div class="section-title">Selling &amp; Profitability Analysis</div>
+  <table class="data">
+    <tbody>
+      <tr><td>Selling Price / Piece</td><td class="num">{{ cost_summary.actual_selling_price_per_piece | inr(2) if cost_summary.actual_selling_price_per_piece is not none else "Not configured" }}</td></tr>
+      <tr><td>First Quality Quantity</td><td class="num">{{ cost_summary.first_quality_qty | qty }}</td></tr>
+      <tr><td>Total Revenue</td><td class="num">{{ cost_summary.actual_revenue | inr(2) if cost_summary.actual_revenue is not none else "—" }}</td></tr>
+      <tr><td>Actual Cost / Piece</td><td class="num">{{ cost_summary.cost_per_first_quality_piece | inr(2) if cost_summary.cost_per_first_quality_piece is not none else "—" }}</td></tr>
+      <tr><td>Total Actual Cost</td><td class="num">{{ cost_summary.total_actual | inr(2) }}</td></tr>
+      <tr><td>Profit / Piece</td><td class="num {{ 'pos' if cost_summary.profit_per_piece is not none and cost_summary.profit_per_piece >= 0 else 'neg' }}">{{ cost_summary.profit_per_piece | inr(2) if cost_summary.profit_per_piece is not none else "—" }}</td></tr>
+      <tr class="total-row"><td>Total Profit</td><td class="num">{{ cost_summary.actual_profit | inr(2) if cost_summary.actual_profit is not none else "—" }}</td></tr>
+      <tr><td>Gross Margin</td><td class="num">{{ cost_summary.gross_margin_pct | pct if cost_summary.gross_margin_pct is not none else "—" }}</td></tr>
+    </tbody>
+  </table>
+  <div class="formula">Revenue = First Quality Qty × Selling Price / Piece &nbsp;|&nbsp; Profit = Revenue − Actual Cost &nbsp;|&nbsp; Margin = Profit ÷ Revenue × 100</div>
+</div>
+
+{% if show_planned_vs_actual %}
+<div class="section avoid-break">
+  <div class="section-title">Planned vs Actual Profitability</div>
+  <table class="data">
+    <thead><tr><th>Metric</th><th class="num">Planned</th><th class="num">Actual</th></tr></thead>
+    <tbody>
+      <tr><td>Quantity</td><td class="num">{{ lot.planned_qty | qty }}</td><td class="num">{{ cost_summary.first_quality_qty | qty }}</td></tr>
+      <tr><td>Selling Price / Piece</td><td class="num">{{ cost_summary.target_price | inr(2) }}</td><td class="num">{{ cost_summary.actual_selling_price_per_piece | inr(2) if cost_summary.actual_selling_price_per_piece is not none else "—" }}</td></tr>
+      <tr><td>Revenue</td><td class="num">{{ cost_summary.target_revenue | inr(2) }}</td><td class="num">{{ cost_summary.actual_revenue | inr(2) if cost_summary.actual_revenue is not none else "—" }}</td></tr>
+      <tr><td>Cost</td><td class="num">{{ cost_summary.total_planned | inr(2) if cost_summary.total_planned is not none else "—" }}</td><td class="num">{{ cost_summary.total_actual | inr(2) }}</td></tr>
+      <tr><td>Margin</td><td class="num">{{ cost_summary.expected_margin_pct | pct if cost_summary.expected_margin_pct is not none else "—" }}</td><td class="num">{{ cost_summary.gross_margin_pct | pct if cost_summary.gross_margin_pct is not none else "—" }}</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- ══════════════════════════ PAGE 6 — ADDITIONAL COSTS + WATERFALLS ══════════════════════════ -->
+
+{% if additional_cost_rows or agent_commission_rows %}
+<div class="section">
+  <div class="section-title">Additional Costs</div>
+  <table class="data">
+    <thead><tr><th>Description</th><th class="num">Amount</th></tr></thead>
+    <tbody>
+      {% for a in additional_cost_rows %}
+      <tr><td>{{ a.description }}</td><td class="num">{{ a.actual_amount | inr(2) if a.actual_amount is not none else "—" }}</td></tr>
+      {% endfor %}
+      {% for a in agent_commission_rows %}
+      <tr><td>{{ a.description }} (Agent Commission)</td><td class="num">{{ a.actual_amount | inr(2) if a.actual_amount is not none else "—" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="section avoid-break">
+  <div class="section-title">Final Cost Waterfall</div>
+  <table class="waterfall">
+    {% for c in cost_summary.components %}
+    {% if c.actual_amount is not none and c.actual_amount != 0 %}
+    <tr><td class="op">{{ "" if loop.first else "+" }}</td><td class="label">{{ c.name }}</td><td class="amount">{{ c.actual_amount | inr(2) }}</td></tr>
+    {% endif %}
+    {% endfor %}
+    <tr class="final"><td class="op"></td><td class="label">Total Actual Cost</td><td class="amount">{{ cost_summary.total_actual | inr(2) }}</td></tr>
+  </table>
+  <div class="formula">÷ First Quality Quantity ({{ cost_summary.first_quality_qty | qty }}) = <b>Cost / Piece {{ cost_summary.cost_per_first_quality_piece | inr(2) if cost_summary.cost_per_first_quality_piece is not none else "—" }}</b></div>
+</div>
+
+{% if cost_summary.actual_selling_price_per_piece is not none %}
+<div class="section avoid-break">
+  <div class="section-title">Final Profit Waterfall</div>
+  <table class="waterfall">
+    <tr><td class="op"></td><td class="label">Selling Price / Piece</td><td class="amount">{{ cost_summary.actual_selling_price_per_piece | inr(2) }}</td></tr>
+    <tr><td class="op">−</td><td class="label">Cost / Piece</td><td class="amount">{{ cost_summary.cost_per_first_quality_piece | inr(2) }}</td></tr>
+    <tr class="final"><td class="op"></td><td class="label">Profit / Piece</td><td class="amount">{{ cost_summary.profit_per_piece | inr(2) }}</td></tr>
+  </table>
+  <div class="formula">First Quality Qty ({{ cost_summary.first_quality_qty | qty }}) × Profit / Piece = <b>Total Profit {{ cost_summary.actual_profit | inr(2) }}</b> &nbsp;|&nbsp; Margin <b>{{ cost_summary.gross_margin_pct | pct }}</b></div>
+</div>
+{% endif %}
+
+{% if lot.notes %}
+<div class="section avoid-break">
+  <div class="section-title">Notes</div>
+  <div class="note-box">{{ lot.notes }}</div>
+</div>
+{% endif %}
+
+</body>
+</html>

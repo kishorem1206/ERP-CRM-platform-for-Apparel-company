@@ -294,6 +294,97 @@ New raw-material intake workflow built end-to-end.
 
 ---
 
+## CRM Module — Phase 1 UI (2026-09-03)
+
+### Modal Overflow Bug Fix
+All CRM modal forms were clipping (Save/Cancel buttons hidden) due to two root causes:
+1. `(app)/layout.tsx` has `overflow-hidden` on the main wrapper — clips `fixed` children in WebKit/Safari.
+2. `flex min-h-full items-center justify-center` causes bidirectional overflow when content exceeds viewport height; `overflow-y-auto` only scrolls downward making the top portion unreachable.
+
+**Fix applied — `frontend/src/components/shared/modal-shell.tsx`:**
+- Renders via `createPortal(jsx, document.body)` to escape the CSS containment hierarchy entirely.
+- Uses `mx-auto` block centering + `py-8` padding instead of flex centering, so overflow is one-directional and scrollable.
+- SSR-safe: `useState(false)` + `useEffect(() => setMounted(true))` guards the portal.
+- Escape key closes modal via `window.addEventListener("keydown", handler)`.
+
+### Full-Page "New X" Forms — All CRM Entities
+All CRM "New X" creation flows converted from modals to full-page forms matching the existing `crm/customers/new` pattern (sticky header with breadcrumb + Cancel/Save, `max-w-2xl` card sections).
+
+**New pages created:**
+
+| Page | Route | Sections |
+|---|---|---|
+| New Lead | `/crm/leads/new` | Basic Info (title, pipeline, stage, value, close date, temperature toggle), Contacts & Source (person, org, source, type), Notes |
+| New Person | `/crm/persons/new` | Identity (name, job title, city, org), Contact (emails + phone dynamic rows with label selects, WhatsApp) |
+| New Organization | `/crm/organizations/new` | Identity (name, website), Address (city, state, country) |
+| Log Activity | `/crm/activities/new` | Activity Details (type toggle: call/meeting/note/task/email, title, comment), Link & Schedule (lead, schedule from/to) |
+| New Product | `/crm/products/new` | Product Info (name, description, SKU), Pricing & Unit (price, currency, unit) |
+
+**List pages updated (old modal code completely removed):**
+
+| File | Change |
+|---|---|
+| `crm/leads/page.tsx` | Button → `router.push("/crm/leads/new")`; `NewLeadModal` component, `showModal` state, 4 stale `enabled: showModal` queries all deleted |
+| `crm/persons/page.tsx` | Button → `router.push("/crm/persons/new")`; `NewPersonModal`, `ContactRow`, all dead interfaces/constants deleted; file rewritten clean |
+| `crm/organizations/page.tsx` | Button → `router.push("/crm/organizations/new")`; `NewOrgModal` deleted; file rewritten clean |
+| `crm/activities/page.tsx` | Button → `router.push("/crm/activities/new")`; `LogActivityModal`, stale leads query deleted; file rewritten clean |
+| `crm/products/page.tsx` | New-product button → `router.push("/crm/products/new")`; `openCreate` removed; edit modal kept for row-level edits |
+
+**Remaining modals (intentionally kept):**
+- `crm/leads/page.tsx` — Import Leads (multi-step CSV upload flow, modal appropriate)
+- `crm/products/page.tsx` — Edit Product (inline row edit, modal appropriate)
+- `crm/quotes/_components.tsx` — Quote form (complex, not yet converted)
+- `crm/leads/[id]/page.tsx` — Convert to SO, Compose Email, Add Activity, Mark as Lost
+- `crm/email/page.tsx` — Compose Email
+- `crm/whatsapp/page.tsx` — Template Picker
+- `crm/settings/page.tsx` — Email Template form, Delete Confirmation
+
+### Cache / Dev Server Notes
+- Stale `.next` build cache caused browsers to serve old JS bundles even after source changes.
+- **Clear command:** `rm -rf frontend/.next` before restarting the dev server.
+- Full restart: `docker compose down && docker compose up --build` (rebuilds backend image too).
+
+---
+
+## Style Master & CRM/Reports Fixes (2026-09-05 → 2026-09-06)
+
+### Style Master — Production Blueprint (Production Module)
+Implemented per `docs/Garments_ERP_Style_Master_Specification.md` with strict adherence — the Style Master is now the full production blueprint, not a basic name/code record.
+
+**Backend:**
+- Migration `009_style_master.py` — extends `styles` (version, is_active, final_output_unit) and adds 7 child tables: `style_sizes`, `style_colours`, `style_yarns`, `style_fabrics`, `style_processes` (+ `style_sub_processes`), `style_trims`, `style_packing_materials`. Also adds snapshot columns to `production_stages` (tolerance_pct, input_unit, output_unit, conversion_rule, min/max/planned_rate, style_process_id) and `production_lots` (final_output_unit, style_version).
+- `models/production.py` — `Style` plus 8 new ORM classes (`StyleSize`, `StyleColour`, `StyleYarn`, `StyleFabric`, `StyleProcess`, `StyleSubProcess`, `StyleTrim`, `StylePackingMaterial`).
+- `services/production.py` — `create_style()` persists the full nested blueprint in one transaction; `get_style()` eager-loads all sections. **`create_lot()` rewritten**: when a Style has configured processes, the LOT snapshots those processes (name, tolerance %, units, conversion rule, rate band) onto `ProductionStage` rows instead of the old hard-coded 5-stage sequence (Cutting/Making/Finishing/QC/Packing). Falls back to the generic sequence only when no Style or no configured processes exist. This satisfies the spec's "Style Master → LOT snapshot" and "do not hard-code the workflow" principles — see `docs/PRODUCT.md` §11.1.
+- `POST /production/styles` (rewritten), `GET /production/styles/{id}` (new, full detail).
+
+**Frontend:** `/production/styles` (list), `/production/styles/new` (7-section creation form: Basic Info, Sizes/Colours/SKU preview, Yarn, Fabric, Production Workflow with reorderable processes + sub-processes, Trim Planning, Packing Material Planning), `/production/styles/[id]` (detail view).
+
+Verified end-to-end: migration applied, full nested style created via API, LOT created from that style produced exactly its configured processes (not the hardcoded 5) with correct snapshot values confirmed via direct DB query, and the full flow re-verified through a real browser session.
+
+### CRM Activities — Crash Fix, Calendar, Uncheck, Dashboard Popup
+- **Fixed a client-side crash** on `/crm/activities`: the frontend expected `activity_type`/`lead_title`/`person_name` fields the backend never returned (only `type` + raw IDs), causing `type.charAt(0)` to throw on `undefined`. Fixed in 3 places: `crm.py` endpoint now joins lead/person/assignee and returns `lead_title`/`person_name`/`assigned_to_name`, plus `activity_type` and `date_from`/`date_to` query filters; `crm/activities/page.tsx` and `crm/activities/new/page.tsx` field names corrected; `crm/leads/[id]/page.tsx`'s "Add Activity" modal had the identical `activity_type`→`type` / `assign_to`→`assigned_to` mismatch (silently broke activity creation from the lead detail page) plus a free-text assignee input replaced with a proper user picker.
+- **Added a Teams-style calendar view**: List/Calendar toggle on the Activities page. Month grid (Mon–Sun) with activities plotted on their scheduled date as colour-coded chips by type, today highlighted, prev/next/Today navigation, and a day-detail slide-over panel.
+- **Uncheck support**: `PATCH /crm/activities/{id}/done` now accepts `{is_done: bool}` (defaults `true`); the checkmark toggles both ways everywhere (list, calendar panel, lead-detail feed) instead of being one-directional.
+- **Dashboard "Today's Activities" popup** on `/dashboard`: bottom-right card showing today's scheduled activities, dismissible per-day (sessionStorage), links to the full Activities page. Hidden entirely when nothing is scheduled.
+
+**Two subtle pre-existing bugs surfaced and fixed while building the popup:**
+1. `/dashboard` is statically prerendered at build time but rendered `new Date()` directly in JSX — the header's date/greeting was frozen at build time and mismatched the client on every load (React hydration error). Fixed by computing it only after mount (`useState`+`useEffect`), not by suppressing the warning (which would have frozen the header forever at the wrong value).
+2. **App-wide CSS bug**: `globals.css` has `main > * { animation: fade-in 0.28s ease both; }` for the page-entrance effect. Because of `animation-fill-mode: both`, every page's root div permanently retains `transform: translateY(0)` (an identity transform) after the animation ends — and per the CSS spec, *any* non-`none` transform on an ancestor creates a new containing block for `position: fixed` descendants. This silently breaks corner-anchored (`bottom-*`/`right-*`) fixed elements rendered inline in page JSX, positioning them relative to the scrollable page content instead of the viewport. Fixed by rendering the dashboard popup and the Activities calendar's day-detail panel through the existing `ModalPortal` component (portals to `document.body`), the same pattern already used for other overlays in the codebase — rather than touching the shared global animation rule.
+
+### Inventory — Material Lots Trim-Type Filter
+Added a second-level filter row on `/inventory/lots` when the "Trims" tab is active: pills built dynamically from the real distinct `trim_type` values in the data (with counts), not a hardcoded category list — since actual trim records use specific names ("Button 12L", "Drawcord 6mm") rather than coarse categories. Backend: new `GET /materials/lots/trim-types` endpoint + `trim_type` filter param on `GET /materials/lots`.
+
+### Reports — Stock Ageing Fix, Dummy Data, Charts
+- **Fixed a real backend bug**: the stock-ageing SQL selected `u.symbol`, but the `units` table's column is `abbreviation` — every request 500'd silently (the frontend swallows query errors and shows an empty table), so the report always appeared empty regardless of actual stock.
+- Added a `stock_value` column to the query (quantity × weighted-average receipt cost) so ageing can be judged by value, not just SKU count.
+- Inserted realistic dummy inventory receipts (fabric/yarn/trims/finished goods, multiple warehouses) backdated across all four buckets — this also surfaced pre-existing real stock that had been invisible the whole time due to the bug.
+- Added a bar chart (stock value by ageing bucket) and a donut chart (% value share by bucket) to `/reports/stock-ageing`, plus a value figure on each bucket's stat card.
+
+### Dev Environment
+- `docker-compose.yml` backend command now passes `--timeout-graceful-shutdown 5` to uvicorn's `--reload` — the dev server repeatedly hung on "Waiting for background tasks to complete" during hot-reload (an open WebSocket connection from a browser session blocking shutdown), requiring manual container restarts. Bounding the graceful-shutdown window fixes this.
+
+---
+
 ## How to Run (Dev)
 
 ```bash

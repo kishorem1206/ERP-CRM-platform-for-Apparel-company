@@ -86,7 +86,7 @@ export function NewLotModal({ open, onClose }: Props) {
             value={form.style_id}
             onChange={(v) => set("style_id", v)}
             placeholder="— No style —"
-            accent="#5347CE"
+            accent="#0049A7"
             options={[
               { value: "", label: "— No style —" },
               ...(styles.data ?? []).map((s) => ({
@@ -133,7 +133,7 @@ export function NewLotModal({ open, onClose }: Props) {
           />
         </Field>
 
-        {err && <p className="text-xs text-red-500">{err}</p>}
+        {err && <p className="text-xs text-violet-500">{err}</p>}
       </form>
     </ModalShell>
   );

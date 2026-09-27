@@ -1,11 +1,19 @@
 import Link from "next/link";
-import { Scissors, PackageOpen, CheckSquare, ChevronRight } from "lucide-react";
+import { Ruler, Scissors, PackageOpen, CheckSquare, ChevronRight } from "lucide-react";
 
-const INDIGO = "#5347CE";
-const TEAL   = "#16C8C7";
-const BLUE   = "#4896FE";
+const INDIGO = "#0049A7";
+const TEAL   = "#8174F5";
+const BLUE   = "#0049A7";
+const VIOLET = "#0F78FF";
 
 const CARDS = [
+  {
+    href: "/production/styles",
+    icon: Ruler,
+    title: "Styles",
+    description: "Define garment styles, BOM, and process route — the template a lot is created from",
+    accent: VIOLET,
+  },
   {
     href: "/production/lots",
     icon: Scissors,
@@ -72,7 +80,7 @@ export default function ProductionPage() {
       </div>
 
       {/* Nav cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {CARDS.map(({ href, icon: Icon, title, description, accent }) => (
           <Link
             key={href}
