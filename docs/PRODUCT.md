@@ -355,7 +355,7 @@ POST /api/v1/auth/logout
 master_data.view  master_data.create  master_data.edit  master_data.delete
 
 # CRM
-crm.view  crm.create  crm.edit  crm.delete
+crm.view  crm.create  crm.edit  crm.delete  crm.assign
 
 # Sales
 quotation.view  quotation.create  quotation.approve  quotation.cancel

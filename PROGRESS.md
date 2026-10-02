@@ -385,6 +385,85 @@ Added a second-level filter row on `/inventory/lots` when the "Trims" tab is act
 
 ---
 
+## CRM Enhancement — Lead Lifecycle, Analytics, Pricing & WhatsApp Automation (2026-10-02)
+
+Full implementation of Phases 1–8 of `docs/CRM upgrade after 07092026 call.md` (of 18 total) — lead assignment and follow-up lifecycle, employee task system, platform-wise lead analytics, ad spend/acquisition cost, catalogue pricing tied to the real ERP product master, and configurable WhatsApp automation. All additive — no destructive migrations, no behavior change to any already-shipped CRM page.
+
+### Phase 1 — Lead Assignment to Employees
+- `CrmLead` gained `assigned_date`/`assigned_by`/`assignment_status`; new `CrmLeadAssignmentHistory` audit table.
+- New `POST /crm/leads/{id}/assign` via a shared `_assign_lead()` helper (reused by bulk-assign).
+- New `crm.assign` permission, auto-granted to any role already holding `crm.edit`.
+- New `GET /crm/assignable-users`, deliberately gated on `crm.view` (not `admin.users`) — fixes a real permission mismatch that would have blocked ordinary sales users from seeing who leads could be assigned to.
+- Frontend: "My Leads" filter + an Assignment card on the lead detail page.
+- Migration `020_crm_lead_assignment.py`.
+
+### Phase 2 — Lead Follow-Up Management
+- `CrmLead` gained `next_follow_up_at`/`follow_up_type`/`follow_up_reason`/`follow_up_notes`/`follow_up_status`/`last_contacted_at`/`contact_outcome`/`next_action`.
+- New `CrmFollowUpType` lookup table, seeded with 12 types.
+- New `_sync_lead_followup_fields()` — recomputes the lead's forward-looking follow-up fields from the nearest undone activity; runs after every activity create/update/delete/done-toggle.
+- `ActivityDoneUpdate` extended so completing an activity can schedule the next follow-up in the same call.
+- New `CompleteActivityModal` on the frontend.
+- **Bug found and fixed:** this project's DB sessions run with `autoflush=False`; `_sync_lead_followup_fields()`'s internal SELECTs were reading stale pre-commit data. Fixed with explicit `await db.flush()` before the recompute in `update_activity`/`mark_activity_done` — caught via a failing curl test, not by code review.
+- Migration `021_crm_followups.py`.
+
+### Phase 3 — Employee Task System
+- New `CrmTask` model (title, notes, lead/customer link, assignee, due date, priority, status, source) + full CRUD + `/complete` endpoint.
+- Auto-task creation wired into `_assign_lead()` ("Make first contact").
+- New Celery beat task `flag_missed_followups` (idempotent — skips leads that already have an open missed-follow-up task).
+- New `/crm/tasks` page, dashboard "My Tasks" section, "Employee Task Performance" report.
+- **Bug found and fixed (the one that changed this effort's whole verification process):** Next.js App Router forbids a `page.tsx` from exporting anything besides the page component — `export { CreateTaskModal }` from `crm/tasks/page.tsx` passed `tsc --noEmit` cleanly but failed a full `next build`. Fixed by moving the modal to `frontend/src/components/crm/create-task-modal.tsx`. A full `next build` (not just `tsc --noEmit`) became mandatory before every Docker rebuild from this point on.
+- Migration `022_crm_tasks.py`.
+
+### Phase 4 — Platform-Wise Lead Analytics
+- `CrmLeadSource` existed but was read-only (no create/update/delete endpoint — one platform, "IndiaMart", had been inserted directly via SQL). Added full CRUD mirroring the existing `Category` pattern in `master.py`, plus a unique `(company_id, name)` constraint and an in-use guard on delete.
+- New `platform_lead_analytics` report (`qualified` defined as `temperature IN ('warm','hot')` — stated as an explicit interpretive judgment call, not a spec-given definition).
+- New `/crm/settings` "Lead Sources / Platforms" management section.
+- Migration `023_crm_lead_sources_crud.py` seeds the spec's missing platforms (WhatsApp, Instagram, Facebook, Google, Direct) without duplicating the existing IndiaMart row.
+
+### Phase 5 — Lead Acquisition Cost
+- New `CrmAdSpend` ledger (source, campaign, period, amount, notes).
+- New `lead_acquisition_cost` report: `cost_per_lead`/`cost_per_qualified_lead`/`cost_per_conversion`/`roas`, each computed via SQL `CASE WHEN` so a zero or missing denominator yields `NULL` — never a fabricated `0`.
+- Verified exact arithmetic: ₹6,000 logged against a platform's known 5 leads → `cost_per_lead = 1200.00` exactly.
+- New `/crm/ad-spend` ledger page under a new "Marketing" nav group.
+- Migration `024_crm_ad_spend.py`.
+
+### Phase 6 — Ad Spend Management
+- Extended `CrmAdSpend` with `campaign_id`, `ad_set`, `impressions`, `clicks`, `source` (defaults `"manual"` — architecturally ready for a future ad-platform API sync, but no such integration exists; nothing invented against the "no credentials" rule).
+- New `POST /crm/ad-spend/import` CSV endpoint (mirrors the existing lead-CSV importer); unrecognized platform names auto-create a new `CrmLeadSource` row.
+- `/crm/ad-spend` became a real dashboard: date-range KPI tiles, spend-by-platform and spend-by-campaign breakdowns (campaign breakdown is spend-only — campaigns aren't attributable to individual leads, so no fabricated cost-per-lead-by-campaign).
+- Migration `025_crm_ad_spend_fields.py`.
+
+### Phase 7 — Catalogue & Activity-Based Pricing
+The biggest architectural call of this effort. `CrmQuoteItem.product_id` pointed at a separate, disconnected `CrmProduct` table instead of the real ERP `Product`/`ProductVariant` master — directly contradicting the spec's own "do not duplicate product master data" instruction, but pre-existing and carrying live quote data with no reliable remap path. **Resolved additively, not by rip-and-replace:**
+- All new pricing work (`PriceList`/`PriceListItem`, already modeled but completely unwired — zero endpoints, zero UI, and `PricingService.get_price()` only ever read `Product.mrp`) is built exclusively against the real ERP product master.
+- `CrmQuoteItem` gained new, nullable `erp_product_id`/`erp_variant_id` columns alongside the untouched legacy `product_id`; the CRM quote item picker now offers both paths side by side.
+- `PriceListItem` extended with `customer_id` (true per-customer override) and `valid_from`/`valid_to`; new `PriceHistory` table logs every price change.
+- `PricingService.get_price()` rewritten with a 3-tier resolution order (customer override → generic list price → `Product.mrp` fallback → not found), each tagged with a `source` field.
+- New `CrmLeadProduct` join table (structured lead→product interest), replacing the free-text-only "Catalogue Sent" label.
+- New `/sales/price-lists` page; "Interested Products" card on the lead detail page.
+- Verified: a customer override price correctly beat the generic list price, which correctly beat the MRP fallback; a quote mixing an ERP-priced item, a legacy `CrmProduct` item, and a plain custom line item all coexisted correctly.
+- Migration `026_crm_pricing.py`.
+
+### Phase 8 — WhatsApp Integration & Automated Communication
+- WhatsApp sends are fully configurable — no message is hard-coded into business logic. New `WhatsappAutomationRule` (trigger event, template-or-freeform-body, recipient type, delay, enable/disable) and `WhatsappAutomationLog` (per-send audit trail) tables.
+- New `template_render.py` (`{{var}}` substitution) and `whatsapp_automation.py` (`fire_event()` dispatcher + phone-resolution fallback chain: `CrmPerson.whatsapp_number` → `contact_numbers[0]` → `Customer.whatsapp_no` → `Customer.mobile` for customers, `User.phone` for employees).
+- Sends are always routed through a new Celery task (`send_whatsapp_automation`), never inline — the existing Meta Graph API integration (`backend/app/api/v1/endpoints/whatsapp.py`) is real but has no credentials configured, so a slow/failing external call can never block the CRM action that triggered it.
+- Wired into 5 trigger points: `_assign_lead` (lead assigned), `add_lead_product` (catalogue shared, reusing Phase 7's structured link), `create_quote` (quotation generated), `flag_missed_followups` (follow-up due — fires only once overdue, since no proactive "about to become due" scheduler exists), and a new check in `create_activity` for the `"Sample Sent"` activity type (sample dispatched).
+- New `/crm/whatsapp-automation` page (rules + send log) — the existing 776-line WhatsApp inbox page was left untouched.
+- **Two bugs found and fixed:**
+  1. `WhatsappAutomationRule`/`Log` had no Python-side default for `created_at`/`updated_at`; SQLAlchemy sent an explicit `NULL` on insert instead of deferring to the DB's `server_default NOW()` — every create 500'd. Reproduced the same failure on the pre-existing (never-exercised) `WhatsappTemplate` create endpoint, confirming it wasn't new. Fixed with Python-side `default=`/`onupdate=` on the two new models.
+  2. The Celery `_run()` helper's new-event-loop-per-task pattern was leaking pooled asyncpg connections across loops, intermittently crashing **every** scheduled task in the app with "attached to a different loop" (reproduced live in `celery_worker` logs). Fixed by disposing the shared engine's pool at the end of `_run()`.
+- Verified live: all 5 triggers fire with correct recipient resolution and variable substitution, correctly fail with the genuine Meta "no credentials" error (not a code bug), correctly skip with `skipped_no_phone` when no phone resolves, and produce zero sends when a rule is disabled.
+- Migration `027_whatsapp_automation.py`.
+
+### Known limitations (stated, not silently papered over)
+- No real WhatsApp Business API credentials are configured (`WHATSAPP_ACCESS_TOKEN`/`WHATSAPP_PHONE_NUMBER_ID`) — automation sends will log `status="failed"` with a genuine Meta API error until a human supplies them.
+- `CrmProduct`/`CrmQuoteItem.product_id` (pre-existing, Phase 7) remains as a legacy path alongside the new ERP-backed pricing — not removed, since live quote data points at it with no reliable remap.
+- Follow-up-due automation only fires once a follow-up is already overdue, not proactively ("about to become due").
+- Sample-dispatched automation keys off the free-text `"Sample Sent"` activity type rather than a new structured entity.
+
+---
+
 ## How to Run (Dev)
 
 ```bash
