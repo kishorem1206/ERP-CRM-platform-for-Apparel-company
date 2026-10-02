@@ -1,21 +1,32 @@
 """Sales module endpoints: customers, quotations, sales orders, deliveries, invoices."""
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.v1.deps import AuthUser, DBSession
-from app.models.sales import Customer, Delivery, Invoice, NatureOfBusiness, Quotation, SalesOrder
+from app.models.master import Product, ProductVariant
+from app.models.sales import Customer, Delivery, Invoice, NatureOfBusiness, PriceHistory, PriceList, PriceListItem, Quotation, SalesOrder
+from app.models.user import User
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.sales import (
     CustomerCreate, CustomerListOut, CustomerOut, CustomerUpdate,
     DeliveryCreate, DeliveryItemOut, DeliveryOut,
     InvoiceCreate, InvoiceOut,
     NatureOfBusinessOut,
+    PriceHistoryOut, PriceListCreate, PriceListItemCreate, PriceListItemOut,
+    PriceListItemUpdate, PriceListOut, PriceListUpdate, PriceResolveOut,
     QuotationCreate, QuotationItemOut, QuotationOut, QuotationUpdate,
     SalesOrderCreate, SalesOrderOut, SalesOrderUpdate, SOItemOut,
 )
+from app.services.pricing import PricingService
 from app.services.sales import SalesService
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
@@ -352,3 +363,198 @@ async def get_invoice(invoice_id: UUID, db: DBSession, user: AuthUser):
     if not inv:
         raise HTTPException(404, "Invoice not found")
     return ApiResponse(success=True, data=_invoice_out(inv))
+
+
+# ── Price Lists (Phase 7) ──────────────────────────────────────────────────────
+# Catalogue/customer-specific pricing — items always reference the real ERP
+# Product/ProductVariant master, never a separate CRM-only product table.
+
+@router.get("/price-lists")
+async def list_price_lists(db: DBSession, user: AuthUser):
+    user.require("master_data.view")
+    result = await db.execute(
+        select(PriceList, func.count(PriceListItem.id))
+        .outerjoin(PriceListItem, PriceListItem.price_list_id == PriceList.id)
+        .where(PriceList.company_id == user.company_id)
+        .group_by(PriceList.id)
+        .order_by(PriceList.name)
+    )
+    return ApiResponse(success=True, data=[
+        PriceListOut(id=pl.id, name=pl.name, is_default=pl.is_default,
+                      valid_from=pl.valid_from, valid_to=pl.valid_to, item_count=count)
+        for pl, count in result.all()
+    ])
+
+
+@router.post("/price-lists", status_code=201)
+async def create_price_list(body: PriceListCreate, db: DBSession, user: AuthUser):
+    user.require("master_data.create")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Price list name is required")
+    pl = PriceList(company_id=user.company_id, name=name, is_default=body.is_default,
+                    valid_from=body.valid_from, valid_to=body.valid_to)
+    db.add(pl)
+    await db.commit()
+    await db.refresh(pl)
+    return ApiResponse(success=True, data=PriceListOut(
+        id=pl.id, name=pl.name, is_default=pl.is_default, valid_from=pl.valid_from, valid_to=pl.valid_to,
+    ), message="Price list created")
+
+
+@router.patch("/price-lists/{price_list_id}")
+async def update_price_list(price_list_id: UUID, body: PriceListUpdate, db: DBSession, user: AuthUser):
+    user.require("master_data.edit")
+    result = await db.execute(select(PriceList).where(PriceList.id == price_list_id, PriceList.company_id == user.company_id))
+    pl = result.scalar_one_or_none()
+    if not pl:
+        raise HTTPException(404, "Price list not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(pl, field, val)
+    await db.commit()
+    await db.refresh(pl)
+    return ApiResponse(success=True, data=PriceListOut(
+        id=pl.id, name=pl.name, is_default=pl.is_default, valid_from=pl.valid_from, valid_to=pl.valid_to,
+    ), message="Price list updated")
+
+
+@router.delete("/price-lists/{price_list_id}")
+async def delete_price_list(price_list_id: UUID, db: DBSession, user: AuthUser):
+    user.require("master_data.delete")
+    result = await db.execute(select(PriceList).where(PriceList.id == price_list_id, PriceList.company_id == user.company_id))
+    pl = result.scalar_one_or_none()
+    if not pl:
+        raise HTTPException(404, "Price list not found")
+    in_use = await db.execute(select(func.count(Customer.id)).where(Customer.price_list_id == price_list_id))
+    if (in_use.scalar() or 0) > 0:
+        raise HTTPException(409, "Cannot delete — this price list is assigned to existing customers")
+    await db.delete(pl)
+    await db.commit()
+    return ApiResponse(success=True, message="Price list deleted")
+
+
+async def _price_list_item_out(db, item: PriceListItem) -> PriceListItemOut:
+    product = (await db.execute(select(Product.name).where(Product.id == item.product_id))).scalar_one_or_none()
+    variant_sku = None
+    if item.variant_id:
+        variant_sku = (await db.execute(select(ProductVariant.sku).where(ProductVariant.id == item.variant_id))).scalar_one_or_none()
+    customer_name = None
+    if item.customer_id:
+        customer_name = (await db.execute(select(Customer.legal_name).where(Customer.id == item.customer_id))).scalar_one_or_none()
+    return PriceListItemOut(
+        id=item.id, price_list_id=item.price_list_id, product_id=item.product_id, product_name=product,
+        variant_id=item.variant_id, variant_sku=variant_sku, customer_id=item.customer_id, customer_name=customer_name,
+        min_quantity=item.min_quantity, max_quantity=item.max_quantity, unit_price=item.unit_price,
+        discount_pct=item.discount_pct, valid_from=item.valid_from, valid_to=item.valid_to,
+    )
+
+
+@router.get("/price-lists/{price_list_id}/items")
+async def list_price_list_items(price_list_id: UUID, db: DBSession, user: AuthUser):
+    user.require("master_data.view")
+    pl_check = await db.execute(select(PriceList.id).where(PriceList.id == price_list_id, PriceList.company_id == user.company_id))
+    if not pl_check.scalar_one_or_none():
+        raise HTTPException(404, "Price list not found")
+    result = await db.execute(select(PriceListItem).where(PriceListItem.price_list_id == price_list_id))
+    items = result.scalars().all()
+    return ApiResponse(success=True, data=[await _price_list_item_out(db, i) for i in items])
+
+
+@router.post("/price-lists/{price_list_id}/items", status_code=201)
+async def create_price_list_item(price_list_id: UUID, body: PriceListItemCreate, db: DBSession, user: AuthUser):
+    user.require("master_data.create")
+    pl_check = await db.execute(select(PriceList.id).where(PriceList.id == price_list_id, PriceList.company_id == user.company_id))
+    if not pl_check.scalar_one_or_none():
+        raise HTTPException(404, "Price list not found")
+    item = PriceListItem(
+        price_list_id=price_list_id, product_id=body.product_id, variant_id=body.variant_id,
+        customer_id=body.customer_id, min_quantity=body.min_quantity, max_quantity=body.max_quantity,
+        unit_price=body.unit_price, discount_pct=body.discount_pct,
+        valid_from=body.valid_from, valid_to=body.valid_to,
+    )
+    db.add(item)
+    await db.flush()
+    db.add(PriceHistory(
+        company_id=user.company_id, product_id=item.product_id, variant_id=item.variant_id,
+        price_list_item_id=item.id, old_price=None, new_price=item.unit_price,
+        changed_by=user.user_id, changed_at=_now(),
+    ))
+    await db.commit()
+    return ApiResponse(success=True, data=await _price_list_item_out(db, item), message="Price added")
+
+
+@router.patch("/price-lists/items/{item_id}")
+async def update_price_list_item(item_id: UUID, body: PriceListItemUpdate, db: DBSession, user: AuthUser):
+    user.require("master_data.edit")
+    result = await db.execute(
+        select(PriceListItem).join(PriceList, PriceList.id == PriceListItem.price_list_id)
+        .where(PriceListItem.id == item_id, PriceList.company_id == user.company_id)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Price list item not found")
+    old_price = item.unit_price
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(item, field, val)
+    if item.unit_price != old_price:
+        db.add(PriceHistory(
+            company_id=user.company_id, product_id=item.product_id, variant_id=item.variant_id,
+            price_list_item_id=item.id, old_price=old_price, new_price=item.unit_price,
+            changed_by=user.user_id, changed_at=_now(),
+        ))
+    await db.commit()
+    return ApiResponse(success=True, data=await _price_list_item_out(db, item), message="Price updated")
+
+
+@router.delete("/price-lists/items/{item_id}")
+async def delete_price_list_item(item_id: UUID, db: DBSession, user: AuthUser):
+    user.require("master_data.delete")
+    result = await db.execute(
+        select(PriceListItem).join(PriceList, PriceList.id == PriceListItem.price_list_id)
+        .where(PriceListItem.id == item_id, PriceList.company_id == user.company_id)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Price list item not found")
+    await db.delete(item)
+    await db.commit()
+    return ApiResponse(success=True, message="Price removed")
+
+
+@router.get("/price-lists/resolve")
+async def resolve_price(
+    db: DBSession, user: AuthUser,
+    product_id: UUID, variant_id: UUID | None = None, customer_id: UUID | None = None,
+    quantity: Decimal = Decimal("1"), on_date: date | None = None,
+):
+    user.require("master_data.view")
+    result = await PricingService(db).get_price(
+        company_id=user.company_id, product_id=product_id, variant_id=variant_id,
+        customer_id=customer_id, quantity=quantity, on_date=on_date or date.today(),
+    )
+    return ApiResponse(success=True, data=PriceResolveOut(
+        unit_price=result.unit_price, discount_pct=result.discount_pct,
+        discount_amount=result.discount_amount, taxable_amount=result.taxable_amount, source=result.source,
+    ))
+
+
+@router.get("/price-history")
+async def get_price_history(db: DBSession, user: AuthUser, product_id: UUID, variant_id: UUID | None = None):
+    user.require("master_data.view")
+    filters = [PriceHistory.company_id == user.company_id, PriceHistory.product_id == product_id]
+    if variant_id:
+        filters.append(PriceHistory.variant_id == variant_id)
+    result = await db.execute(
+        select(PriceHistory, User.full_name)
+        .outerjoin(User, User.id == PriceHistory.changed_by)
+        .where(*filters)
+        .order_by(PriceHistory.changed_at.desc())
+        .limit(100)
+    )
+    return ApiResponse(success=True, data=[
+        PriceHistoryOut(
+            id=h.id, product_id=h.product_id, variant_id=h.variant_id,
+            old_price=h.old_price, new_price=h.new_price, changed_by_name=name, changed_at=h.changed_at,
+        )
+        for h, name in result.all()
+    ])

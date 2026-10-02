@@ -1,14 +1,15 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import {
   ArrowLeft, X, Phone, Users, StickyNote, CheckSquare, Mail,
   Plus, CheckCircle2, Circle, ShoppingCart, Send, Loader2, Inbox,
-  ChevronDown, FileText, Trash2,
+  ChevronDown, FileText, Trash2, MessageCircle, Clock,
 } from "lucide-react";
 import api from "@/lib/api";
+import { CreateTaskModal } from "@/components/crm/create-task-modal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
 
@@ -25,15 +26,27 @@ const ACTIVITY_ICONS: Record<string, React.ReactNode> = {
   note: <StickyNote className="h-3.5 w-3.5" />,
   task: <CheckSquare className="h-3.5 w-3.5" />,
   email: <Mail className="h-3.5 w-3.5" />,
+  "Phone Call": <Phone className="h-3.5 w-3.5" />,
+  Meeting: <Users className="h-3.5 w-3.5" />,
+  Note: <StickyNote className="h-3.5 w-3.5" />,
+  Task: <CheckSquare className="h-3.5 w-3.5" />,
+  Email: <Mail className="h-3.5 w-3.5" />,
+  WhatsApp: <MessageCircle className="h-3.5 w-3.5" />,
+  "Catalogue Sent": <FileText className="h-3.5 w-3.5" />,
+  "Quotation Sent": <FileText className="h-3.5 w-3.5" />,
+  "Sample Sent": <FileText className="h-3.5 w-3.5" />,
 };
+const DEFAULT_ACTIVITY_ICON = <Clock className="h-3.5 w-3.5" />;
 
 const ACTIVITY_COLORS: Record<string, string> = {
   call: "#0049A7", meeting: "#0F78FF", note: "#A096F7",
   task: "#0F78FF", email: "#0049A7",
+  "Phone Call": "#0049A7", Meeting: "#0F78FF", Note: "#A096F7",
+  Task: "#0F78FF", Email: "#0049A7", WhatsApp: "#8174F5",
 };
+const DEFAULT_ACTIVITY_COLOR = INDIGO;
 
-const ACTIVITY_TYPES = ["call", "meeting", "note", "task", "email"] as const;
-type ActivityType = typeof ACTIVITY_TYPES[number];
+type ActivityType = string;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface PipelineStage {
@@ -76,8 +89,23 @@ interface Lead {
   expected_close_date: string | null;
   tags: string[];
   notes: string | null;
+  assigned_to: string | null;
   assigned_to_name: string | null;
+  assigned_date: string | null;
+  assigned_by_name: string | null;
+  assignment_status: string;
+  next_follow_up_at: string | null;
+  follow_up_type: string | null;
+  follow_up_status: string;
+  last_contacted_at: string | null;
+  contact_outcome: string | null;
+  next_action: string | null;
   lost_reason: string | null;
+}
+
+interface FollowUpType {
+  id: string;
+  name: string;
 }
 
 interface Activity {
@@ -134,7 +162,7 @@ interface ComposeForm {
 }
 
 const emptyActivityForm = (): AddActivityForm => ({
-  type: "call",
+  type: "",
   title: "",
   comment: "",
   schedule_from: "",
@@ -619,10 +647,23 @@ function AddActivityModal({
   const [form, setForm] = useState<AddActivityForm>(emptyActivityForm());
 
   const { data: usersData } = useQuery({
-    queryKey: ["crm-admin-users"],
-    queryFn: () => api.get("/admin/users?page_size=200").then((r) => r.data),
+    queryKey: ["crm-assignable-users"],
+    queryFn: () => api.get("/crm/assignable-users").then((r) => r.data),
   });
   const users: UserOption[] = usersData?.data ?? [];
+
+  const { data: followUpTypesData } = useQuery({
+    queryKey: ["crm-follow-up-types"],
+    queryFn: () => api.get("/crm/follow-up-types").then((r) => r.data),
+  });
+  const followUpTypes: FollowUpType[] = followUpTypesData?.data ?? [];
+
+  useEffect(() => {
+    if (!form.type && followUpTypes.length > 0) {
+      setForm((f) => ({ ...f, type: followUpTypes[0].name }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followUpTypes]);
 
   const mutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => api.post("/crm/activities", data),
@@ -661,14 +702,14 @@ function AddActivityModal({
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-2">Type</label>
             <div className="flex flex-wrap gap-2">
-              {ACTIVITY_TYPES.map((t) => {
-                const color = ACTIVITY_COLORS[t];
-                const isActive = form.type === t;
+              {followUpTypes.map((ft) => {
+                const color = ACTIVITY_COLORS[ft.name] ?? DEFAULT_ACTIVITY_COLOR;
+                const isActive = form.type === ft.name;
                 return (
                   <button
-                    key={t}
+                    key={ft.id}
                     type="button"
-                    onClick={() => set("type", t)}
+                    onClick={() => set("type", ft.name)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all duration-150"
                     style={{
                       borderColor: isActive ? color : "hsl(var(--border))",
@@ -676,8 +717,8 @@ function AddActivityModal({
                       color: isActive ? color : "hsl(var(--muted-foreground))",
                     }}
                   >
-                    {ACTIVITY_ICONS[t]}
-                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                    {ACTIVITY_ICONS[ft.name] ?? DEFAULT_ACTIVITY_ICON}
+                    {ft.name}
                   </button>
                 );
               })}
@@ -755,6 +796,84 @@ function AddActivityModal({
   );
 }
 
+// ── Add Lead Product Modal ──────────────────────────────────────────────────
+// Links the real ERP product/variant master to this lead — the structured
+// version of the free-text "Catalogue Sent" follow-up label.
+function AddLeadProductModal({ leadId, onClose }: { leadId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [productId, setProductId] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const { data: productsData } = useQuery({
+    queryKey: ["products-for-lead-interest"],
+    queryFn: () => api.get("/products", { params: { page_size: 200 } }).then((r) => r.data),
+  });
+  const products: { id: string; name: string; code: string }[] = productsData?.data ?? [];
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.post(`/crm/leads/${leadId}/products`, {
+        product_id: productId,
+        quantity_interested: quantity ? Number(quantity) : undefined,
+        notes: notes || undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["crm-lead-products", leadId] });
+      onClose();
+    },
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-sm" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">Add Interested Product</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">
+            Product <span className="text-destructive">*</span>
+          </label>
+          <SearchableSelect
+            options={products.map((p) => ({ value: p.id, label: p.name, meta: p.code }))}
+            value={productId}
+            onChange={setProductId}
+            placeholder="Search product…"
+            accent={INDIGO}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Quantity Interested</label>
+          <input
+            className={inputCls} type="number" min="0" placeholder="optional"
+            value={quantity} onChange={(e) => setQuantity(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
+          <textarea className={`${inputCls} resize-none`} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => mutation.mutate()}
+          disabled={!productId || mutation.isPending}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {mutation.isPending ? "Saving…" : "Add"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 // ── Mark Lost Modal ───────────────────────────────────────────────────────────
 function MarkLostModal({
   leadId,
@@ -815,11 +934,12 @@ function MarkLostModal({
 // ── Activity Item ─────────────────────────────────────────────────────────────
 function ActivityItem({ activity, leadId }: { activity: Activity; leadId: string }) {
   const queryClient = useQueryClient();
-  const color = ACTIVITY_COLORS[activity.type] ?? INDIGO;
-  const icon = ACTIVITY_ICONS[activity.type] ?? <CheckSquare className="h-3.5 w-3.5" />;
+  const [showComplete, setShowComplete] = useState(false);
+  const color = ACTIVITY_COLORS[activity.type] ?? DEFAULT_ACTIVITY_COLOR;
+  const icon = ACTIVITY_ICONS[activity.type] ?? DEFAULT_ACTIVITY_ICON;
 
-  const doneMutation = useMutation({
-    mutationFn: (done: boolean) => api.patch(`/crm/activities/${activity.id}/done`, { is_done: done }),
+  const reopenMutation = useMutation({
+    mutationFn: () => api.patch(`/crm/activities/${activity.id}/done`, { is_done: false }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-activities", leadId] }),
   });
 
@@ -835,8 +955,8 @@ function ActivityItem({ activity, leadId }: { activity: Activity; leadId: string
         <div className="flex items-start justify-between gap-2">
           <p className="text-sm font-medium">{activity.title}</p>
           <button
-            onClick={() => doneMutation.mutate(!activity.is_done)}
-            disabled={doneMutation.isPending}
+            onClick={() => (activity.is_done ? reopenMutation.mutate() : setShowComplete(true))}
+            disabled={reopenMutation.isPending}
             className="flex-shrink-0 p-0.5 rounded transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
             title={activity.is_done ? "Mark not done" : "Mark done"}
           >
@@ -864,7 +984,141 @@ function ActivityItem({ activity, leadId }: { activity: Activity; leadId: string
           )}
         </div>
       </div>
+      {showComplete && (
+        <CompleteActivityModal activity={activity} leadId={leadId} onClose={() => setShowComplete(false)} />
+      )}
     </div>
+  );
+}
+
+// ── Complete Activity Modal (capture outcome + optionally schedule next) ───────
+function CompleteActivityModal({
+  activity, leadId, onClose,
+}: { activity: Activity; leadId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [outcome, setOutcome] = useState("");
+  const [nextAction, setNextAction] = useState("");
+  const [scheduleNext, setScheduleNext] = useState(false);
+  const [nextType, setNextType] = useState("");
+  const [nextAt, setNextAt] = useState("");
+  const [nextNotes, setNextNotes] = useState("");
+
+  const { data: followUpTypesData } = useQuery({
+    queryKey: ["crm-follow-up-types"],
+    queryFn: () => api.get("/crm/follow-up-types").then((r) => r.data),
+  });
+  const followUpTypes: FollowUpType[] = followUpTypesData?.data ?? [];
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.patch(`/crm/activities/${activity.id}/done`, {
+        is_done: true,
+        outcome: outcome || undefined,
+        next_action: nextAction || undefined,
+        next_follow_up_at: scheduleNext && nextAt ? new Date(nextAt).toISOString() : undefined,
+        next_follow_up_type: scheduleNext ? nextType || undefined : undefined,
+        next_follow_up_notes: scheduleNext ? nextNotes || undefined : undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["crm-activities", leadId] });
+      queryClient.invalidateQueries({ queryKey: ["crm-lead", leadId] });
+      onClose();
+    },
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-md" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">Complete: {activity.title}</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Outcome</label>
+          <textarea
+            className={`${inputCls} resize-none`}
+            rows={2}
+            placeholder="What happened? e.g. Customer interested, wants a sample…"
+            value={outcome}
+            onChange={(e) => setOutcome(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Next Action</label>
+          <input
+            className={inputCls}
+            placeholder="e.g. Send sample swatches"
+            value={nextAction}
+            onChange={(e) => setNextAction(e.target.value)}
+          />
+        </div>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={scheduleNext} onChange={(e) => setScheduleNext(e.target.checked)} />
+          Schedule the next follow-up now
+        </label>
+        {scheduleNext && (
+          <div className="space-y-3 pl-6 border-l-2" style={{ borderColor: `${INDIGO}30` }}>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-2">Type</label>
+              <div className="flex flex-wrap gap-2">
+                {followUpTypes.map((ft) => {
+                  const color = ACTIVITY_COLORS[ft.name] ?? DEFAULT_ACTIVITY_COLOR;
+                  const isActive = nextType === ft.name;
+                  return (
+                    <button
+                      key={ft.id}
+                      type="button"
+                      onClick={() => setNextType(ft.name)}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all duration-150"
+                      style={{
+                        borderColor: isActive ? color : "hsl(var(--border))",
+                        background: isActive ? `${color}18` : "transparent",
+                        color: isActive ? color : "hsl(var(--muted-foreground))",
+                      }}
+                    >
+                      {ft.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">When</label>
+              <input
+                className={inputCls}
+                type="datetime-local"
+                value={nextAt}
+                onChange={(e) => setNextAt(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
+              <textarea
+                className={`${inputCls} resize-none`}
+                rows={2}
+                value={nextNotes}
+                onChange={(e) => setNextNotes(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending || (scheduleNext && !nextAt)}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {mutation.isPending ? "Saving…" : "Mark Complete"}
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -875,6 +1129,8 @@ export default function LeadDetailPage() {
   const queryClient = useQueryClient();
 
   const [showAddActivity, setShowAddActivity] = useState(false);
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [showAddProduct, setShowAddProduct] = useState(false);
   const [showMarkLost, setShowMarkLost] = useState(false);
   const [showConvert, setShowConvert] = useState(false);
   const [convertMarkWon, setConvertMarkWon] = useState(false);
@@ -933,12 +1189,55 @@ export default function LeadDetailPage() {
     },
   });
 
+  const { data: assignableUsersData } = useQuery({
+    queryKey: ["crm-assignable-users"],
+    queryFn: async () => {
+      const res = await api.get("/crm/assignable-users");
+      return res.data;
+    },
+  });
+
+  const { data: tasksData } = useQuery({
+    queryKey: ["crm-tasks-lead", id],
+    queryFn: async () => {
+      const res = await api.get(`/crm/tasks?lead_id=${id}`);
+      return res.data;
+    },
+  });
+
+  const completeTaskMutation = useMutation({
+    mutationFn: (taskId: string) => api.patch(`/crm/tasks/${taskId}/complete`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-tasks-lead", id] }),
+  });
+
+  const { data: leadProductsData } = useQuery({
+    queryKey: ["crm-lead-products", id],
+    queryFn: async () => {
+      const res = await api.get(`/crm/leads/${id}/products`);
+      return res.data;
+    },
+  });
+
+  const removeLeadProductMutation = useMutation({
+    mutationFn: (linkId: string) => api.delete(`/crm/leads/${id}/products/${linkId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-lead-products", id] }),
+  });
+
   // ── Update mutation ──────────────────────────────────────────────────────────
   const updateMutation = useMutation({
     mutationFn: (patch: Record<string, unknown>) => api.patch(`/crm/leads/${id}`, patch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["crm-lead", id] });
       setEditingField(null);
+    },
+  });
+
+  // ── Assignment mutation ───────────────────────────────────────────────────────
+  const assignMutation = useMutation({
+    mutationFn: (assignedTo: string | null) =>
+      api.post(`/crm/leads/${id}/assign`, { assigned_to: assignedTo }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["crm-lead", id] });
     },
   });
 
@@ -953,6 +1252,14 @@ export default function LeadDetailPage() {
 
   const lead: Lead | null = leadData?.data ?? null;
   const activities: Activity[] = activitiesData?.data ?? [];
+  const assignableUsers: UserOption[] = assignableUsersData?.data ?? [];
+  const tasks: {
+    id: string; title: string; due_at: string | null; priority: string; status: string;
+  }[] = tasksData?.data ?? [];
+  const leadProducts: {
+    id: string; product_name: string | null; variant_sku: string | null;
+    quantity_interested: string | null; notes: string | null;
+  }[] = leadProductsData?.data ?? [];
   const emails: EmailRecord[] = emailsData?.data ?? [];
   const pipelines: Pipeline[] = pipelinesData?.data ?? [];
   const sources: LookupItem[] = sourcesData?.data ?? [];
@@ -1066,6 +1373,160 @@ export default function LeadDetailPage() {
                 placeholder="Select stage…"
                 accent={INDIGO}
               />
+            </div>
+
+            {/* Assignment */}
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Assigned To</label>
+              <SearchableSelect
+                options={assignableUsers.map((u) => ({ value: u.id, label: u.name, meta: u.email }))}
+                value={lead.assigned_to ?? ""}
+                onChange={(v) => assignMutation.mutate(v || null)}
+                placeholder="Unassigned"
+                accent={INDIGO}
+              />
+              <div className="flex items-center gap-3 mt-2 flex-wrap text-xs text-muted-foreground">
+                <span
+                  className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold capitalize whitespace-nowrap"
+                  style={{
+                    background: lead.assignment_status === "assigned" ? `${INDIGO}18` : "#94A3B818",
+                    color: lead.assignment_status === "assigned" ? INDIGO : "#64748B",
+                  }}
+                >
+                  {lead.assignment_status}
+                </span>
+                {lead.assigned_date && (
+                  <span>Assigned {new Date(lead.assigned_date).toLocaleDateString()}</span>
+                )}
+                {lead.assigned_by_name && <span>by {lead.assigned_by_name}</span>}
+              </div>
+            </div>
+
+            {/* Follow-up */}
+            {(lead.follow_up_status !== "none" || lead.last_contacted_at) && (
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Follow-up</label>
+                <div className="rounded-xl border border-border p-3 space-y-1.5 text-xs">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold capitalize whitespace-nowrap"
+                      style={{
+                        background:
+                          lead.follow_up_status === "scheduled"
+                            ? (lead.next_follow_up_at && new Date(lead.next_follow_up_at) < new Date() ? "#1D0DB018" : `${INDIGO}18`)
+                            : "#94A3B818",
+                        color:
+                          lead.follow_up_status === "scheduled"
+                            ? (lead.next_follow_up_at && new Date(lead.next_follow_up_at) < new Date() ? "#1D0DB0" : INDIGO)
+                            : "#64748B",
+                      }}
+                    >
+                      {lead.follow_up_status === "scheduled" && lead.next_follow_up_at && new Date(lead.next_follow_up_at) < new Date()
+                        ? "Overdue"
+                        : lead.follow_up_status}
+                    </span>
+                    {lead.next_follow_up_at && (
+                      <span className="text-muted-foreground">
+                        {lead.follow_up_type ? `${lead.follow_up_type} — ` : ""}
+                        {new Date(lead.next_follow_up_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
+                      </span>
+                    )}
+                  </div>
+                  {lead.last_contacted_at && (
+                    <p className="text-muted-foreground">
+                      Last contacted {new Date(lead.last_contacted_at).toLocaleDateString("en-IN")}
+                    </p>
+                  )}
+                  {lead.contact_outcome && <p><span className="text-muted-foreground">Outcome:</span> {lead.contact_outcome}</p>}
+                  {lead.next_action && <p><span className="text-muted-foreground">Next action:</span> {lead.next_action}</p>}
+                </div>
+              </div>
+            )}
+
+            {/* Tasks */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-muted-foreground">Tasks</label>
+                <button
+                  onClick={() => setShowAddTask(true)}
+                  className="text-xs font-semibold hover:underline"
+                  style={{ color: INDIGO }}
+                >
+                  + Add Task
+                </button>
+              </div>
+              {tasks.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No tasks for this lead yet.</p>
+              ) : (
+                <div className="rounded-xl border border-border divide-y divide-border">
+                  {tasks.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+                      <div className="min-w-0">
+                        <p className={`font-medium truncate ${t.status === "completed" ? "line-through text-muted-foreground" : ""}`}>
+                          {t.title}
+                        </p>
+                        {t.due_at && (
+                          <p className="text-muted-foreground">{new Date(t.due_at).toLocaleDateString("en-IN")}</p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => t.status !== "completed" && completeTaskMutation.mutate(t.id)}
+                        disabled={t.status === "completed"}
+                        className="flex-shrink-0 p-0.5 rounded hover:bg-muted transition-colors disabled:cursor-default"
+                      >
+                        {t.status === "completed" ? (
+                          <CheckCircle2 className="h-4 w-4 text-blue-500" />
+                        ) : (
+                          <Circle className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Interested Products */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-muted-foreground">Interested Products</label>
+                <button
+                  onClick={() => setShowAddProduct(true)}
+                  className="text-xs font-semibold hover:underline"
+                  style={{ color: INDIGO }}
+                >
+                  + Add Product
+                </button>
+              </div>
+              {leadProducts.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No products linked to this lead yet.</p>
+              ) : (
+                <div className="rounded-xl border border-border divide-y divide-border">
+                  {leadProducts.map((lp) => (
+                    <div key={lp.id} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+                      <div className="min-w-0">
+                        <p className="font-medium truncate">
+                          {lp.product_name ?? "—"}
+                          {lp.variant_sku && <span className="text-muted-foreground"> · {lp.variant_sku}</span>}
+                        </p>
+                        {(lp.quantity_interested || lp.notes) && (
+                          <p className="text-muted-foreground">
+                            {lp.quantity_interested ? `Qty ${lp.quantity_interested}` : ""}
+                            {lp.quantity_interested && lp.notes ? " · " : ""}
+                            {lp.notes ?? ""}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => removeLeadProductMutation.mutate(lp.id)}
+                        className="flex-shrink-0 p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-violet-500"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Value */}
@@ -1318,6 +1779,12 @@ export default function LeadDetailPage() {
       {/* Modals */}
       {showAddActivity && (
         <AddActivityModal leadId={id} onClose={() => setShowAddActivity(false)} />
+      )}
+      {showAddTask && (
+        <CreateTaskModal leadId={id} onClose={() => setShowAddTask(false)} />
+      )}
+      {showAddProduct && (
+        <AddLeadProductModal leadId={id} onClose={() => setShowAddProduct(false)} />
       )}
       {showMarkLost && (
         <MarkLostModal leadId={id} onClose={() => setShowMarkLost(false)} />

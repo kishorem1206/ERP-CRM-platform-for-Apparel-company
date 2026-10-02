@@ -143,8 +143,25 @@ class PriceListItem(Base):
     max_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     discount_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"))
+    valid_from: Mapped[Optional[date]] = mapped_column(Date)
+    valid_to: Mapped[Optional[date]] = mapped_column(Date)
 
     price_list: Mapped["PriceList"] = relationship(back_populates="items")
+
+
+class PriceHistory(Base):
+    __tablename__ = "price_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id"))
+    price_list_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("price_list_items.id", ondelete="SET NULL"))
+    old_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    new_price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Quotation(Base):

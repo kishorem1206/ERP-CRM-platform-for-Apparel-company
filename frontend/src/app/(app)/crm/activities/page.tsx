@@ -27,7 +27,13 @@ const ACTIVITY_ICONS: Record<string, React.ReactNode> = {
   note: <StickyNote className="h-3.5 w-3.5" />,
   task: <CheckSquare className="h-3.5 w-3.5" />,
   email: <Mail className="h-3.5 w-3.5" />,
+  "Phone Call": <Phone className="h-3.5 w-3.5" />,
+  Meeting: <Users className="h-3.5 w-3.5" />,
+  Note: <StickyNote className="h-3.5 w-3.5" />,
+  Task: <CheckSquare className="h-3.5 w-3.5" />,
+  Email: <Mail className="h-3.5 w-3.5" />,
 };
+const DEFAULT_ACTIVITY_ICON = <CheckSquare className="h-3.5 w-3.5" />;
 
 const ACTIVITY_COLORS: Record<string, string> = {
   call: "#0049A7",
@@ -35,7 +41,10 @@ const ACTIVITY_COLORS: Record<string, string> = {
   note: "#A096F7",
   task: "#0F78FF",
   email: "#0049A7",
+  "Phone Call": "#0049A7", Meeting: "#0F78FF", Note: "#A096F7",
+  Task: "#0F78FF", Email: "#0049A7", WhatsApp: "#8174F5",
 };
+const DEFAULT_ACTIVITY_COLOR = INDIGO;
 
 const TYPE_FILTERS = [
   { label: "All", value: "" },
@@ -68,8 +77,6 @@ interface UserOption {
   email: string;
 }
 
-const ACTIVITY_TYPES = ["call", "meeting", "note", "task", "email"] as const;
-
 function toDatetimeLocal(iso: string | null): string {
   if (!iso) return "";
   return format(new Date(iso), "yyyy-MM-dd'T'HH:mm");
@@ -90,6 +97,12 @@ function EditActivityModal({
     schedule_to: toDatetimeLocal(activity.schedule_to),
     assigned_to: activity.assigned_to ?? "",
   });
+
+  const { data: followUpTypesData } = useQuery({
+    queryKey: ["crm-follow-up-types"],
+    queryFn: () => api.get("/crm/follow-up-types").then((r) => r.data),
+  });
+  const followUpTypes: { id: string; name: string }[] = followUpTypesData?.data ?? [];
 
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -149,14 +162,14 @@ function EditActivityModal({
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-2">Type</label>
           <div className="flex flex-wrap gap-2">
-            {ACTIVITY_TYPES.map((t) => {
-              const color = ACTIVITY_COLORS[t];
-              const isActive = form.type === t;
+            {followUpTypes.map((ft) => {
+              const color = ACTIVITY_COLORS[ft.name] ?? DEFAULT_ACTIVITY_COLOR;
+              const isActive = form.type === ft.name;
               return (
                 <button
-                  key={t}
+                  key={ft.id}
                   type="button"
-                  onClick={() => set("type", t)}
+                  onClick={() => set("type", ft.name)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all duration-150"
                   style={{
                     borderColor: isActive ? color : "hsl(var(--border))",
@@ -164,8 +177,8 @@ function EditActivityModal({
                     color: isActive ? color : "hsl(var(--muted-foreground))",
                   }}
                 >
-                  {ACTIVITY_ICONS[t]}
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                  {ACTIVITY_ICONS[ft.name] ?? DEFAULT_ACTIVITY_ICON}
+                  {ft.name}
                 </button>
               );
             })}

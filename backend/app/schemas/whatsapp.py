@@ -75,3 +75,50 @@ class TemplateCreate(BaseModel):
     body_text: Optional[str] = None
     components: Optional[Any] = None
     wa_template_id: Optional[str] = None
+
+
+class AutomationRuleCreate(BaseModel):
+    name: str
+    trigger_event: str
+    template_id: Optional[UUID] = None
+    message_body: Optional[str] = None
+    recipient_type: str
+    delay_minutes: int = 0
+    is_active: bool = True
+
+
+class AutomationRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    trigger_event: Optional[str] = None
+    template_id: Optional[UUID] = None
+    message_body: Optional[str] = None
+    recipient_type: Optional[str] = None
+    delay_minutes: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class AutomationRuleOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    name: str
+    trigger_event: str
+    template_id: Optional[UUID] = None
+    message_body: Optional[str] = None
+    recipient_type: str
+    delay_minutes: int
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+class AutomationLogOut(BaseModel):
+    id: UUID
+    rule_id: UUID
+    lead_id: Optional[UUID] = None
+    recipient_phone: Optional[str] = None
+    rendered_body: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}

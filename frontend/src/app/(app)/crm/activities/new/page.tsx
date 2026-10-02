@@ -1,8 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronRight, Phone, Users, StickyNote, CheckSquare, Mail } from "lucide-react";
+import { ArrowLeft, ChevronRight, Phone, Users, StickyNote, CheckSquare, Mail, Clock } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 
@@ -10,16 +10,21 @@ const INDIGO = "#0049A7";
 const inputCls =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
-const ACTIVITY_TYPES = ["call", "meeting", "task", "email", "note"] as const;
-type ActivityType = typeof ACTIVITY_TYPES[number];
+type ActivityType = string;
 
-const ACTIVITY_META: Record<ActivityType, { label: string; icon: React.ElementType; color: string }> = {
-  call:    { label: "Call",    icon: Phone,       color: "#0F78FF" },
-  meeting: { label: "Meeting", icon: Users,       color: "#8174F5" },
-  task:    { label: "Task",    icon: CheckSquare, color: "#A096F7" },
-  email:   { label: "Email",   icon: Mail,        color: "#0049A7" },
-  note:    { label: "Note",    icon: StickyNote,  color: "#6B7280" },
+const ACTIVITY_META: Record<string, { icon: React.ElementType; color: string }> = {
+  call:    { icon: Phone,       color: "#0F78FF" },
+  meeting: { icon: Users,       color: "#8174F5" },
+  task:    { icon: CheckSquare, color: "#A096F7" },
+  email:   { icon: Mail,        color: "#0049A7" },
+  note:    { icon: StickyNote,  color: "#6B7280" },
+  "Phone Call": { icon: Phone, color: "#0F78FF" },
+  Meeting:      { icon: Users, color: "#8174F5" },
+  Task:         { icon: CheckSquare, color: "#A096F7" },
+  Email:        { icon: Mail, color: "#0049A7" },
+  Note:         { icon: StickyNote, color: "#6B7280" },
 };
+const DEFAULT_ACTIVITY_META = { icon: Clock, color: INDIGO };
 
 interface ActivityForm {
   type: ActivityType;
@@ -53,7 +58,7 @@ export default function NewActivityPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<ActivityForm>({
-    type: "call",
+    type: "",
     title: "",
     comment: "",
     lead_id: "",
@@ -67,6 +72,19 @@ export default function NewActivityPage() {
     queryFn: () => api.get("/crm/leads?page_size=200").then((r) => r.data),
   });
   const leads: { id: string; title: string }[] = leadsData?.data ?? [];
+
+  const { data: followUpTypesData } = useQuery({
+    queryKey: ["crm-follow-up-types"],
+    queryFn: () => api.get("/crm/follow-up-types").then((r) => r.data),
+  });
+  const followUpTypes: { id: string; name: string }[] = followUpTypesData?.data ?? [];
+
+  useEffect(() => {
+    if (!form.type && followUpTypes.length > 0) {
+      setForm((f) => ({ ...f, type: followUpTypes[0].name }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followUpTypes]);
 
   const mutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => api.post("/crm/activities", data),
@@ -142,14 +160,14 @@ export default function NewActivityPage() {
 
             <Field label="Type">
               <div className="flex flex-wrap gap-2 mt-1">
-                {ACTIVITY_TYPES.map((t) => {
-                  const { label, icon: Icon, color } = ACTIVITY_META[t];
-                  const active = form.type === t;
+                {followUpTypes.map((ft) => {
+                  const { icon: Icon, color } = ACTIVITY_META[ft.name] ?? DEFAULT_ACTIVITY_META;
+                  const active = form.type === ft.name;
                   return (
                     <button
-                      key={t}
+                      key={ft.id}
                       type="button"
-                      onClick={() => set("type", t)}
+                      onClick={() => set("type", ft.name)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all"
                       style={{
                         borderColor: active ? color : "hsl(var(--border))",
@@ -158,7 +176,7 @@ export default function NewActivityPage() {
                       }}
                     >
                       <Icon className="h-3.5 w-3.5" />
-                      {label}
+                      {ft.name}
                     </button>
                   );
                 })}

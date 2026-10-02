@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4 landscape;
+    margin: 18mm 14mm 16mm 14mm;
+    @top-center {
+      content: "{{ company_name or '' }}  •  {{ title }}";
+      font-size: 8pt; color: #64748B; font-family: 'DejaVu Sans', sans-serif;
+      border-bottom: 0.5pt solid #E2E8F0; padding-bottom: 5pt; width: 100%;
+    }
+    @bottom-left {
+      content: "Generated on {{ generated_at.strftime('%d %b %Y, %H:%M') }} UTC  •  Confidential — Internal Use Only";
+      font-size: 7.5pt; color: #94A3B8; font-family: 'DejaVu Sans', sans-serif;
+    }
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 7.5pt; color: #94A3B8; font-family: 'DejaVu Sans', sans-serif;
+    }
+  }
+  @page :first { @top-center { content: none; } }
+
+  * { box-sizing: border-box; }
+  body { font-family: 'DejaVu Sans', sans-serif; font-size: 9pt; color: #1A2233; margin: 0; line-height: 1.4; }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 2pt solid #0049A7; padding-bottom: 10pt; margin-bottom: 14pt;
+  }
+  .company-name { font-size: 12pt; font-weight: 700; color: #0F233D; }
+  .title-block { text-align: right; }
+  .title { font-size: 15pt; font-weight: 700; color: #0049A7; }
+  .subtitle { font-size: 8.5pt; color: #64748B; margin-top: 3pt; }
+
+  .totals-row { display: flex; gap: 10pt; margin-bottom: 14pt; }
+  .total-card {
+    border: 0.75pt solid #E2E8F0; border-radius: 5pt; padding: 8pt 12pt; background: #F8FAFC;
+  }
+  .total-card .label { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.3pt; color: #94A3B8; font-weight: 700; }
+  .total-card .value { font-size: 12pt; font-weight: 700; color: #0049A7; margin-top: 2pt; }
+
+  .meta-count { font-size: 8pt; color: #94A3B8; margin-bottom: 8pt; }
+
+  table.data { width: 100%; border-collapse: collapse; }
+  table.data thead { display: table-header-group; }
+  table.data th {
+    text-align: left; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.3pt;
+    color: #64748B; font-weight: 700; padding: 5pt 7pt; border-bottom: 1pt solid #0049A7;
+    background: #E7EFF9;
+  }
+  table.data td {
+    padding: 5pt 7pt; font-size: 8.5pt; border-bottom: 0.5pt solid #EEF2F6; vertical-align: top;
+  }
+  table.data tr { break-inside: avoid; page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="company-name">{{ company_name or "" }}</div>
+  <div class="title-block">
+    <div class="title">{{ title }}</div>
+    {% if subtitle %}<div class="subtitle">{{ subtitle }}</div>{% endif %}
+  </div>
+</div>
+
+{% if totals %}
+<div class="totals-row">
+  {% for t in totals %}
+  <div class="total-card">
+    <div class="label">{{ t.label }}</div>
+    <div class="value">{{ t.value }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<p class="meta-count">{{ rows | length }} record{{ "s" if rows | length != 1 else "" }}</p>
+
+<table class="data">
+  <thead>
+    <tr>{% for c in columns %}<th>{{ c.header }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      {% for c in columns %}
+      <td>{{ row.get(c.key) if row.get(c.key) is not none and row.get(c.key) != "" else "—" }}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+</body>
+</html>

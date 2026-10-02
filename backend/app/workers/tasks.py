@@ -7,11 +7,21 @@ from app.workers.celery_app import celery_app
 
 
 def _run(coro):
-    """Run an async coroutine from a sync Celery task."""
+    """Run an async coroutine from a sync Celery task.
+
+    Disposes the shared async engine's connection pool on this loop before
+    closing it - otherwise a connection checked into the pool under this
+    loop gets handed to the next task's brand-new event loop and asyncpg
+    raises "attached to a different loop" (pre-existing bug, surfaced by
+    this worker process running many tasks over its lifetime; fixed here
+    since every task funnels through this helper)."""
+    from app.db.session import engine
+
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
     finally:
+        loop.run_until_complete(engine.dispose())
         loop.close()
 
 
@@ -329,5 +339,163 @@ def mark_rotten_leads():
                 log.debug("mark_rotten_leads: no rotten leads found")
 
     _run(_mark())
+
+
+@celery_app.task(name="app.workers.tasks.flag_missed_followups")
+def flag_missed_followups():
+    """Find leads whose scheduled follow-up has passed and create a task +
+    notification for the assignee. Does not touch crm_leads.follow_up_status
+    — that field's only writer is _sync_lead_followup_fields in the API
+    layer (recomputed from the activity timeline); this job only observes
+    the same overdue condition the dashboard/list filter already compute.
+    Idempotent: skips leads that already have an open missed-follow-up task.
+    """
+    import logging
+    from app.db.session import AsyncSessionLocal
+    from app.services.notification import create_notification, publish_notification
+
+    log = logging.getLogger(__name__)
+
+    async def _flag():
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(text("""
+                SELECT l.id AS lead_id, l.company_id, l.title, l.assigned_to
+                FROM crm_leads l
+                WHERE l.follow_up_status = 'scheduled'
+                  AND l.next_follow_up_at < NOW()
+                  AND l.assigned_to IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM crm_tasks t
+                      WHERE t.lead_id = l.id
+                        AND t.source = 'missed_follow_up'
+                        AND t.status IN ('pending', 'in_progress')
+                  )
+            """))
+            rows = result.mappings().all()
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                await db.execute(text("""
+                    INSERT INTO crm_tasks
+                        (id, company_id, title, lead_id, assigned_to, due_at, priority, status, source, created_at, updated_at)
+                    VALUES
+                        (gen_random_uuid(), :cid, :title, :lead_id, :assignee, :due_at, 'high', 'pending', 'missed_follow_up', :now, :now)
+                """), {
+                    "cid": row["company_id"], "title": f"Missed follow-up: {row['title']}",
+                    "lead_id": row["lead_id"], "assignee": row["assigned_to"], "due_at": now, "now": now,
+                })
+                notif = await create_notification(
+                    db, company_id=row["company_id"], notification_type="missed_follow_up",
+                    title="Missed follow-up",
+                    body=f"The follow-up for \"{row['title']}\" is overdue.",
+                    user_id=row["assigned_to"], data={"lead_id": str(row["lead_id"])},
+                )
+                await db.commit()
+                try:
+                    publish_notification(str(row["company_id"]), {
+                        "type": "missed_follow_up", "title": notif.title, "body": notif.body,
+                        "id": str(notif.id), "user_id": str(row["assigned_to"]),
+                    })
+                except Exception:
+                    log.warning("Failed to publish missed_follow_up notification", exc_info=True)
+
+            if rows:
+                log.info("flag_missed_followups: created %d task(s)", len(rows))
+
+            from app.models.crm import CrmLead
+            from app.models.user import User as _User
+            from app.services.whatsapp_automation import fire_event, resolve_customer_name
+
+            for row in rows:
+                lead_obj = await db.get(CrmLead, row["lead_id"])
+                if not lead_obj:
+                    continue
+                assignee = await db.get(_User, lead_obj.assigned_to) if lead_obj.assigned_to else None
+                context = {
+                    "customer_name": await resolve_customer_name(db, lead_obj),
+                    "followup_date": lead_obj.next_follow_up_at.strftime("%d %b %Y") if lead_obj.next_follow_up_at else "",
+                    "employee_name": assignee.full_name or "" if assignee else "",
+                }
+                await fire_event(db, row["company_id"], "follow_up_due", context, lead=lead_obj)
+            await db.commit()
+
+    _run(_flag())
+
+
+@celery_app.task(name="app.workers.tasks.send_whatsapp_automation")
+def send_whatsapp_automation(log_id: str, template_id: str | None, phone: str, rendered_body: str):
+    """Sends one queued WhatsappAutomationLog row via the real Meta API.
+    Runs out-of-band (Celery) so the CRM action that fired the rule never
+    blocks on, or fails because of, the WhatsApp integration. Never raises
+    - failures (e.g. no real Meta credentials configured) are recorded on
+    the log row, not surfaced to the caller."""
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    async def _send():
+        from app.api.v1.endpoints.whatsapp import _call_meta, _get_or_create_contact
+        from app.db.session import AsyncSessionLocal
+        from app.models.whatsapp import WhatsappAutomationLog, WhatsappMessage, WhatsappTemplate
+
+        from app.core.config import settings
+        from app.models.whatsapp import WhatsappAutomationRule
+
+        async with AsyncSessionLocal() as db:
+            automation_log = await db.get(WhatsappAutomationLog, log_id)
+            if not automation_log:
+                return
+            rule_row = await db.get(WhatsappAutomationRule, automation_log.rule_id)
+            if not rule_row:
+                return
+
+            template = await db.get(WhatsappTemplate, template_id) if template_id else None
+            try:
+                if template:
+                    meta_payload = {
+                        "messaging_product": "whatsapp",
+                        "to": phone,
+                        "type": "template",
+                        "template": {
+                            "name": template.name,
+                            "language": {"code": template.language},
+                        },
+                    }
+                    message_type = "template"
+                    body_for_log = template.body_text
+                else:
+                    meta_payload = {
+                        "messaging_product": "whatsapp",
+                        "to": phone,
+                        "type": "text",
+                        "text": {"body": rendered_body},
+                    }
+                    message_type = "text"
+                    body_for_log = rendered_body
+
+                resp_data = await _call_meta(meta_payload)
+                wa_message_id = (resp_data.get("messages") or [{}])[0].get("id")
+
+                contact = await _get_or_create_contact(db, rule_row.company_id, phone)
+                db.add(WhatsappMessage(
+                    company_id=rule_row.company_id,
+                    direction="outbound",
+                    from_number=settings.WHATSAPP_PHONE_NUMBER_ID,
+                    to_number=phone,
+                    message_type=message_type,
+                    body=body_for_log,
+                    status="sent",
+                    contact_id=contact.id,
+                    wa_message_id=wa_message_id,
+                    created_at=datetime.now(timezone.utc),
+                ))
+                automation_log.status = "sent"
+            except Exception as exc:
+                automation_log.status = "failed"
+                automation_log.error_message = str(exc)
+                log.warning("send_whatsapp_automation failed for log_id=%s", log_id, exc_info=True)
+
+            await db.commit()
+
+    _run(_send())
 
 

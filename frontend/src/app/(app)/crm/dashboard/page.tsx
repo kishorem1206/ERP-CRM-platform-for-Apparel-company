@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { TrendingUp, CheckCircle2, BarChart2, Clock } from "lucide-react";
 import api from "@/lib/api";
+import { getCurrentUserId } from "@/lib/auth";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -38,15 +39,43 @@ interface RecentLead {
   created_at: string | null;
 }
 
+interface FollowUpDue {
+  lead_id: string;
+  lead_title: string;
+  next_follow_up_at: string | null;
+  follow_up_type: string | null;
+  assigned_to_name: string | null;
+}
+
+interface TaskDue {
+  id: string;
+  title: string;
+  due_at: string | null;
+  priority: string;
+  lead_id: string | null;
+}
+
 interface DashboardData {
   pipeline_summary: PipelineStageSummary[];
   status_counts: { open: number; won: number; lost: number };
   activities_due: number;
   activities_overdue: number;
+  follow_ups_today: FollowUpDue[];
+  follow_ups_overdue: FollowUpDue[];
+  my_tasks_today: TaskDue[];
+  my_tasks_overdue: TaskDue[];
+  my_tasks_completed_today: number;
   recent_leads: RecentLead[];
   conversion_rate: number;
   total_pipeline_value: number;
   won_value_30d: number;
+}
+
+interface LeadNeedingAction {
+  id: string;
+  title: string;
+  next_follow_up_at: string | null;
+  follow_up_type: string | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -122,6 +151,107 @@ function DonutChart({ open, won, lost }: { open: number; won: number; lost: numb
 }
 
 // ── KPI Tile ──────────────────────────────────────────────────────────────────
+function FollowUpList({ title, accent, items }: { title: string; accent: string; items: FollowUpDue[] }) {
+  return (
+    <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-border">
+        <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: accent }}>{title}</p>
+      </div>
+      <div className="divide-y divide-border">
+        {items.map((f) => (
+          <Link
+            key={f.lead_id}
+            href={`/crm/leads/${f.lead_id}`}
+            className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-muted/40 transition-colors"
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{f.lead_title}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {f.follow_up_type ?? "Follow-up"}
+                {f.assigned_to_name ? ` · ${f.assigned_to_name}` : ""}
+              </p>
+            </div>
+            {f.next_follow_up_at && (
+              <span className="text-xs text-muted-foreground flex-shrink-0">
+                {new Date(f.next_follow_up_at).toLocaleDateString("en-IN")}
+              </span>
+            )}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const PRIORITY_HEX: Record<string, string> = { low: "#64748B", medium: "#A096F7", high: "#1D0DB0" };
+
+function TaskList({ title, accent, items }: { title: string; accent: string; items: TaskDue[] }) {
+  return (
+    <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+        <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: accent }}>{title}</p>
+        <Link href="/crm/tasks" className="text-[11px] text-muted-foreground hover:underline">View all</Link>
+      </div>
+      <div className="divide-y divide-border">
+        {items.map((t) => {
+          const row = (
+            <div className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-muted/40 transition-colors">
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate">{t.title}</p>
+                <span
+                  className="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-bold capitalize"
+                  style={{ color: PRIORITY_HEX[t.priority] ?? accent }}
+                >
+                  {t.priority} priority
+                </span>
+              </div>
+              {t.due_at && (
+                <span className="text-xs text-muted-foreground flex-shrink-0">
+                  {new Date(t.due_at).toLocaleDateString("en-IN")}
+                </span>
+              )}
+            </div>
+          );
+          return t.lead_id ? (
+            <Link key={t.id} href={`/crm/leads/${t.lead_id}`}>{row}</Link>
+          ) : (
+            <div key={t.id}>{row}</div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LeadActionList({ items }: { items: LeadNeedingAction[] }) {
+  return (
+    <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-border">
+        <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: INDIGO }}>Leads Requiring Action</p>
+      </div>
+      <div className="divide-y divide-border">
+        {items.map((l) => (
+          <Link
+            key={l.id}
+            href={`/crm/leads/${l.id}`}
+            className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-muted/40 transition-colors"
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{l.title}</p>
+              <p className="text-[11px] text-muted-foreground">{l.follow_up_type ?? "Follow-up due"}</p>
+            </div>
+            {l.next_follow_up_at && (
+              <span className="text-xs text-muted-foreground flex-shrink-0">
+                {new Date(l.next_follow_up_at).toLocaleDateString("en-IN")}
+              </span>
+            )}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function KpiTile({
   label,
   value,
@@ -287,11 +417,23 @@ function EmptyState() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function CRMDashboardPage() {
+  const currentUserId = getCurrentUserId();
+
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: ["crm-dashboard"],
     queryFn: () => api.get("/crm/dashboard").then((r) => r.data.data),
     refetchInterval: 60_000,
   });
+
+  const { data: leadsNeedingActionData } = useQuery({
+    queryKey: ["crm-leads-needing-action", currentUserId],
+    queryFn: () =>
+      api
+        .get(`/crm/leads?assigned_to=${currentUserId}&follow_up_due=true&page_size=10`)
+        .then((r) => r.data.data as LeadNeedingAction[]),
+    enabled: !!currentUserId,
+  });
+  const leadsNeedingAction = leadsNeedingActionData ?? [];
 
   const totalLeads =
     (data?.status_counts.open ?? 0) +
@@ -349,6 +491,41 @@ export default function CRMDashboardPage() {
                 View activities
               </Link>
             </div>
+          )}
+        </div>
+      )}
+
+      {!isLoading && (data?.my_tasks_completed_today ?? 0) > 0 && (
+        <div
+          className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium border"
+          style={{ background: `${GREEN}0F`, borderColor: `${GREEN}30`, color: GREEN }}
+        >
+          <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+          You completed {data!.my_tasks_completed_today} task{data!.my_tasks_completed_today === 1 ? "" : "s"} today.
+        </div>
+      )}
+
+      {/* My Tasks + leads requiring action — personal, shown before company-wide data */}
+      {!isLoading && ((data?.my_tasks_overdue.length ?? 0) > 0 || (data?.my_tasks_today.length ?? 0) > 0 || leadsNeedingAction.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {(data?.my_tasks_overdue.length ?? 0) > 0 && (
+            <TaskList title="My Overdue Tasks" accent={RED} items={data!.my_tasks_overdue} />
+          )}
+          {(data?.my_tasks_today.length ?? 0) > 0 && (
+            <TaskList title="My Tasks Today" accent={ORANGE} items={data!.my_tasks_today} />
+          )}
+          {leadsNeedingAction.length > 0 && <LeadActionList items={leadsNeedingAction} />}
+        </div>
+      )}
+
+      {/* Follow-ups needing action */}
+      {!isLoading && ((data?.follow_ups_overdue.length ?? 0) > 0 || (data?.follow_ups_today.length ?? 0) > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {(data?.follow_ups_overdue.length ?? 0) > 0 && (
+            <FollowUpList title="Overdue Follow-ups" accent={RED} items={data!.follow_ups_overdue} />
+          )}
+          {(data?.follow_ups_today.length ?? 0) > 0 && (
+            <FollowUpList title="Follow-ups Due Today" accent={ORANGE} items={data!.follow_ups_today} />
           )}
         </div>
       )}

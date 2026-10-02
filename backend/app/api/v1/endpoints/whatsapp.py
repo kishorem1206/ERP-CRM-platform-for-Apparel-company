@@ -11,9 +11,19 @@ from app.api.v1.deps import AuthUser, DBSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.company import Company
-from app.models.whatsapp import WhatsappContact, WhatsappMessage, WhatsappTemplate
+from app.models.whatsapp import (
+    WhatsappAutomationLog,
+    WhatsappAutomationRule,
+    WhatsappContact,
+    WhatsappMessage,
+    WhatsappTemplate,
+)
 from app.schemas.base import ApiResponse, paginated
 from app.schemas.whatsapp import (
+    AutomationLogOut,
+    AutomationRuleCreate,
+    AutomationRuleOut,
+    AutomationRuleUpdate,
     ContactOut,
     MessageOut,
     SendMessageIn,
@@ -287,3 +297,87 @@ async def create_template(body: TemplateCreate, user: AuthUser, db: DBSession):
     await db.commit()
     await db.refresh(template)
     return ApiResponse(data=TemplateOut.model_validate(template))
+
+
+# ── Automation rules ──────────────────────────────────────────────────────────
+# Configurable trigger -> template/message -> recipient -> timing, so none of
+# the 5 CRM trigger points (lead_assigned, catalogue_shared, follow_up_due,
+# quotation_generated, sample_dispatched) hard-code a message. See
+# app.services.whatsapp_automation.fire_event for the dispatcher.
+
+@router.get("/automation-rules")
+async def list_automation_rules(user: AuthUser, db: DBSession):
+    user.require("crm.view")
+    rows = await db.execute(
+        select(WhatsappAutomationRule)
+        .where(WhatsappAutomationRule.company_id == user.company_id)
+        .order_by(WhatsappAutomationRule.created_at.desc())
+    )
+    return ApiResponse(data=[AutomationRuleOut.model_validate(r) for r in rows.scalars()])
+
+
+@router.post("/automation-rules", status_code=status.HTTP_201_CREATED)
+async def create_automation_rule(body: AutomationRuleCreate, user: AuthUser, db: DBSession):
+    user.require("crm.edit")
+    rule = WhatsappAutomationRule(company_id=user.company_id, created_by=user.user_id, **body.model_dump())
+    db.add(rule)
+    await db.commit()
+    await db.refresh(rule)
+    return ApiResponse(data=AutomationRuleOut.model_validate(rule))
+
+
+@router.patch("/automation-rules/{rule_id}")
+async def update_automation_rule(rule_id: UUID, body: AutomationRuleUpdate, user: AuthUser, db: DBSession):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(WhatsappAutomationRule).where(
+            WhatsappAutomationRule.id == rule_id, WhatsappAutomationRule.company_id == user.company_id
+        )
+    )
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Automation rule not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(rule, field, val)
+    await db.commit()
+    await db.refresh(rule)
+    return ApiResponse(data=AutomationRuleOut.model_validate(rule))
+
+
+@router.delete("/automation-rules/{rule_id}")
+async def delete_automation_rule(rule_id: UUID, user: AuthUser, db: DBSession):
+    user.require("crm.delete")
+    result = await db.execute(
+        select(WhatsappAutomationRule).where(
+            WhatsappAutomationRule.id == rule_id, WhatsappAutomationRule.company_id == user.company_id
+        )
+    )
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Automation rule not found")
+    await db.delete(rule)
+    await db.commit()
+    return ApiResponse(message="Automation rule deleted")
+
+
+@router.get("/automation-logs")
+async def list_automation_logs(
+    user: AuthUser, db: DBSession,
+    rule_id: UUID | None = None, lead_id: UUID | None = None, status_filter: str | None = Query(None, alias="status"),
+    page: int = 1, page_size: int = 50,
+):
+    user.require("crm.view")
+    filters = [WhatsappAutomationRule.company_id == user.company_id]
+    query = select(WhatsappAutomationLog).join(WhatsappAutomationRule, WhatsappAutomationRule.id == WhatsappAutomationLog.rule_id)
+    if rule_id:
+        filters.append(WhatsappAutomationLog.rule_id == rule_id)
+    if lead_id:
+        filters.append(WhatsappAutomationLog.lead_id == lead_id)
+    if status_filter:
+        filters.append(WhatsappAutomationLog.status == status_filter)
+    query = query.where(*filters).order_by(WhatsappAutomationLog.created_at.desc())
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    rows = await db.execute(query.offset((page - 1) * page_size).limit(page_size))
+    logs = [AutomationLogOut.model_validate(r) for r in rows.scalars()]
+    return paginated(logs, total, page, page_size)

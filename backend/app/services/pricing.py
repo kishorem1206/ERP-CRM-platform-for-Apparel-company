@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -49,6 +49,18 @@ def _round(value: Decimal, places: int = 2) -> Decimal:
     return value.quantize(Decimal(10) ** -places, rounding=ROUND_HALF_UP)
 
 
+def _item_valid_on(item, list_valid_from: date | None, list_valid_to: date | None, on_date: date) -> bool:
+    """Item-level valid_from/valid_to wins when set; otherwise falls back to
+    the parent price list's window. No window at all means always valid."""
+    start = item.valid_from or list_valid_from
+    end = item.valid_to or list_valid_to
+    if start and on_date < start:
+        return False
+    if end and on_date > end:
+        return False
+    return True
+
+
 class PricingService:
     """
     Deterministic pricing engine. Never delegates calculations to LLM.
@@ -61,16 +73,68 @@ class PricingService:
 
     async def get_price(
         self,
+        company_id: UUID,
         product_id: UUID,
         variant_id: UUID | None,
         customer_id: UUID | None,
         quantity: Decimal,
         on_date: date,
     ) -> PriceResult:
+        """Resolution order (each step only tried if the previous finds
+        nothing): customer-specific price-list override -> generic price
+        for the customer's assigned list -> Product.mrp -> not_found. The
+        `source` on the result distinguishes an actually-configured price
+        from the MRP fallback, so callers never mistake one for the other."""
         if self.db is None:
             raise RuntimeError("get_price requires a database session")
 
         from app.models.master import Product
+        from app.models.sales import Customer, PriceList, PriceListItem
+
+        price_list_id: UUID | None = None
+        if customer_id:
+            cust_result = await self.db.execute(
+                select(Customer.price_list_id).where(Customer.id == customer_id, Customer.company_id == company_id)
+            )
+            price_list_id = cust_result.scalar_one_or_none()
+
+        if price_list_id:
+            qty_filters = [
+                PriceListItem.price_list_id == price_list_id,
+                PriceListItem.product_id == product_id,
+                or_(PriceListItem.variant_id == variant_id, PriceListItem.variant_id.is_(None)) if variant_id
+                else PriceListItem.variant_id.is_(None),
+                PriceListItem.min_quantity <= quantity,
+                or_(PriceListItem.max_quantity.is_(None), PriceListItem.max_quantity >= quantity),
+            ]
+
+            async def _best_match(customer_scoped: bool):
+                scope = PriceListItem.customer_id == customer_id if customer_scoped else PriceListItem.customer_id.is_(None)
+                res = await self.db.execute(
+                    select(PriceListItem, PriceList.valid_from, PriceList.valid_to)
+                    .join(PriceList, PriceList.id == PriceListItem.price_list_id)
+                    .where(*qty_filters, scope)
+                )
+                for item, list_from, list_to in res.all():
+                    if _item_valid_on(item, list_from, list_to, on_date):
+                        return item
+                return None
+
+            item = await _best_match(customer_scoped=True) if customer_id else None
+            source = "customer_price_list"
+            if not item:
+                item = await _best_match(customer_scoped=False)
+                source = "price_list"
+
+            if item:
+                unit_price = Decimal(str(item.unit_price))
+                discount_pct = Decimal(str(item.discount_pct or 0))
+                discount_amount = _round(unit_price * quantity * discount_pct / 100)
+                taxable = _round(unit_price * quantity - discount_amount)
+                return PriceResult(
+                    unit_price=unit_price, discount_pct=discount_pct,
+                    discount_amount=discount_amount, taxable_amount=taxable, source=source,
+                )
 
         result = await self.db.execute(select(Product).where(Product.id == product_id))
         product = result.scalar_one_or_none()

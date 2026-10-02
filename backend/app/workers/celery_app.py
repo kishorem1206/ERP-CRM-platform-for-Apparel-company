@@ -43,5 +43,9 @@ celery_app.conf.update(
             "task": "app.workers.tasks.check_job_work_challans",
             "schedule": 24 * 60 * 60,
         },
+        "flag-missed-followups-hourly": {
+            "task": "app.workers.tasks.flag_missed_followups",
+            "schedule": 60 * 60,
+        },
     },
 )

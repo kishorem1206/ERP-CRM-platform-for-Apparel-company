@@ -8,6 +8,7 @@ import {
   Loader2, FileText, Pencil, Trash2,
 } from "lucide-react";
 import api from "@/lib/api";
+import { getCurrentUserId } from "@/lib/auth";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
 
@@ -85,6 +86,8 @@ interface Lead {
   pipeline_id: string | null;
   lead_value: number | null;
   assigned_to_name: string | null;
+  next_follow_up_at: string | null;
+  follow_up_status: string;
   status: string;
   tags: string[];
 }
@@ -742,7 +745,10 @@ export default function LeadsPage() {
 
   const [view, setView] = useState<"list" | "kanban">("list");
   const [search, setSearch] = useState("");
+  const [assignedToFilter, setAssignedToFilter] = useState("");
+  const [followUpDue, setFollowUpDue] = useState(false);
   const [page, setPage] = useState(1);
+  const currentUserId = getCurrentUserId();
   const [showImport, setShowImport] = useState(false);
   const [dragLeadId, setDragLeadId] = useState<string | null>(null);
   const [dragOverStageId, setDragOverStageId] = useState<string | null>(null);
@@ -752,10 +758,12 @@ export default function LeadsPage() {
 
   // ── Data fetches ────────────────────────────────────────────────────────────
   const { data: leadsData, isLoading: leadsLoading } = useQuery({
-    queryKey: ["crm-leads", page, search],
+    queryKey: ["crm-leads", page, search, assignedToFilter, followUpDue],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page), page_size: "50" });
       if (search) params.set("search", search);
+      if (assignedToFilter) params.set("assigned_to", assignedToFilter);
+      if (followUpDue) params.set("follow_up_due", "true");
       const res = await api.get(`/crm/leads?${params}`);
       return res.data;
     },
@@ -780,12 +788,11 @@ export default function LeadsPage() {
   });
 
   const { data: usersData } = useQuery({
-    queryKey: ["crm-admin-users"],
+    queryKey: ["crm-assignable-users"],
     queryFn: async () => {
-      const res = await api.get("/admin/users");
+      const res = await api.get("/crm/assignable-users");
       return res.data;
     },
-    enabled: view === "list",
   });
 
   // ── Stage move mutation ──────────────────────────────────────────────────────
@@ -949,6 +956,57 @@ export default function LeadsPage() {
                 }}
               />
             </div>
+
+            <div className="w-56">
+              <SearchableSelect
+                value={assignedToFilter}
+                onChange={(v) => {
+                  setAssignedToFilter(v);
+                  setPage(1);
+                  setSelectedIds(new Set());
+                }}
+                placeholder="Assigned To"
+                accent={INDIGO}
+                options={[
+                  { value: "", label: "All employees" },
+                  ...users.map((u) => ({ value: u.id, label: u.name, meta: u.email })),
+                ]}
+              />
+            </div>
+
+            {currentUserId && (
+              <button
+                onClick={() => {
+                  setAssignedToFilter((prev) => (prev === currentUserId ? "" : currentUserId));
+                  setPage(1);
+                  setSelectedIds(new Set());
+                }}
+                className="px-3 py-2 rounded-xl text-sm font-semibold border transition-colors"
+                style={
+                  assignedToFilter === currentUserId
+                    ? { background: `${INDIGO}14`, borderColor: `${INDIGO}40`, color: INDIGO }
+                    : { borderColor: "hsl(var(--input))" }
+                }
+              >
+                My Leads
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                setFollowUpDue((prev) => !prev);
+                setPage(1);
+                setSelectedIds(new Set());
+              }}
+              className="px-3 py-2 rounded-xl text-sm font-semibold border transition-colors"
+              style={
+                followUpDue
+                  ? { background: "#1D0DB014", borderColor: "#1D0DB040", color: "#1D0DB0" }
+                  : { borderColor: "hsl(var(--input))" }
+              }
+            >
+              Follow-ups Due
+            </button>
           </div>
 
           <div className="bg-card border border-border rounded-2xl overflow-hidden">
@@ -994,6 +1052,9 @@ export default function LeadsPage() {
                         </th>
                         <th className="px-4 py-2.5 text-left font-medium text-muted-foreground whitespace-nowrap">
                           Assigned To
+                        </th>
+                        <th className="px-4 py-2.5 text-left font-medium text-muted-foreground whitespace-nowrap">
+                          Next Follow-up
                         </th>
                         <th className="px-4 py-2.5 text-left font-medium text-muted-foreground whitespace-nowrap">
                           Status
@@ -1065,6 +1126,18 @@ export default function LeadsPage() {
                             </td>
                             <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">
                               {lead.assigned_to_name || "—"}
+                            </td>
+                            <td className="px-4 py-2.5 whitespace-nowrap">
+                              {lead.next_follow_up_at ? (
+                                <span style={{
+                                  color: lead.follow_up_status === "scheduled" && new Date(lead.next_follow_up_at) < new Date()
+                                    ? "#1D0DB0" : undefined,
+                                }}>
+                                  {new Date(lead.next_follow_up_at).toLocaleDateString("en-IN")}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
                             </td>
                             <td className="px-4 py-2.5 whitespace-nowrap">
                               <StatusBadge status={lead.status} />

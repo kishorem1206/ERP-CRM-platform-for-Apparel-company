@@ -465,3 +465,90 @@ class InvoiceOut(BaseModel):
     balance_amount: Decimal
     notes: str | None
     model_config = {"from_attributes": True}
+
+
+# ── Price Lists (Phase 7) ────────────────────────────────────────────────────
+
+class PriceListCreate(BaseModel):
+    name: str
+    is_default: bool = False
+    valid_from: date | None = None
+    valid_to: date | None = None
+
+
+class PriceListUpdate(BaseModel):
+    name: str | None = None
+    is_default: bool | None = None
+    valid_from: date | None = None
+    valid_to: date | None = None
+
+
+class PriceListOut(BaseModel):
+    id: UUID
+    name: str
+    is_default: bool
+    valid_from: date | None
+    valid_to: date | None
+    item_count: int = 0
+    model_config = {"from_attributes": True}
+
+
+class PriceListItemCreate(BaseModel):
+    product_id: UUID
+    variant_id: UUID | None = None
+    customer_id: UUID | None = None
+    min_quantity: Decimal = Decimal("0")
+    max_quantity: Decimal | None = None
+    unit_price: Decimal
+    discount_pct: Decimal = Decimal("0")
+    valid_from: date | None = None
+    valid_to: date | None = None
+
+
+class PriceListItemUpdate(BaseModel):
+    product_id: UUID | None = None
+    variant_id: UUID | None = None
+    customer_id: UUID | None = None
+    min_quantity: Decimal | None = None
+    max_quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    discount_pct: Decimal | None = None
+    valid_from: date | None = None
+    valid_to: date | None = None
+
+
+class PriceListItemOut(BaseModel):
+    id: UUID
+    price_list_id: UUID
+    product_id: UUID
+    product_name: str | None = None
+    variant_id: UUID | None
+    variant_sku: str | None = None
+    customer_id: UUID | None
+    customer_name: str | None = None
+    min_quantity: Decimal
+    max_quantity: Decimal | None
+    unit_price: Decimal
+    discount_pct: Decimal
+    valid_from: date | None
+    valid_to: date | None
+    model_config = {"from_attributes": True}
+
+
+class PriceResolveOut(BaseModel):
+    unit_price: Decimal
+    discount_pct: Decimal
+    discount_amount: Decimal
+    taxable_amount: Decimal
+    source: str
+
+
+class PriceHistoryOut(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: UUID | None
+    old_price: Decimal | None
+    new_price: Decimal
+    changed_by_name: str | None = None
+    changed_at: datetime
+    model_config = {"from_attributes": True}

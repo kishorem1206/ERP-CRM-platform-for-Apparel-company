@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Settings, CheckCircle2, XCircle, Loader2, Eye, EyeOff, X,
-  Mail, Plus, Pencil, Trash2,
+  Mail, Plus, Pencil, Trash2, Globe,
 } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
@@ -99,6 +99,80 @@ function CategoryBadge({ category }: { category: string }) {
 }
 
 // ── TemplateFormModal ─────────────────────────────────────────────────────────
+interface LeadSource {
+  id: string;
+  name: string;
+}
+
+function LeadSourceFormModal({
+  initial,
+  onClose,
+  onSaved,
+}: {
+  initial?: LeadSource;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [error, setError] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (initial) {
+        await api.patch(`/crm/lead-sources/${initial.id}`, { name });
+      } else {
+        await api.post("/crm/lead-sources", { name });
+      }
+    },
+    onSuccess: () => {
+      onSaved();
+      onClose();
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(typeof msg === "string" ? msg : "Failed to save source");
+    },
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-sm" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">{initial ? "Rename Source" : "New Source / Platform"}</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-3">
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">
+            Name <span className="text-destructive">*</span>
+          </label>
+          <input
+            className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            placeholder="e.g. Instagram, IndiaMART, Trade Show"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => { setError(""); mutation.mutate(); }}
+          disabled={!name.trim() || mutation.isPending}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {mutation.isPending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 function TemplateFormModal({
   initial,
   onClose,
@@ -324,6 +398,33 @@ export default function CRMSettingsPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/crm/email-templates/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-email-templates"] }),
+  });
+
+  // ── Lead Sources / Platforms ───────────────────────────────────────────────
+  const [showSourceModal, setShowSourceModal] = useState(false);
+  const [editingSource, setEditingSource] = useState<LeadSource | undefined>(undefined);
+  const [confirmDeleteSourceId, setConfirmDeleteSourceId] = useState<string | null>(null);
+  const [sourceDeleteError, setSourceDeleteError] = useState("");
+
+  const { data: sourcesData, isLoading: sourcesLoading } = useQuery({
+    queryKey: ["crm-lead-sources"],
+    queryFn: async () => {
+      const res = await api.get("/crm/lead-sources");
+      return res.data;
+    },
+  });
+  const sources: LeadSource[] = sourcesData?.data ?? [];
+
+  const deleteSourceMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/crm/lead-sources/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["crm-lead-sources"] });
+      setSourceDeleteError("");
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setSourceDeleteError(typeof msg === "string" ? msg : "Failed to delete source");
+    },
   });
 
   return (
@@ -647,6 +748,108 @@ export default function CRMSettingsPage() {
           )}
         </div>
       </div>
+
+      {/* ── Lead Sources / Platforms Section ───────────────────────────────────── */}
+      <div className="bg-card border border-border rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            <div className="flex items-center gap-2">
+              <Globe className="h-4 w-4 text-muted-foreground" />
+              <p className="font-semibold">Lead Sources / Platforms</p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Where your leads come from — WhatsApp, Instagram, IndiaMART, referrals, and so on
+            </p>
+          </div>
+          <button
+            onClick={() => { setEditingSource(undefined); setShowSourceModal(true); }}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
+            style={{ background: INDIGO }}
+          >
+            <Plus className="h-4 w-4" /> New Source
+          </button>
+        </div>
+
+        <div className="p-6">
+          {sourceDeleteError && (
+            <p className="text-xs text-destructive mb-3">{sourceDeleteError}</p>
+          )}
+          {sourcesLoading ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+              <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading…
+            </div>
+          ) : sources.length === 0 ? (
+            <div className="text-center py-10">
+              <Globe className="h-8 w-8 mx-auto mb-2 text-muted-foreground/30" />
+              <p className="text-sm text-muted-foreground">
+                No sources yet — click New Source to add one.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {sources.map((s) => (
+                <div
+                  key={s.id}
+                  className="group flex items-center gap-2 rounded-full border border-border pl-3 pr-1.5 py-1.5 text-sm hover:bg-muted/20 transition-colors"
+                >
+                  <span>{s.name}</span>
+                  <button
+                    title="Rename"
+                    onClick={() => { setEditingSource(s); setShowSourceModal(true); }}
+                    className="p-1 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                  <button
+                    title="Delete"
+                    onClick={() => { setSourceDeleteError(""); setConfirmDeleteSourceId(s.id); }}
+                    className="p-1 rounded-full hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {showSourceModal && (
+        <LeadSourceFormModal
+          initial={editingSource}
+          onClose={() => { setShowSourceModal(false); setEditingSource(undefined); }}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ["crm-lead-sources"] })}
+        />
+      )}
+
+      {confirmDeleteSourceId && (
+        <ModalShell maxWidth="max-w-xs" onClose={() => setConfirmDeleteSourceId(null)}>
+          <div className="p-6">
+            <p className="text-sm font-medium mb-1">Delete this source?</p>
+            <p className="text-xs text-muted-foreground mb-5">
+              This can&rsquo;t be undone. Sources still used by existing leads can&rsquo;t be deleted.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmDeleteSourceId(null)}
+                className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  deleteSourceMutation.mutate(confirmDeleteSourceId);
+                  setConfirmDeleteSourceId(null);
+                }}
+                disabled={deleteSourceMutation.isPending}
+                className="px-4 py-2 text-sm rounded-xl text-white font-semibold bg-violet-500 hover:bg-violet-600 transition-colors disabled:opacity-50"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
 
       {/* ── Template Form Modal ───────────────────────────────────────────────── */}
       {showTemplateModal && (

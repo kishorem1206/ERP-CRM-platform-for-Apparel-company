@@ -40,6 +40,7 @@ export interface QuoteSummary {
 export interface QuoteLineItem {
   id?: string;
   product_id: string | null;
+  erp_product_id?: string | null;
   name: string;
   quantity: number;
   unit_price: number;
@@ -86,10 +87,18 @@ interface QuoteFormData {
 interface QuoteLineItemForm {
   _key: string;
   product_id: string;
+  erp_product_id: string;
   name: string;
   quantity: string;
   unit_price: string;
   discount_percent: string;
+  price_source: string;
+}
+
+interface ErpProductLite {
+  id: string;
+  name: string;
+  code: string;
 }
 
 let _keyCounter = 0;
@@ -101,10 +110,12 @@ function emptyItem(): QuoteLineItemForm {
   return {
     _key: newKey(),
     product_id: "",
+    erp_product_id: "",
     name: "",
     quantity: "1",
     unit_price: "0",
     discount_percent: "0",
+    price_source: "",
   };
 }
 
@@ -135,10 +146,12 @@ function quoteToForm(q: QuoteFull): QuoteFormData {
         ? q.items.map((it) => ({
             _key: newKey(),
             product_id: it.product_id ?? "",
+            erp_product_id: it.erp_product_id ?? "",
             name: it.name,
             quantity: String(it.quantity),
             unit_price: String(it.unit_price),
             discount_percent: String(it.discount_percent),
+            price_source: "",
           }))
         : [emptyItem()],
   };
@@ -218,10 +231,26 @@ export function QuoteFormModal({
     },
   });
 
+  // Real ERP catalogue, alongside the legacy CRM-only product list above —
+  // selecting one resolves a price suggestion instead of a flat copy.
+  const { data: erpProductsData } = useQuery({
+    queryKey: ["erp-products-dropdown"],
+    queryFn: async () => {
+      const res = await api.get("/products", { params: { page_size: 200 } });
+      return res.data;
+    },
+  });
+
   const leads: DropdownOption[] = leadsData?.data ?? [];
   const persons: DropdownOption[] = personsData?.data ?? [];
   const orgs: DropdownOption[] = orgsData?.data ?? [];
   const products: Product[] = productsData?.data ?? [];
+  const erpProducts: ErpProductLite[] = erpProductsData?.data ?? [];
+
+  const productPickerOptions = [
+    ...products.map((p) => ({ value: p.id, label: p.name, meta: "CRM item" })),
+    ...erpProducts.map((p) => ({ value: `erp:${p.id}`, label: p.name, meta: `Catalogue · ${p.code}` })),
+  ];
 
   const mutation = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -249,15 +278,48 @@ export function QuoteFormModal({
   }
 
   const handleProductSelect = useCallback(
-    (key: string, productId: string) => {
-      const product = products.find((p) => p.id === productId);
+    (key: string, pickedValue: string) => {
+      if (pickedValue.startsWith("erp:")) {
+        const erpId = pickedValue.slice(4);
+        const erpProduct = erpProducts.find((p) => p.id === erpId);
+        setForm((f) => ({
+          ...f,
+          items: f.items.map((it) =>
+            it._key === key
+              ? { ...it, product_id: "", erp_product_id: erpId, name: erpProduct?.name ?? it.name, price_source: "" }
+              : it
+          ),
+        }));
+        // Suggest a price — never force it, matches the existing CrmProduct
+        // autofill UX (editable afterwards). No customer context is
+        // available in the CRM quote form, so this resolves at most the
+        // MRP tier; a price-list-backed suggestion needs a linked customer.
+        api
+          .get("/sales/price-lists/resolve", { params: { product_id: erpId, quantity: 1, on_date: new Date().toISOString().slice(0, 10) } })
+          .then((res) => {
+            const result = res.data?.data;
+            if (!result || result.source === "not_found") return;
+            setForm((f) => ({
+              ...f,
+              items: f.items.map((it) =>
+                it._key === key ? { ...it, unit_price: String(result.unit_price), price_source: result.source } : it
+              ),
+            }));
+          })
+          .catch(() => undefined);
+        return;
+      }
+
+      const product = products.find((p) => p.id === pickedValue);
       setForm((f) => ({
         ...f,
         items: f.items.map((it) =>
           it._key === key
             ? {
                 ...it,
-                product_id: productId,
+                product_id: pickedValue,
+                erp_product_id: "",
+                price_source: "",
                 name: product?.name ?? it.name,
                 unit_price: product?.price != null ? String(product.price) : it.unit_price,
               }
@@ -265,7 +327,7 @@ export function QuoteFormModal({
         ),
       }));
     },
-    [products]
+    [products, erpProducts]
   );
 
   function addItem() {
@@ -300,6 +362,7 @@ export function QuoteFormModal({
         .filter((it) => it.name.trim())
         .map((it) => ({
           product_id: it.product_id || undefined,
+          erp_product_id: it.erp_product_id || undefined,
           name: it.name,
           quantity: parseFloat(it.quantity) || 1,
           unit_price: parseFloat(it.unit_price) || 0,
@@ -450,13 +513,20 @@ export function QuoteFormModal({
                     className="grid gap-2 px-3 py-2 items-center"
                     style={{ gridTemplateColumns: "minmax(0,2fr) minmax(0,2fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.5fr) auto" }}
                   >
-                    <SearchableSelect
-                      options={products.map((p) => ({ value: p.id, label: p.name }))}
-                      value={item.product_id}
-                      onChange={(v) => handleProductSelect(item._key, v)}
-                      placeholder="Product…"
-                      accent={INDIGO}
-                    />
+                    <div>
+                      <SearchableSelect
+                        options={productPickerOptions}
+                        value={item.erp_product_id ? `erp:${item.erp_product_id}` : item.product_id}
+                        onChange={(v) => handleProductSelect(item._key, v)}
+                        placeholder="Product…"
+                        accent={INDIGO}
+                      />
+                      {item.price_source && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          Suggested from {item.price_source.replace(/_/g, " ")}
+                        </p>
+                      )}
+                    </div>
                     <input
                       className="w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                       placeholder="Item name…"

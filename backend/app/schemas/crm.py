@@ -138,6 +138,20 @@ class LeadSourceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LeadSourceCreate(BaseModel):
+    name: str
+
+
+class LeadSourceUpdate(BaseModel):
+    name: str | None = None
+
+
+class FollowUpTypeOut(BaseModel):
+    id: UUID
+    name: str
+    model_config = {"from_attributes": True}
+
+
 class LeadTypeOut(BaseModel):
     id: UUID
     name: str
@@ -200,6 +214,11 @@ class LeadStatusUpdate(BaseModel):
     lost_reason: str | None = None
 
 
+class LeadAssignIn(BaseModel):
+    assigned_to: UUID | None = None
+    note: str | None = None
+
+
 class LeadOut(BaseModel):
     id: UUID
     company_id: UUID
@@ -225,6 +244,19 @@ class LeadOut(BaseModel):
     organization_name: str | None = None
     customer_id: UUID | None
     assigned_to: UUID | None
+    assigned_to_name: str | None = None
+    assigned_date: datetime | None = None
+    assigned_by: UUID | None = None
+    assigned_by_name: str | None = None
+    assignment_status: str = "unassigned"
+    next_follow_up_at: datetime | None = None
+    follow_up_type: str | None = None
+    follow_up_reason: str | None = None
+    follow_up_notes: str | None = None
+    follow_up_status: str = "none"
+    last_contacted_at: datetime | None = None
+    contact_outcome: str | None = None
+    next_action: str | None = None
     created_by: UUID | None
     created_at: datetime
     updated_at: datetime
@@ -248,6 +280,11 @@ class LeadListOut(BaseModel):
     organization_id: UUID | None
     organization_name: str | None = None
     assigned_to: UUID | None
+    assigned_to_name: str | None = None
+    assignment_status: str = "unassigned"
+    next_follow_up_at: datetime | None = None
+    follow_up_type: str | None = None
+    follow_up_status: str = "none"
     created_at: datetime
     model_config = {"from_attributes": True}
 
@@ -279,6 +316,12 @@ class ActivityCreate(BaseModel):
 
 class ActivityDoneUpdate(BaseModel):
     is_done: bool = True
+    outcome: str | None = None
+    next_action: str | None = None
+    next_follow_up_at: datetime | None = None
+    next_follow_up_type: str | None = None
+    next_follow_up_reason: str | None = None
+    next_follow_up_notes: str | None = None
 
 
 class ActivityUpdate(BaseModel):
@@ -310,6 +353,130 @@ class ActivityOut(BaseModel):
     lead_title: str | None = None
     person_name: str | None = None
     assigned_to_name: str | None = None
+    model_config = {"from_attributes": True}
+
+
+# ── Tasks (Phase 3) ──────────────────────────────────────────────────────────
+
+class TaskCreate(BaseModel):
+    title: str
+    notes: str | None = None
+    lead_id: UUID | None = None
+    customer_id: UUID | None = None
+    assigned_to: UUID | None = None
+    due_at: datetime | None = None
+    priority: str = "medium"
+    source: str = "manual"
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = None
+    notes: str | None = None
+    lead_id: UUID | None = None
+    customer_id: UUID | None = None
+    assigned_to: UUID | None = None
+    due_at: datetime | None = None
+    priority: str | None = None
+    status: str | None = None
+
+
+class TaskCompleteIn(BaseModel):
+    notes: str | None = None
+
+
+class TaskOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    title: str
+    notes: str | None
+    lead_id: UUID | None
+    lead_title: str | None = None
+    customer_id: UUID | None
+    customer_name: str | None = None
+    assigned_to: UUID | None
+    assigned_to_name: str | None = None
+    due_at: datetime | None
+    priority: str
+    status: str
+    source: str
+    created_by: UUID | None
+    created_by_name: str | None = None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    model_config = {"from_attributes": True}
+
+
+# ── Ad Spend (Phase 5) ───────────────────────────────────────────────────────
+
+class AdSpendCreate(BaseModel):
+    source_id: UUID | None = None
+    campaign: str | None = None
+    campaign_id: str | None = None
+    ad_set: str | None = None
+    period_start: date
+    period_end: date
+    amount: Decimal
+    impressions: int | None = None
+    clicks: int | None = None
+    notes: str | None = None
+
+
+class AdSpendUpdate(BaseModel):
+    source_id: UUID | None = None
+    campaign: str | None = None
+    campaign_id: str | None = None
+    ad_set: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    amount: Decimal | None = None
+    impressions: int | None = None
+    clicks: int | None = None
+    notes: str | None = None
+
+
+class AdSpendOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    source_id: UUID | None
+    source_name: str | None = None
+    campaign: str | None
+    campaign_id: str | None = None
+    ad_set: str | None = None
+    period_start: date
+    period_end: date
+    amount: Decimal
+    impressions: int | None = None
+    clicks: int | None = None
+    source: str = "manual"
+    notes: str | None
+    created_by: UUID | None
+    created_by_name: str | None = None
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+
+# ── Lead Product Interest (Phase 7) ──────────────────────────────────────────
+# References the real ERP product/variant master — not CrmProduct — per the
+# Phase 7 instruction to not duplicate product master data.
+
+class LeadProductCreate(BaseModel):
+    product_id: UUID
+    variant_id: UUID | None = None
+    quantity_interested: Decimal | None = None
+    notes: str | None = None
+
+
+class LeadProductOut(BaseModel):
+    id: UUID
+    lead_id: UUID
+    product_id: UUID | None
+    product_name: str | None = None
+    variant_id: UUID | None
+    variant_sku: str | None = None
+    quantity_interested: Decimal | None
+    notes: str | None
+    created_at: datetime
     model_config = {"from_attributes": True}
 
 
@@ -351,6 +518,8 @@ class ProductOut(BaseModel):
 
 class QuoteItemIn(BaseModel):
     product_id: UUID | None = None
+    erp_product_id: UUID | None = None
+    erp_variant_id: UUID | None = None
     name: str
     description: str | None = None
     quantity: Decimal
@@ -362,6 +531,8 @@ class QuoteItemOut(BaseModel):
     id: UUID
     quote_id: UUID
     product_id: UUID | None
+    erp_product_id: UUID | None = None
+    erp_variant_id: UUID | None = None
     name: str
     description: str | None
     quantity: Decimal
@@ -654,6 +825,26 @@ class StageHistoryOut(BaseModel):
     note: str | None
     changed_at: datetime
     model_config = {"from_attributes": True}
+
+
+class LeadAssignmentHistoryOut(BaseModel):
+    id: UUID
+    lead_id: UUID
+    from_assignee_id: UUID | None
+    to_assignee_id: UUID | None
+    from_assignee_name: str | None
+    to_assignee_name: str | None
+    changed_by: UUID | None
+    changed_by_name: str | None
+    note: str | None
+    changed_at: datetime
+    model_config = {"from_attributes": True}
+
+
+class AssignableUserOut(BaseModel):
+    id: UUID
+    name: str
+    email: str
 
 
 # ── Person 360 (Contact 360 view) ─────────────────────────────────────────────

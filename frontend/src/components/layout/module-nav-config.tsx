@@ -5,7 +5,7 @@ import {
   Layers, BarChart2, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight,
   SlidersHorizontal, Warehouse, CreditCard, Calculator, FileMinus, FilePlus,
   TrendingUp, Ruler, PackageOpen, CheckSquare, Database, User,
-  Target, ListChecks, MessageCircle, Mail, Star,
+  Target, ListChecks, MessageCircle, Mail, Star, ListTodo, Tag, Zap,
 } from "lucide-react";
 import type { ComponentType } from "react";
 
@@ -33,6 +33,7 @@ export const MODULE_NAV: ModuleNavEntry[] = [
     key: "crm", label: "CRM", href: "/crm", icon: Users,
     items: [
       { label: "Dashboard", href: "/crm/dashboard", icon: LayoutDashboard, group: "Overview" },
+      { label: "Tasks", href: "/crm/tasks", icon: ListTodo, group: "Overview" },
       { label: "Reports", href: "/crm/reports", icon: BarChart3, group: "Overview" },
       { label: "Leads", href: "/crm/leads", icon: Target, group: "Pipeline" },
       { label: "Customers", href: "/crm/customers", icon: Users, group: "Contacts" },
@@ -42,7 +43,9 @@ export const MODULE_NAV: ModuleNavEntry[] = [
       { label: "Quotes", href: "/crm/quotes", icon: FileText, group: "Sales" },
       { label: "Activities", href: "/crm/activities", icon: ListChecks, group: "Activity" },
       { label: "WhatsApp", href: "/crm/whatsapp", icon: MessageCircle, group: "Activity" },
+      { label: "Automation", href: "/crm/whatsapp-automation", icon: Zap, group: "Activity" },
       { label: "Emails", href: "/crm/email", icon: Mail, group: "Activity" },
+      { label: "Ad Spend", href: "/crm/ad-spend", icon: Wallet, group: "Marketing" },
       { label: "Settings", href: "/crm/settings", icon: Settings, group: "Settings" },
     ],
   },
@@ -53,6 +56,7 @@ export const MODULE_NAV: ModuleNavEntry[] = [
       { label: "Sales Orders", href: "/sales/orders", icon: ShoppingCart },
       { label: "Delivery Challans", href: "/sales/deliveries", icon: Truck },
       { label: "Invoices", href: "/sales/invoices", icon: Receipt },
+      { label: "Price Lists", href: "/sales/price-lists", icon: Tag },
     ],
   },
   {

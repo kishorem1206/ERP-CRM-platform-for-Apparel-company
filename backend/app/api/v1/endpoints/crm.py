@@ -11,25 +11,31 @@ from uuid import UUID
 import aiosmtplib
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from sqlalchemy import and_, delete, func, insert, literal_column, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.deps import AuthUser, DBSession
 from app.models.crm import (
-    CrmActivity, CrmEmail, CrmEmailTemplate, CrmLead, CrmLeadImport,
+    CrmActivity, CrmEmail, CrmEmailTemplate, CrmFollowUpType, CrmLead, CrmLeadAssignmentHistory, CrmLeadImport,
     CrmLeadSource, CrmLeadStageHistory, CrmLeadTag, CrmLeadType,
     CrmNote, CrmOrganization, CrmPerson, CrmPipeline, CrmPipelineStage, CrmProduct,
-    CrmQuote, CrmQuoteItem, CrmSmtpConfig, CrmTag,
+    CrmAdSpend, CrmLeadProduct, CrmQuote, CrmQuoteItem, CrmSmtpConfig, CrmTag, CrmTask,
 )
+from app.models.master import Product, ProductVariant
+from app.models.sales import Customer
 from app.models.user import User
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.crm import (
     ActivityCreate, ActivityDoneUpdate, ActivityOut, ActivityUpdate,
+    AssignableUserOut,
     CrmReportParams,
     EmailCreate, EmailListOut, EmailOut,
     EmailTemplateCreate, EmailTemplateOut, EmailTemplateUpdate,
-    LeadBulkActionIn,
+    FollowUpTypeOut,
+    LeadAssignIn, LeadAssignmentHistoryOut, LeadBulkActionIn,
     LeadConvertIn, LeadCreate, LeadImportOut, LeadKanbanStageOut, LeadListOut, LeadOut,
-    LeadSourceOut, LeadStageUpdate, LeadStatusUpdate, LeadTypeOut, LeadUpdate,
+    LeadSourceCreate, LeadSourceOut, LeadSourceUpdate,
+    LeadStageUpdate, LeadStatusUpdate, LeadTypeOut, LeadUpdate,
     NoteCreate, NoteOut, NoteUpdate,
     OrganizationCreate, OrganizationListOut, OrganizationOut, OrganizationUpdate,
     Person360Out, LeadForPerson360,
@@ -40,7 +46,11 @@ from app.schemas.crm import (
     SmtpConfigCreate, SmtpConfigOut,
     StageHistoryOut,
     TagCreate, TagOut,
+    AdSpendCreate, AdSpendOut, AdSpendUpdate,
+    LeadProductCreate, LeadProductOut,
+    TaskCompleteIn, TaskCreate, TaskOut, TaskUpdate,
 )
+from app.services.notification import create_notification, publish_notification
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +69,13 @@ router = APIRouter(prefix="/crm", tags=["crm"])
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _conflict(exc: IntegrityError, on_duplicate: str, on_reference: str) -> HTTPException:
+    detail = str(exc.orig) if exc.orig else str(exc)
+    if "unique" in detail.lower() or "duplicate" in detail.lower():
+        return HTTPException(409, on_duplicate)
+    return HTTPException(409, on_reference)
 
 
 _LEAD_OPTS = [
@@ -83,7 +100,8 @@ def _person_email(person) -> str | None:
     return emails[0]["value"] if emails else None
 
 
-def _lead_out(lead: CrmLead) -> LeadOut:
+def _lead_out(lead: CrmLead, name_map: dict[UUID, str] | None = None) -> LeadOut:
+    name_map = name_map or {}
     return LeadOut(
         id=lead.id, company_id=lead.company_id, title=lead.title,
         description=lead.description, lead_value=lead.lead_value,
@@ -101,12 +119,26 @@ def _lead_out(lead: CrmLead) -> LeadOut:
         organization_id=lead.organization_id,
         organization_name=lead.organization.name if lead.organization else None,
         customer_id=lead.customer_id, assigned_to=lead.assigned_to,
+        assigned_to_name=name_map.get(lead.assigned_to),
+        assigned_date=lead.assigned_date,
+        assigned_by=lead.assigned_by,
+        assigned_by_name=name_map.get(lead.assigned_by),
+        assignment_status=lead.assignment_status,
+        next_follow_up_at=lead.next_follow_up_at,
+        follow_up_type=lead.follow_up_type,
+        follow_up_reason=lead.follow_up_reason,
+        follow_up_notes=lead.follow_up_notes,
+        follow_up_status=lead.follow_up_status,
+        last_contacted_at=lead.last_contacted_at,
+        contact_outcome=lead.contact_outcome,
+        next_action=lead.next_action,
         created_by=lead.created_by, created_at=lead.created_at, updated_at=lead.updated_at,
         tags=[TagOut.model_validate(t) for t in (lead.tags or [])],
     )
 
 
-def _lead_list_out(lead: CrmLead) -> LeadListOut:
+def _lead_list_out(lead: CrmLead, name_map: dict[UUID, str] | None = None) -> LeadListOut:
+    name_map = name_map or {}
     return LeadListOut(
         id=lead.id, title=lead.title, lead_value=lead.lead_value,
         temperature=lead.temperature, status=lead.status,
@@ -119,8 +151,137 @@ def _lead_list_out(lead: CrmLead) -> LeadListOut:
         person_email=_person_email(lead.person),
         organization_id=lead.organization_id,
         organization_name=lead.organization.name if lead.organization else None,
-        assigned_to=lead.assigned_to, created_at=lead.created_at,
+        assigned_to=lead.assigned_to,
+        assigned_to_name=name_map.get(lead.assigned_to),
+        assignment_status=lead.assignment_status,
+        next_follow_up_at=lead.next_follow_up_at,
+        follow_up_type=lead.follow_up_type,
+        follow_up_status=lead.follow_up_status,
+        created_at=lead.created_at,
     )
+
+
+async def _resolve_user_names(db, company_id: UUID, ids: set[UUID | None]) -> dict[UUID, str]:
+    """Batch-resolve user ids to display names, avoiding N+1 lookups."""
+    clean_ids = {i for i in ids if i}
+    if not clean_ids:
+        return {}
+    result = await db.execute(
+        select(User.id, User.full_name).where(User.id.in_(clean_ids), User.company_id == company_id)
+    )
+    return {uid: name for uid, name in result.all()}
+
+
+async def _sync_lead_followup_fields(db, lead_id: UUID) -> None:
+    """Recomputes a lead's forward-looking follow-up fields from its
+    activity timeline — the single place these fields are derived, so they
+    can never drift from the activities that actually back them. Call after
+    any activity create/update/delete/done-toggle that touches a lead_id.
+    Does not commit."""
+    result = await db.execute(
+        select(CrmLead).where(CrmLead.id == lead_id)
+    )
+    lead = result.scalar_one_or_none()
+    if not lead:
+        return
+
+    next_result = await db.execute(
+        select(CrmActivity)
+        .where(
+            CrmActivity.lead_id == lead_id,
+            CrmActivity.is_done.is_(False),
+            CrmActivity.schedule_from.is_not(None),
+        )
+        .order_by(CrmActivity.schedule_from.asc())
+        .limit(1)
+    )
+    next_activity = next_result.scalar_one_or_none()
+
+    if next_activity:
+        lead.next_follow_up_at = next_activity.schedule_from
+        lead.follow_up_type = next_activity.type
+        lead.follow_up_reason = next_activity.comment
+        lead.follow_up_status = "scheduled"
+    else:
+        lead.next_follow_up_at = None
+        lead.follow_up_type = None
+        lead.follow_up_reason = None
+        if lead.follow_up_status == "scheduled":
+            # Nothing left scheduled — only demote, never invent a
+            # "completed" state for a lead that was never followed up on.
+            lead.follow_up_status = "completed"
+
+
+async def _assign_lead(
+    db, lead: CrmLead, new_assignee_id: UUID | None, by_user_id: UUID, by_user_name: str | None,
+    note: str | None = None,
+) -> None:
+    """Shared assignment logic for the dedicated assign endpoint and bulk-action
+    assign — stamps assigned_by/assigned_date/assignment_status, writes an
+    audit history row, and notifies the new assignee. Does not commit."""
+    old_assignee_id = lead.assigned_to
+    name_map = await _resolve_user_names(db, lead.company_id, {old_assignee_id, new_assignee_id})
+
+    lead.assigned_to = new_assignee_id
+    lead.assigned_by = by_user_id
+    lead.assigned_date = _now()
+    lead.assignment_status = "assigned" if new_assignee_id else "unassigned"
+    lead.updated_at = _now()
+
+    db.add(CrmLeadAssignmentHistory(
+        lead_id=lead.id,
+        from_assignee_id=old_assignee_id,
+        to_assignee_id=new_assignee_id,
+        from_assignee_name=name_map.get(old_assignee_id),
+        to_assignee_name=name_map.get(new_assignee_id),
+        changed_by=by_user_id,
+        changed_by_name=by_user_name,
+        note=note,
+        changed_at=_now(),
+    ))
+
+    if new_assignee_id and new_assignee_id != old_assignee_id:
+        notif = await create_notification(
+            db,
+            company_id=lead.company_id,
+            notification_type="lead_assigned",
+            title="New lead assigned",
+            body=f"{lead.title} has been assigned to you.",
+            user_id=new_assignee_id,
+            data={"lead_id": str(lead.id)},
+        )
+        try:
+            publish_notification(str(lead.company_id), {
+                "id": str(notif.id), "type": "lead_assigned",
+                "title": notif.title, "body": notif.body, "user_id": str(new_assignee_id),
+            })
+        except Exception:
+            logger.warning("Failed to publish lead_assigned notification to Redis", exc_info=True)
+
+        db.add(CrmTask(
+            company_id=lead.company_id,
+            title=f"Make first contact: {lead.title}",
+            lead_id=lead.id,
+            assigned_to=new_assignee_id,
+            due_at=_now() + timedelta(hours=24),
+            priority="medium",
+            source="lead_assignment",
+            created_by=by_user_id,
+            created_at=_now(), updated_at=_now(),
+        ))
+
+        try:
+            from app.services.whatsapp_automation import fire_event, resolve_company_name, resolve_customer_name
+
+            context = {
+                "customer_name": await resolve_customer_name(db, lead),
+                "company_name": await resolve_company_name(db, lead.company_id),
+                "employee_name": name_map.get(new_assignee_id) or "",
+                "lead_title": lead.title,
+            }
+            await fire_event(db, lead.company_id, "lead_assigned", context, lead=lead)
+        except Exception:
+            logger.warning("Failed to fire lead_assigned WhatsApp automation", exc_info=True)
 
 
 async def _get_lead(lead_id: UUID, company_id: UUID, db) -> CrmLead:
@@ -461,6 +622,70 @@ async def list_lead_sources(db: DBSession, user: AuthUser):
     return ApiResponse(success=True, data=[LeadSourceOut.model_validate(s) for s in result.scalars().all()])
 
 
+@router.post("/lead-sources", status_code=201)
+async def create_lead_source(body: LeadSourceCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Source name is required")
+    source = CrmLeadSource(company_id=user.company_id, name=name, created_at=_now())
+    db.add(source)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A source with this name already exists", "Cannot create source")
+    await db.refresh(source)
+    return ApiResponse(success=True, data=LeadSourceOut.model_validate(source), message="Source created")
+
+
+@router.patch("/lead-sources/{source_id}")
+async def update_lead_source(source_id: UUID, body: LeadSourceUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(
+        select(CrmLeadSource).where(CrmLeadSource.id == source_id, CrmLeadSource.company_id == user.company_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(404, "Source not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Source name is required")
+        source.name = name
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A source with this name already exists", "Cannot update source")
+    await db.refresh(source)
+    return ApiResponse(success=True, data=LeadSourceOut.model_validate(source), message="Source updated")
+
+
+@router.delete("/lead-sources/{source_id}")
+async def delete_lead_source(source_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    result = await db.execute(
+        select(CrmLeadSource).where(CrmLeadSource.id == source_id, CrmLeadSource.company_id == user.company_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(404, "Source not found")
+    # crm_leads.source_id is ON DELETE SET NULL, so the IntegrityError path
+    # Category relies on would never fire here — guard explicitly so a
+    # delete can't silently orphan historical leads and corrupt past
+    # reports' platform attribution.
+    in_use = await db.execute(
+        select(func.count(CrmLead.id)).where(CrmLead.source_id == source_id)
+    )
+    count = in_use.scalar() or 0
+    if count > 0:
+        raise HTTPException(409, f"Cannot delete — {count} lead(s) still use this source")
+    await db.delete(source)
+    await db.commit()
+    return ApiResponse(success=True, message="Source deleted")
+
+
 @router.get("/lead-types")
 async def list_lead_types(db: DBSession, user: AuthUser):
     user.require("crm.view")
@@ -560,7 +785,7 @@ async def leads_kanban(db: DBSession, user: AuthUser, pipeline_id: UUID | None =
 async def list_leads(
     db: DBSession, user: AuthUser,
     stage_id: UUID | None = None, status: str | None = None,
-    assigned_to: UUID | None = None,
+    assigned_to: UUID | None = None, follow_up_due: bool = False,
     page: int = 1, page_size: int = 50,
 ):
     user.require("crm.view")
@@ -571,6 +796,9 @@ async def list_leads(
         filters.append(CrmLead.status == status)
     if assigned_to:
         filters.append(CrmLead.assigned_to == assigned_to)
+    if follow_up_due:
+        filters.append(CrmLead.follow_up_status == "scheduled")
+        filters.append(CrmLead.next_follow_up_at <= _now())
 
     total_result = await db.execute(select(func.count(CrmLead.id)).where(*filters))
     total = total_result.scalar() or 0
@@ -584,9 +812,10 @@ async def list_leads(
         .limit(page_size)
     )
     leads = result.scalars().all()
+    name_map = await _resolve_user_names(db, user.company_id, {lead.assigned_to for lead in leads})
     return ApiResponse(
         success=True,
-        data=[_lead_list_out(lead) for lead in leads],
+        data=[_lead_list_out(lead, name_map) for lead in leads],
         meta=PaginatedMeta(page=page, page_size=page_size, total=total),
     )
 
@@ -608,14 +837,16 @@ async def create_lead(body: LeadCreate, db: DBSession, user: AuthUser):
     db.add(lead)
     await db.commit()
     lead = await _get_lead(lead.id, user.company_id, db)
-    return ApiResponse(success=True, data=_lead_out(lead), message="Lead created")
+    name_map = await _resolve_user_names(db, user.company_id, {lead.assigned_to})
+    return ApiResponse(success=True, data=_lead_out(lead, name_map), message="Lead created")
 
 
 @router.get("/leads/{lead_id}")
 async def get_lead(lead_id: UUID, db: DBSession, user: AuthUser):
     user.require("crm.view")
     lead = await _get_lead(lead_id, user.company_id, db)
-    return ApiResponse(success=True, data=_lead_out(lead))
+    name_map = await _resolve_user_names(db, user.company_id, {lead.assigned_to, lead.assigned_by})
+    return ApiResponse(success=True, data=_lead_out(lead, name_map))
 
 
 @router.patch("/leads/{lead_id}")
@@ -706,6 +937,121 @@ async def update_lead_status(lead_id: UUID, body: LeadStatusUpdate, db: DBSessio
     return ApiResponse(success=True, data=_lead_out(lead))
 
 
+@router.post("/leads/{lead_id}/assign")
+async def assign_lead(lead_id: UUID, body: LeadAssignIn, db: DBSession, user: AuthUser):
+    user.require("crm.assign")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    by_name_map = await _resolve_user_names(db, user.company_id, {user.user_id})
+    await _assign_lead(db, lead, body.assigned_to, user.user_id, by_name_map.get(user.user_id), body.note)
+    await db.commit()
+    lead = await _get_lead(lead_id, user.company_id, db)
+    name_map = await _resolve_user_names(db, user.company_id, {lead.assigned_to, lead.assigned_by})
+    return ApiResponse(success=True, data=_lead_out(lead, name_map), message="Lead assignment updated")
+
+
+@router.get("/leads/{lead_id}/assignment-history")
+async def get_assignment_history(lead_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmLeadAssignmentHistory)
+        .where(CrmLeadAssignmentHistory.lead_id == lead_id)
+        .order_by(CrmLeadAssignmentHistory.changed_at)
+    )
+    return ApiResponse(
+        success=True,
+        data=[LeadAssignmentHistoryOut.model_validate(h) for h in result.scalars().all()],
+    )
+
+
+# ── Lead Product Interest (Phase 7) ──────────────────────────────────────────
+# References the real ERP product/variant master (not CrmProduct) — the
+# structured version of the "Catalogue Sent" follow-up-type label, which was
+# just free text with no link to which product was actually shared.
+
+async def _lead_product_out(db, lp: CrmLeadProduct) -> LeadProductOut:
+    product_name = None
+    if lp.product_id:
+        product_name = (await db.execute(select(Product.name).where(Product.id == lp.product_id))).scalar_one_or_none()
+    variant_sku = None
+    if lp.variant_id:
+        variant_sku = (await db.execute(select(ProductVariant.sku).where(ProductVariant.id == lp.variant_id))).scalar_one_or_none()
+    return LeadProductOut(
+        id=lp.id, lead_id=lp.lead_id, product_id=lp.product_id, product_name=product_name,
+        variant_id=lp.variant_id, variant_sku=variant_sku,
+        quantity_interested=lp.quantity_interested, notes=lp.notes, created_at=lp.created_at,
+    )
+
+
+@router.get("/leads/{lead_id}/products")
+async def list_lead_products(lead_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmLeadProduct).where(CrmLeadProduct.lead_id == lead_id).order_by(CrmLeadProduct.created_at.desc())
+    )
+    rows = result.scalars().all()
+    return ApiResponse(success=True, data=[await _lead_product_out(db, r) for r in rows])
+
+
+@router.post("/leads/{lead_id}/products", status_code=201)
+async def add_lead_product(lead_id: UUID, body: LeadProductCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    lp = CrmLeadProduct(
+        lead_id=lead.id, product_id=body.product_id, variant_id=body.variant_id,
+        quantity_interested=body.quantity_interested, notes=body.notes,
+        created_by=user.user_id, created_at=_now(),
+    )
+    db.add(lp)
+
+    try:
+        from app.services.whatsapp_automation import fire_event, resolve_company_name, resolve_customer_name
+
+        product_name = ""
+        if body.product_id:
+            product_row = (await db.execute(select(Product.name).where(Product.id == body.product_id))).scalar_one_or_none()
+            product_name = product_row or ""
+        context = {
+            "customer_name": await resolve_customer_name(db, lead),
+            "product_name": product_name,
+            "company_name": await resolve_company_name(db, lead.company_id),
+        }
+        await fire_event(db, lead.company_id, "catalogue_shared", context, lead=lead)
+    except Exception:
+        logger.warning("Failed to fire catalogue_shared WhatsApp automation", exc_info=True)
+
+    await db.commit()
+    await db.refresh(lp)
+    return ApiResponse(success=True, data=await _lead_product_out(db, lp), message="Product linked to lead")
+
+
+@router.delete("/leads/{lead_id}/products/{link_id}")
+async def remove_lead_product(lead_id: UUID, link_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    result = await db.execute(select(CrmLeadProduct).where(CrmLeadProduct.id == link_id, CrmLeadProduct.lead_id == lead_id))
+    lp = result.scalar_one_or_none()
+    if not lp:
+        raise HTTPException(404, "Lead product link not found")
+    await db.delete(lp)
+    await db.commit()
+    return ApiResponse(success=True, message="Product unlinked")
+
+
+@router.get("/assignable-users")
+async def list_assignable_users(db: DBSession, user: AuthUser):
+    """Deliberately guarded by crm.view (not admin.users) so any role that can
+    see leads can also see who leads can be assigned to."""
+    user.require("crm.view")
+    result = await db.execute(
+        select(User.id, User.full_name, User.email)
+        .where(User.company_id == user.company_id, User.is_active.is_(True))
+        .order_by(User.full_name)
+    )
+    return ApiResponse(
+        success=True,
+        data=[AssignableUserOut(id=uid, name=name, email=email) for uid, name, email in result.all()],
+    )
+
+
 # ── Activities ────────────────────────────────────────────────────────────────
 
 @router.get("/activities")
@@ -767,6 +1113,37 @@ async def create_activity(body: ActivityCreate, db: DBSession, user: AuthUser):
         created_at=now, updated_at=now,
     )
     db.add(activity)
+    await db.flush()
+    if activity.lead_id:
+        await _sync_lead_followup_fields(db, activity.lead_id)
+
+        if activity.type.strip().lower() == "sample sent":
+            try:
+                from app.services.whatsapp_automation import fire_event, resolve_company_name, resolve_customer_name
+
+                lead_for_activity = await db.get(CrmLead, activity.lead_id)
+                if lead_for_activity:
+                    latest_link = (
+                        await db.execute(
+                            select(CrmLeadProduct)
+                            .where(CrmLeadProduct.lead_id == activity.lead_id, CrmLeadProduct.product_id.is_not(None))
+                            .order_by(CrmLeadProduct.created_at.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    product_name = ""
+                    if latest_link and latest_link.product_id:
+                        product_row = (await db.execute(select(Product.name).where(Product.id == latest_link.product_id))).scalar_one_or_none()
+                        product_name = product_row or ""
+                    context = {
+                        "customer_name": await resolve_customer_name(db, lead_for_activity),
+                        "product_name": product_name,
+                        "company_name": await resolve_company_name(db, user.company_id),
+                    }
+                    await fire_event(db, user.company_id, "sample_dispatched", context, lead=lead_for_activity)
+            except Exception:
+                logger.warning("Failed to fire sample_dispatched WhatsApp automation", exc_info=True)
+
     await db.commit()
     await db.refresh(activity)
     return ApiResponse(success=True, data=ActivityOut.model_validate(activity), message="Activity created")
@@ -784,6 +1161,9 @@ async def update_activity(activity_id: UUID, body: ActivityUpdate, db: DBSession
     for field, val in body.model_dump(exclude_unset=True).items():
         setattr(activity, field, val)
     activity.updated_at = _now()
+    if activity.lead_id:
+        await db.flush()
+        await _sync_lead_followup_fields(db, activity.lead_id)
     await db.commit()
     await db.refresh(activity)
     return ApiResponse(success=True, data=ActivityOut.model_validate(activity))
@@ -798,8 +1178,38 @@ async def mark_activity_done(activity_id: UUID, db: DBSession, user: AuthUser, b
     activity = result.scalar_one_or_none()
     if not activity:
         raise HTTPException(404, "Activity not found")
+    now = _now()
     activity.is_done = body.is_done if body is not None else True
-    activity.updated_at = _now()
+    activity.updated_at = now
+
+    if activity.lead_id and body is not None and activity.is_done:
+        lead_result = await db.execute(select(CrmLead).where(CrmLead.id == activity.lead_id))
+        lead = lead_result.scalar_one_or_none()
+        if lead:
+            if body.outcome is not None:
+                lead.contact_outcome = body.outcome
+            if body.next_action is not None:
+                lead.next_action = body.next_action
+            lead.last_contacted_at = now
+            lead.updated_at = now
+
+            if body.next_follow_up_at:
+                next_activity = CrmActivity(
+                    company_id=user.company_id,
+                    title=f"Follow-up: {activity.title}",
+                    type=body.next_follow_up_type or activity.type,
+                    comment=body.next_follow_up_notes or body.next_follow_up_reason,
+                    schedule_from=body.next_follow_up_at,
+                    lead_id=activity.lead_id,
+                    assigned_to=activity.assigned_to,
+                    created_by=user.user_id,
+                    created_at=now, updated_at=now,
+                )
+                db.add(next_activity)
+
+    if activity.lead_id:
+        await db.flush()
+        await _sync_lead_followup_fields(db, activity.lead_id)
     await db.commit()
     await db.refresh(activity)
     return ApiResponse(success=True, data=ActivityOut.model_validate(activity))
@@ -814,9 +1224,361 @@ async def delete_activity(activity_id: UUID, db: DBSession, user: AuthUser):
     activity = result.scalar_one_or_none()
     if not activity:
         raise HTTPException(404, "Activity not found")
+    lead_id = activity.lead_id
     await db.delete(activity)
+    if lead_id:
+        await db.flush()
+        await _sync_lead_followup_fields(db, lead_id)
     await db.commit()
     return ApiResponse(success=True, message="Activity deleted")
+
+
+@router.get("/follow-up-types")
+async def list_follow_up_types(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    result = await db.execute(
+        select(CrmFollowUpType).where(CrmFollowUpType.company_id == user.company_id).order_by(CrmFollowUpType.name)
+    )
+    return ApiResponse(success=True, data=[FollowUpTypeOut.model_validate(t) for t in result.scalars().all()])
+
+
+# ── Tasks (Phase 3) ──────────────────────────────────────────────────────────
+
+def _task_out(task: CrmTask, name_map: dict[UUID, str] | None = None, lead_titles: dict[UUID, str] | None = None,
+              customer_names: dict[UUID, str] | None = None) -> TaskOut:
+    name_map = name_map or {}
+    lead_titles = lead_titles or {}
+    customer_names = customer_names or {}
+    return TaskOut(
+        id=task.id, company_id=task.company_id, title=task.title, notes=task.notes,
+        lead_id=task.lead_id, lead_title=lead_titles.get(task.lead_id),
+        customer_id=task.customer_id, customer_name=customer_names.get(task.customer_id),
+        assigned_to=task.assigned_to, assigned_to_name=name_map.get(task.assigned_to),
+        due_at=task.due_at, priority=task.priority, status=task.status, source=task.source,
+        created_by=task.created_by, created_by_name=name_map.get(task.created_by),
+        completed_at=task.completed_at, created_at=task.created_at, updated_at=task.updated_at,
+    )
+
+
+async def _enrich_tasks(db, company_id: UUID, tasks: list[CrmTask]) -> list[TaskOut]:
+    user_ids = {t.assigned_to for t in tasks} | {t.created_by for t in tasks}
+    name_map = await _resolve_user_names(db, company_id, user_ids)
+
+    lead_ids = {t.lead_id for t in tasks if t.lead_id}
+    lead_titles: dict[UUID, str] = {}
+    if lead_ids:
+        res = await db.execute(select(CrmLead.id, CrmLead.title).where(CrmLead.id.in_(lead_ids)))
+        lead_titles = {lid: title for lid, title in res.all()}
+
+    customer_ids = {t.customer_id for t in tasks if t.customer_id}
+    customer_names: dict[UUID, str] = {}
+    if customer_ids:
+        res = await db.execute(select(Customer.id, Customer.legal_name).where(Customer.id.in_(customer_ids)))
+        customer_names = {cid: name for cid, name in res.all()}
+
+    return [_task_out(t, name_map, lead_titles, customer_names) for t in tasks]
+
+
+@router.get("/tasks")
+async def list_tasks(
+    db: DBSession, user: AuthUser,
+    assigned_to: UUID | None = None, status: str | None = None, priority: str | None = None,
+    lead_id: UUID | None = None, overdue: bool = False,
+    page: int = 1, page_size: int = 50,
+):
+    user.require("crm.view")
+    filters = [CrmTask.company_id == user.company_id]
+    if assigned_to:
+        filters.append(CrmTask.assigned_to == assigned_to)
+    if status:
+        filters.append(CrmTask.status == status)
+    if priority:
+        filters.append(CrmTask.priority == priority)
+    if lead_id:
+        filters.append(CrmTask.lead_id == lead_id)
+    if overdue:
+        filters.append(CrmTask.status.in_(["pending", "in_progress"]))
+        filters.append(CrmTask.due_at < _now())
+
+    total_result = await db.execute(select(func.count(CrmTask.id)).where(*filters))
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        select(CrmTask).where(*filters)
+        .order_by(CrmTask.due_at.asc().nulls_last(), CrmTask.created_at.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )
+    tasks = result.scalars().all()
+    data = await _enrich_tasks(db, user.company_id, tasks)
+    return ApiResponse(success=True, data=data, meta=PaginatedMeta(page=page, page_size=page_size, total=total))
+
+
+@router.post("/tasks", status_code=201)
+async def create_task(body: TaskCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    now = _now()
+    task = CrmTask(
+        company_id=user.company_id, title=body.title, notes=body.notes,
+        lead_id=body.lead_id, customer_id=body.customer_id, assigned_to=body.assigned_to,
+        due_at=body.due_at, priority=body.priority, source=body.source,
+        created_by=user.user_id, created_at=now, updated_at=now,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    data = await _enrich_tasks(db, user.company_id, [task])
+    return ApiResponse(success=True, data=data[0], message="Task created")
+
+
+@router.patch("/tasks/{task_id}")
+async def update_task(task_id: UUID, body: TaskUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(select(CrmTask).where(CrmTask.id == task_id, CrmTask.company_id == user.company_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(task, field, val)
+    task.updated_at = _now()
+    await db.commit()
+    await db.refresh(task)
+    data = await _enrich_tasks(db, user.company_id, [task])
+    return ApiResponse(success=True, data=data[0])
+
+
+@router.patch("/tasks/{task_id}/complete")
+async def complete_task(task_id: UUID, db: DBSession, user: AuthUser, body: TaskCompleteIn | None = None):
+    user.require("crm.edit")
+    result = await db.execute(select(CrmTask).where(CrmTask.id == task_id, CrmTask.company_id == user.company_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    now = _now()
+    task.status = "completed"
+    task.completed_at = now
+    task.updated_at = now
+    if body is not None and body.notes:
+        task.notes = f"{task.notes}\n{body.notes}" if task.notes else body.notes
+    await db.commit()
+    await db.refresh(task)
+    data = await _enrich_tasks(db, user.company_id, [task])
+    return ApiResponse(success=True, data=data[0], message="Task completed")
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(task_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    result = await db.execute(select(CrmTask).where(CrmTask.id == task_id, CrmTask.company_id == user.company_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    await db.delete(task)
+    await db.commit()
+    return ApiResponse(success=True, message="Task deleted")
+
+
+# ── Ad Spend (Phase 5) ───────────────────────────────────────────────────────
+
+def _ad_spend_out(spend: CrmAdSpend, name_map: dict[UUID, str] | None = None,
+                   source_names: dict[UUID, str] | None = None) -> AdSpendOut:
+    name_map = name_map or {}
+    source_names = source_names or {}
+    return AdSpendOut(
+        id=spend.id, company_id=spend.company_id,
+        source_id=spend.source_id, source_name=source_names.get(spend.source_id),
+        campaign=spend.campaign, campaign_id=spend.campaign_id, ad_set=spend.ad_set,
+        period_start=spend.period_start, period_end=spend.period_end,
+        amount=spend.amount, impressions=spend.impressions, clicks=spend.clicks,
+        source=spend.source, notes=spend.notes,
+        created_by=spend.created_by, created_by_name=name_map.get(spend.created_by),
+        created_at=spend.created_at,
+    )
+
+
+async def _enrich_ad_spend(db, company_id: UUID, rows: list[CrmAdSpend]) -> list[AdSpendOut]:
+    name_map = await _resolve_user_names(db, company_id, {r.created_by for r in rows})
+    source_ids = {r.source_id for r in rows if r.source_id}
+    source_names: dict[UUID, str] = {}
+    if source_ids:
+        res = await db.execute(select(CrmLeadSource.id, CrmLeadSource.name).where(CrmLeadSource.id.in_(source_ids)))
+        source_names = {sid: name for sid, name in res.all()}
+    return [_ad_spend_out(r, name_map, source_names) for r in rows]
+
+
+@router.get("/ad-spend")
+async def list_ad_spend(
+    db: DBSession, user: AuthUser,
+    source_id: UUID | None = None, campaign: str | None = None,
+    from_date: date | None = None, to_date: date | None = None,
+    page: int = 1, page_size: int = 50,
+):
+    user.require("crm.view")
+    filters = [CrmAdSpend.company_id == user.company_id]
+    if source_id:
+        filters.append(CrmAdSpend.source_id == source_id)
+    if campaign:
+        filters.append(CrmAdSpend.campaign.ilike(f"%{campaign}%"))
+    if from_date:
+        filters.append(CrmAdSpend.period_end >= from_date)
+    if to_date:
+        filters.append(CrmAdSpend.period_start <= to_date)
+
+    total_result = await db.execute(select(func.count(CrmAdSpend.id)).where(*filters))
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        select(CrmAdSpend).where(*filters)
+        .order_by(CrmAdSpend.period_start.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )
+    rows = result.scalars().all()
+    data = await _enrich_ad_spend(db, user.company_id, rows)
+    return ApiResponse(success=True, data=data, meta=PaginatedMeta(page=page, page_size=page_size, total=total))
+
+
+@router.post("/ad-spend", status_code=201)
+async def create_ad_spend(body: AdSpendCreate, db: DBSession, user: AuthUser):
+    user.require("crm.create")
+    if body.period_end < body.period_start:
+        raise HTTPException(400, "period_end cannot be before period_start")
+    spend = CrmAdSpend(
+        company_id=user.company_id, source_id=body.source_id, campaign=body.campaign,
+        campaign_id=body.campaign_id, ad_set=body.ad_set,
+        period_start=body.period_start, period_end=body.period_end, amount=body.amount,
+        impressions=body.impressions, clicks=body.clicks,
+        notes=body.notes, created_by=user.user_id, created_at=_now(),
+    )
+    db.add(spend)
+    await db.commit()
+    await db.refresh(spend)
+    data = await _enrich_ad_spend(db, user.company_id, [spend])
+    return ApiResponse(success=True, data=data[0], message="Ad spend logged")
+
+
+@router.patch("/ad-spend/{spend_id}")
+async def update_ad_spend(spend_id: UUID, body: AdSpendUpdate, db: DBSession, user: AuthUser):
+    user.require("crm.edit")
+    result = await db.execute(select(CrmAdSpend).where(CrmAdSpend.id == spend_id, CrmAdSpend.company_id == user.company_id))
+    spend = result.scalar_one_or_none()
+    if not spend:
+        raise HTTPException(404, "Ad spend entry not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(spend, field, val)
+    if spend.period_end < spend.period_start:
+        raise HTTPException(400, "period_end cannot be before period_start")
+    await db.commit()
+    await db.refresh(spend)
+    data = await _enrich_ad_spend(db, user.company_id, [spend])
+    return ApiResponse(success=True, data=data[0], message="Ad spend updated")
+
+
+@router.delete("/ad-spend/{spend_id}")
+async def delete_ad_spend(spend_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.delete")
+    result = await db.execute(select(CrmAdSpend).where(CrmAdSpend.id == spend_id, CrmAdSpend.company_id == user.company_id))
+    spend = result.scalar_one_or_none()
+    if not spend:
+        raise HTTPException(404, "Ad spend entry not found")
+    await db.delete(spend)
+    await db.commit()
+    return ApiResponse(success=True, message="Ad spend entry deleted")
+
+
+def _parse_int(value: str) -> int | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(float(value))
+    except ValueError:
+        return None
+
+
+@router.post("/ad-spend/import", status_code=201)
+async def import_ad_spend_csv(db: DBSession, user: AuthUser, file: UploadFile):
+    """CSV import for ad spend — mirrors import_leads_csv's shape (same
+    UploadFile/decode/DictReader/row-try-except pattern). No persisted
+    import-history record (unlike CrmLeadImport) — the summary is returned
+    inline, which is all this phase's CSV import warrants."""
+    user.require("crm.create")
+
+    filename = file.filename or ""
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(400, "File must be a CSV (.csv extension required)")
+
+    content = await file.read()
+    try:
+        text_content = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text_content = content.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text_content))
+    raw_rows = list(reader)
+    if len(raw_rows) > 1000:
+        raise HTTPException(400, "CSV exceeds 1000-row limit")
+    rows = [{k.lower().strip(): v for k, v in row.items()} for row in raw_rows]
+
+    # Resolve platform names -> source_id, auto-creating unseen ones (same
+    # spirit as Phase 4 making sources user-manageable — a CSV from a new
+    # ad platform shouldn't fail just because nobody pre-registered it).
+    existing_result = await db.execute(
+        select(CrmLeadSource).where(CrmLeadSource.company_id == user.company_id)
+    )
+    source_by_name = {s.name.strip().lower(): s.id for s in existing_result.scalars().all()}
+
+    now = _now()
+    imported = 0
+    errors: list[dict] = []
+
+    for idx, row in enumerate(rows, start=1):
+        platform = (row.get("platform") or "").strip()
+        period_start = _parse_date(row.get("period_start", ""))
+        period_end = _parse_date(row.get("period_end", ""))
+        amount = _parse_decimal(row.get("amount", ""))
+        if not platform:
+            errors.append({"row": idx, "error": "Missing required field: platform"})
+            continue
+        if not period_start or not period_end:
+            errors.append({"row": idx, "error": "Missing or invalid period_start/period_end (expected YYYY-MM-DD)"})
+            continue
+        if amount <= 0:
+            errors.append({"row": idx, "error": "amount must be greater than 0"})
+            continue
+        if period_end < period_start:
+            errors.append({"row": idx, "error": "period_end cannot be before period_start"})
+            continue
+        try:
+            key = platform.lower()
+            source_id = source_by_name.get(key)
+            if not source_id:
+                new_source = CrmLeadSource(company_id=user.company_id, name=platform, created_at=now)
+                db.add(new_source)
+                await db.flush()
+                source_id = new_source.id
+                source_by_name[key] = source_id
+
+            spend = CrmAdSpend(
+                company_id=user.company_id, source_id=source_id,
+                campaign=row.get("campaign", "").strip() or None,
+                campaign_id=row.get("campaign_id", "").strip() or None,
+                ad_set=row.get("ad_set", "").strip() or None,
+                period_start=period_start, period_end=period_end, amount=amount,
+                impressions=_parse_int(row.get("impressions", "")),
+                clicks=_parse_int(row.get("clicks", "")),
+                source="manual", notes=row.get("notes", "").strip() or None,
+                created_by=user.user_id, created_at=now,
+            )
+            db.add(spend)
+            imported += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"row": idx, "error": str(exc)})
+
+    await db.commit()
+    return ApiResponse(
+        success=True,
+        data={"total_rows": len(rows), "imported": imported, "failed": len(errors), "errors": errors},
+        message=f"Imported {imported} of {len(rows)} row(s)",
+    )
 
 
 # ── Products ──────────────────────────────────────────────────────────────────
@@ -919,7 +1681,9 @@ def _build_items(items_in):
         total = round(item.quantity * item.unit_price * (1 - item.discount_percent / 100), 4)
         subtotal += total
         rows.append({
-            "product_id": item.product_id, "name": item.name, "description": item.description,
+            "product_id": item.product_id,
+            "erp_product_id": item.erp_product_id, "erp_variant_id": item.erp_variant_id,
+            "name": item.name, "description": item.description,
             "quantity": item.quantity, "unit_price": item.unit_price,
             "discount_percent": item.discount_percent, "total": total, "sort_order": idx,
         })
@@ -977,6 +1741,21 @@ async def create_quote(body: QuoteCreate, db: DBSession, user: AuthUser):
     await db.flush()
     for item_data in rows:
         db.add(CrmQuoteItem(quote_id=quote.id, **item_data))
+    if quote.lead_id:
+        try:
+            from app.services.whatsapp_automation import fire_event, resolve_company_name, resolve_customer_name
+
+            lead_for_quote = await db.get(CrmLead, quote.lead_id)
+            if lead_for_quote:
+                context = {
+                    "customer_name": await resolve_customer_name(db, lead_for_quote),
+                    "quotation_number": quote.quote_number,
+                    "company_name": await resolve_company_name(db, user.company_id),
+                }
+                await fire_event(db, user.company_id, "quotation_generated", context, lead=lead_for_quote)
+        except Exception:
+            logger.warning("Failed to fire quotation_generated WhatsApp automation", exc_info=True)
+
     await db.commit()
     quote = await _get_quote(quote.id, user.company_id, db)
     return ApiResponse(success=True, data=_quote_out(quote), message="Quote created")
@@ -1066,7 +1845,9 @@ async def duplicate_quote(quote_id: UUID, db: DBSession, user: AuthUser):
     await db.flush()
     for item in quote.items:
         db.add(CrmQuoteItem(
-            quote_id=new_quote.id, product_id=item.product_id, name=item.name,
+            quote_id=new_quote.id, product_id=item.product_id,
+            erp_product_id=item.erp_product_id, erp_variant_id=item.erp_variant_id,
+            name=item.name,
             description=item.description, quantity=item.quantity, unit_price=item.unit_price,
             discount_percent=item.discount_percent, total=item.total, sort_order=item.sort_order,
         ))
@@ -1159,6 +1940,96 @@ async def crm_dashboard(db: DBSession, user: AuthUser):
     )
     activities_overdue: int = overdue_result.scalar() or 0
 
+    # Leads with a follow-up due today / overdue (list, not just a count) —
+    # surfaces *which* leads need action, sourced from CrmLead's synced
+    # follow-up fields rather than re-querying activities.
+    def _followup_rows(rows) -> list[dict]:
+        return [
+            {
+                "lead_id": str(lead.id), "lead_title": lead.title,
+                "next_follow_up_at": lead.next_follow_up_at.isoformat() if lead.next_follow_up_at else None,
+                "follow_up_type": lead.follow_up_type,
+                "assigned_to_name": assignee_name,
+            }
+            for lead, assignee_name in rows
+        ]
+
+    today_result = await db.execute(
+        select(CrmLead, User.full_name)
+        .outerjoin(User, User.id == CrmLead.assigned_to)
+        .where(
+            CrmLead.company_id == user.company_id,
+            CrmLead.follow_up_status == "scheduled",
+            CrmLead.next_follow_up_at >= now,
+            CrmLead.next_follow_up_at <= now + timedelta(hours=24),
+        )
+        .order_by(CrmLead.next_follow_up_at.asc())
+        .limit(10)
+    )
+    follow_ups_today = _followup_rows(today_result.all())
+
+    followup_overdue_result = await db.execute(
+        select(CrmLead, User.full_name)
+        .outerjoin(User, User.id == CrmLead.assigned_to)
+        .where(
+            CrmLead.company_id == user.company_id,
+            CrmLead.follow_up_status == "scheduled",
+            CrmLead.next_follow_up_at < now,
+        )
+        .order_by(CrmLead.next_follow_up_at.asc())
+        .limit(10)
+    )
+    follow_ups_overdue = _followup_rows(followup_overdue_result.all())
+
+    # My Tasks — personal (assigned to the requesting user), not company-wide
+    def _task_rows(rows) -> list[dict]:
+        return [
+            {
+                "id": str(t.id), "title": t.title,
+                "due_at": t.due_at.isoformat() if t.due_at else None,
+                "priority": t.priority,
+                "lead_id": str(t.lead_id) if t.lead_id else None,
+            }
+            for t in rows
+        ]
+
+    my_tasks_today_result = await db.execute(
+        select(CrmTask)
+        .where(
+            CrmTask.company_id == user.company_id,
+            CrmTask.assigned_to == user.user_id,
+            CrmTask.status.in_(["pending", "in_progress"]),
+            CrmTask.due_at >= now, CrmTask.due_at <= now + timedelta(hours=24),
+        )
+        .order_by(CrmTask.due_at.asc())
+        .limit(10)
+    )
+    my_tasks_today = _task_rows(my_tasks_today_result.scalars().all())
+
+    my_tasks_overdue_result = await db.execute(
+        select(CrmTask)
+        .where(
+            CrmTask.company_id == user.company_id,
+            CrmTask.assigned_to == user.user_id,
+            CrmTask.status.in_(["pending", "in_progress"]),
+            CrmTask.due_at < now,
+        )
+        .order_by(CrmTask.due_at.asc())
+        .limit(10)
+    )
+    my_tasks_overdue = _task_rows(my_tasks_overdue_result.scalars().all())
+
+    my_tasks_completed_today_result = await db.execute(
+        select(func.count(CrmTask.id))
+        .where(
+            CrmTask.company_id == user.company_id,
+            CrmTask.assigned_to == user.user_id,
+            CrmTask.status == "completed",
+            CrmTask.completed_at >= now.replace(hour=0, minute=0, second=0, microsecond=0),
+        )
+    )
+    my_tasks_completed_today: int = my_tasks_completed_today_result.scalar() or 0
+
     # Last 5 created leads with stage name
     recent_result = await db.execute(
         select(CrmLead, CrmPipelineStage.name.label("stage_label"))
@@ -1209,6 +2080,11 @@ async def crm_dashboard(db: DBSession, user: AuthUser):
             "status_counts": status_counts,
             "activities_due": activities_due,
             "activities_overdue": activities_overdue,
+            "follow_ups_today": follow_ups_today,
+            "follow_ups_overdue": follow_ups_overdue,
+            "my_tasks_today": my_tasks_today,
+            "my_tasks_overdue": my_tasks_overdue,
+            "my_tasks_completed_today": my_tasks_completed_today,
             "recent_leads": recent_leads,
             "conversion_rate": conversion_rate,
             "total_pipeline_value": total_pipeline_value,
@@ -1694,9 +2570,9 @@ async def bulk_action_leads(body: LeadBulkActionIn, db: DBSession, user: AuthUse
             assignee_id = UUID(body.value)
         except ValueError as exc:
             raise HTTPException(400, f"Invalid UUID for assign: {exc}") from exc
+        by_name_map = await _resolve_user_names(db, user.company_id, {user.user_id})
         for lead in leads:
-            lead.assigned_to = assignee_id
-            lead.updated_at = _now()
+            await _assign_lead(db, lead, assignee_id, user.user_id, by_name_map.get(user.user_id))
 
     elif body.action == "stage":
         if not body.value:

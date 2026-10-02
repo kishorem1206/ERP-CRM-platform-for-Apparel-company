@@ -96,6 +96,15 @@ class CrmLeadSource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class CrmFollowUpType(Base):
+    __tablename__ = "crm_follow_up_types"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class CrmLeadType(Base):
     __tablename__ = "crm_lead_types"
 
@@ -127,6 +136,17 @@ class CrmLead(Base):
     organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_organizations.id", ondelete="SET NULL"))
     customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"))
     assigned_to: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    assigned_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    assigned_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    assignment_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unassigned")
+    next_follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    follow_up_type: Mapped[Optional[str]] = mapped_column(String(100))
+    follow_up_reason: Mapped[Optional[str]] = mapped_column(Text)
+    follow_up_notes: Mapped[Optional[str]] = mapped_column(Text)
+    follow_up_status: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    last_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    contact_outcome: Mapped[Optional[str]] = mapped_column(String(300))
+    next_action: Mapped[Optional[str]] = mapped_column(String(300))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     sales_order_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("sales_orders.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -140,6 +160,11 @@ class CrmLead(Base):
     stage_history: Mapped[list["CrmLeadStageHistory"]] = relationship(
         back_populates="lead",
         order_by="CrmLeadStageHistory.changed_at",
+        cascade="all, delete-orphan",
+    )
+    assignment_history: Mapped[list["CrmLeadAssignmentHistory"]] = relationship(
+        back_populates="lead",
+        order_by="CrmLeadAssignmentHistory.changed_at",
         cascade="all, delete-orphan",
     )
     notes: Mapped[list["CrmNote"]] = relationship(back_populates="lead", cascade="all, delete-orphan")
@@ -250,6 +275,8 @@ class CrmQuoteItem(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     quote_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_quotes.id", ondelete="CASCADE"), nullable=False)
     product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_products.id", ondelete="SET NULL"))
+    erp_product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"))
+    erp_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
@@ -370,6 +397,76 @@ class CrmLeadStageHistory(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     lead: Mapped["CrmLead"] = relationship(back_populates="stage_history")
+
+
+class CrmLeadAssignmentHistory(Base):
+    __tablename__ = "crm_lead_assignment_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_leads.id", ondelete="CASCADE"), nullable=False)
+    from_assignee_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    to_assignee_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    from_assignee_name: Mapped[Optional[str]] = mapped_column(String(300))
+    to_assignee_name: Mapped[Optional[str]] = mapped_column(String(300))
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    changed_by_name: Mapped[Optional[str]] = mapped_column(String(300))
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    lead: Mapped["CrmLead"] = relationship(back_populates="assignment_history")
+
+
+class CrmTask(Base):
+    __tablename__ = "crm_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_leads.id", ondelete="SET NULL"))
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"))
+    assigned_to: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    priority: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CrmLeadProduct(Base):
+    __tablename__ = "crm_lead_products"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_leads.id", ondelete="CASCADE"), nullable=False)
+    product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"))
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"))
+    quantity_interested: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CrmAdSpend(Base):
+    __tablename__ = "crm_ad_spend"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_lead_sources.id", ondelete="SET NULL"))
+    campaign: Mapped[Optional[str]] = mapped_column(String(200))
+    campaign_id: Mapped[Optional[str]] = mapped_column(String(200))
+    ad_set: Mapped[Optional[str]] = mapped_column(String(200))
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    impressions: Mapped[Optional[int]] = mapped_column(Integer)
+    clicks: Mapped[Optional[int]] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class CrmNote(Base):
