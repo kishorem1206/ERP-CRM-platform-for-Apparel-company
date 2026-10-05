@@ -163,6 +163,36 @@ async def list_contacts(
     return paginated(contacts, total, page, _PAGE_SIZE)
 
 
+@router.patch("/contacts/{contact_id}")
+async def update_contact(
+    contact_id: UUID,
+    body: dict[str, Any],
+    user: AuthUser,
+    db: DBSession,
+):
+    contact = (await db.execute(
+        select(WhatsappContact).where(WhatsappContact.id == contact_id, WhatsappContact.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if "lead_id" in body:
+        raw = body["lead_id"]
+        if raw:
+            from app.models.crm import CrmLead
+            lead = (await db.execute(
+                select(CrmLead.id).where(CrmLead.id == UUID(str(raw)), CrmLead.company_id == user.company_id)
+            )).scalar_one_or_none()
+            if not lead:
+                raise HTTPException(status_code=422, detail="Lead not found")
+            contact.lead_id = lead
+        else:
+            contact.lead_id = None
+    contact.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(contact)
+    return ApiResponse(success=True, data=ContactOut.model_validate(contact), message="Contact updated")
+
+
 @router.get("/contacts/{contact_id}/messages")
 async def contact_messages(
     contact_id: UUID,
@@ -292,7 +322,9 @@ async def list_templates(user: AuthUser, db: DBSession):
 
 @router.post("/templates", status_code=status.HTTP_201_CREATED)
 async def create_template(body: TemplateCreate, user: AuthUser, db: DBSession):
-    template = WhatsappTemplate(company_id=user.company_id, **body.model_dump())
+    user.require("crm.edit")
+    now = datetime.now(timezone.utc)
+    template = WhatsappTemplate(company_id=user.company_id, created_at=now, updated_at=now, **body.model_dump())
     db.add(template)
     await db.commit()
     await db.refresh(template)

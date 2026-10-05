@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -415,7 +416,7 @@ export default function NewCustomerPage() {
           {contacts.map((c, i) => (
             <div key={i} className="rounded-xl border border-border bg-background p-4 space-y-3 relative">
               <div className="absolute top-3 right-3 flex items-center gap-2">
-                <button
+                <Can perm="sales.create"><button
                   type="button"
                   onClick={() => setPrimary(i)}
                   title="Set as primary"
@@ -427,12 +428,12 @@ export default function NewCustomerPage() {
                   style={c.is_primary ? { background: INDIGO } : {}}
                 >
                   <Star className="h-3 w-3" /> Primary
-                </button>
+                </button></Can>
                 {contacts.length > 1 && (
-                  <button type="button" onClick={() => setContacts((cs) => cs.filter((_, idx) => idx !== i))}
+                  <Can perm="sales.create"><button type="button" onClick={() => setContacts((cs) => cs.filter((_, idx) => idx !== i))}
                     className="text-destructive hover:text-destructive/80">
                     <Trash2 className="h-4 w-4" />
-                  </button>
+                  </button></Can>
                 )}
               </div>
               <div className="grid grid-cols-2 gap-3 pr-28">
@@ -451,13 +452,13 @@ export default function NewCustomerPage() {
               </div>
             </div>
           ))}
-          <button
+          <Can perm="sales.create"><button
             type="button"
             onClick={() => setContacts((cs) => [...cs, emptyContact()])}
             className="flex items-center gap-1.5 text-sm text-primary hover:underline"
           >
             <Plus className="h-4 w-4" /> Add Contact Person
-          </button>
+          </button></Can>
         </div>
 
         <div className="bg-card border border-border rounded-2xl p-5 space-y-4">
@@ -477,19 +478,19 @@ export default function NewCustomerPage() {
                 onChange={setDetail(i, "value")}
                 placeholder="Value"
               />
-              <button type="button" onClick={() => setDetails((ds) => ds.filter((_, idx) => idx !== i))}
+              <Can perm="sales.create"><button type="button" onClick={() => setDetails((ds) => ds.filter((_, idx) => idx !== i))}
                 className="text-destructive hover:text-destructive/80 flex-shrink-0">
                 <Trash2 className="h-4 w-4" />
-              </button>
+              </button></Can>
             </div>
           ))}
-          <button
+          <Can perm="sales.create"><button
             type="button"
             onClick={() => setDetails((ds) => [...ds, { label: "", value: "", sort_order: ds.length }])}
             className="flex items-center gap-1.5 text-sm text-primary hover:underline"
           >
             <Plus className="h-4 w-4" /> Add Detail Row
-          </button>
+          </button></Can>
         </div>
       </div>
     ),
@@ -604,13 +605,13 @@ export default function NewCustomerPage() {
           <Field label="Customer Rating">
             <div className="flex gap-1 mt-1">
               {[1, 2, 3, 4, 5].map((n) => (
-                <button
+                <Can perm="sales.create"><button
                   key={n} type="button"
                   onClick={() => setForm((f) => ({ ...f, customer_rating: n }))}
                   className={`p-1 rounded transition-colors ${form.customer_rating >= n ? "text-violet-400" : "text-muted-foreground/30 hover:text-violet-300"}`}
                 >
                   <Star className="h-6 w-6 fill-current" />
-                </button>
+                </button></Can>
               ))}
               {form.customer_rating > 0 && (
                 <button type="button" onClick={() => setForm((f) => ({ ...f, customer_rating: 0 }))}
@@ -666,7 +667,7 @@ export default function NewCustomerPage() {
           >
             Cancel
           </button>
-          <button
+          <Can perm="sales.create"><button
             type="button"
             onClick={handleSubmit as unknown as React.MouseEventHandler}
             disabled={mut.isPending}
@@ -674,7 +675,7 @@ export default function NewCustomerPage() {
             style={{ background: INDIGO }}
           >
             {mut.isPending ? "Saving…" : <><ChevronRight className="h-4 w-4" /> Save Customer</>}
-          </button>
+          </button></Can>
         </div>
       </div>
 

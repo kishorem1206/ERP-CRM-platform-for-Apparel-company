@@ -10,6 +10,7 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { CreateTaskModal } from "@/components/crm/create-task-modal";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 const RED = "#1D0DB0";
@@ -115,7 +116,7 @@ export default function TasksPage() {
     {
       key: "id", header: "", className: "w-10",
       render: (t) => (
-        <button
+        <Can perm="crm.edit"><button
           onClick={() => t.status !== "completed" && completeMutation.mutate(t.id)}
           disabled={t.status === "completed" || completeMutation.isPending}
           className="p-1 rounded transition-colors hover:bg-muted disabled:cursor-default"
@@ -126,7 +127,7 @@ export default function TasksPage() {
           ) : (
             <Circle className="h-4 w-4 text-muted-foreground" />
           )}
-        </button>
+        </button></Can>
       ),
     },
   ];
@@ -139,13 +140,13 @@ export default function TasksPage() {
           <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
           <p className="text-sm text-muted-foreground mt-1">What needs doing next, across your leads and customers.</p>
         </div>
-        <button
+        <Can perm="crm.create"><button
           onClick={() => setShowCreate(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Task
-        </button>
+        </button></Can>
       </div>
 
       <div className="flex flex-wrap gap-3 items-center">

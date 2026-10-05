@@ -4,6 +4,10 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
+import { SearchableSelect } from "@/components/shared/searchable-select";
+import {
+  useProductOptions, useCategoryOptions, useWarehouseOptions, useCustomerOptions,
+} from "@/components/reports/filter-sources";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -14,11 +18,22 @@ type BalanceRow = Record<string, unknown> & {
   product_id: string;
   product_name: string;
   product_type: string;
+  category_id: string | null;
+  category_name: string | null;
+  variant_id: string | null;
+  sku: string | null;
   warehouse_id: string;
   warehouse_name: string;
   unit_symbol: string;
   balance: string;
+  stock_value: string | null;
 };
+
+const STATUS_TABS = [
+  { label: "In Stock", value: "in_stock" },
+  { label: "Out of Stock", value: "out_of_stock" },
+  { label: "All", value: "all" },
+] as const;
 
 const TYPE_HEX: Record<string, string> = {
   raw_material: BLUE,
@@ -31,6 +46,7 @@ const TYPE_HEX: Record<string, string> = {
 const columns: Column<BalanceRow>[] = [
   { key: "warehouse_name", header: "Warehouse" },
   { key: "product_name", header: "Product" },
+  { key: "sku", header: "SKU", render: (row) => row.sku ?? "—" },
   {
     key: "product_type",
     header: "Type",
@@ -58,15 +74,45 @@ const columns: Column<BalanceRow>[] = [
       );
     },
   },
+  {
+    key: "stock_value",
+    header: "Value",
+    className: "text-right",
+    render: (row) =>
+      // null means the backend withheld it (ERP Upgrade §11, admin-only) -
+      // never rendered as ₹0.00, which would misreport "no access" as
+      // "zero value".
+      row.stock_value == null
+        ? "—"
+        : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(Number(row.stock_value)),
+  },
 ];
 
 export default function StockBalancePage() {
   const [search, setSearch] = useState("");
+  const [productId, setProductId] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [customerId, setCustomerId] = useState("");
+  const [status, setStatus] = useState<(typeof STATUS_TABS)[number]["value"]>("in_stock");
+
+  const productOptions = useProductOptions();
+  const categoryOptions = useCategoryOptions();
+  const warehouseOptions = useWarehouseOptions();
+  const customerOptions = useCustomerOptions();
 
   const { data, isLoading } = useQuery({
-    queryKey: ["inventory-balance"],
+    queryKey: ["inventory-balance", productId, categoryId, warehouseId, customerId, status],
     queryFn: async () => {
-      const res = await api.get("/inventory/balance");
+      const res = await api.get("/inventory/balance", {
+        params: {
+          product_id: productId || undefined,
+          category_id: categoryId || undefined,
+          warehouse_id: warehouseId || undefined,
+          customer_id: customerId || undefined,
+          status,
+        },
+      });
       return (res.data.data ?? []) as BalanceRow[];
     },
   });
@@ -75,7 +121,8 @@ export default function StockBalancePage() {
     (r) =>
       !search ||
       r.product_name.toLowerCase().includes(search.toLowerCase()) ||
-      r.warehouse_name.toLowerCase().includes(search.toLowerCase()),
+      r.warehouse_name.toLowerCase().includes(search.toLowerCase()) ||
+      (r.sku ?? "").toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
@@ -93,10 +140,57 @@ export default function StockBalancePage() {
         </div>
       </div>
 
+      {/* Status tabs */}
+      <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl w-fit">
+        {STATUS_TABS.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => setStatus(t.value)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
+              status === t.value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <SearchableSelect
+          options={productOptions}
+          value={productId}
+          onChange={setProductId}
+          placeholder="All products"
+          accent={INDIGO}
+        />
+        <SearchableSelect
+          options={categoryOptions}
+          value={categoryId}
+          onChange={setCategoryId}
+          placeholder="All categories"
+          accent={INDIGO}
+        />
+        <SearchableSelect
+          options={warehouseOptions}
+          value={warehouseId}
+          onChange={setWarehouseId}
+          placeholder="All warehouses"
+          accent={INDIGO}
+        />
+        <SearchableSelect
+          options={customerOptions}
+          value={customerId}
+          onChange={setCustomerId}
+          placeholder="Any customer's orders"
+          accent={INDIGO}
+        />
+      </div>
+
       {/* Search */}
       <input
         type="text"
-        placeholder="Search product or warehouse…"
+        placeholder="Search product, SKU, or warehouse…"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="w-full max-w-sm rounded-xl border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"

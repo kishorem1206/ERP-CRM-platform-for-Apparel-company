@@ -1,11 +1,14 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, X } from "lucide-react";
+import { Plus, X, Printer } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const TEAL = "#8174F5";
@@ -65,6 +68,24 @@ const STATUS_FILTERS = [
   { label: "Cancelled", value: "cancelled" },
 ];
 
+// Opens the server-generated Packing Slip PDF (ERP Upgrade §4) as a
+// download — same blob pattern already used by the Reports Hub PDF export
+// (frontend/src/components/reports/report-page.tsx).
+async function handlePrintPackingSlip(deliveryId: string, deliveryNumber: string) {
+  const res = await api.get(`/sales/deliveries/${deliveryId}/packing-slip`, { responseType: "blob" });
+  const blobUrl = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+  const disposition = res.headers["content-disposition"] as string | undefined;
+  const match = disposition?.match(/filename="?([^"]+)"?/);
+  const filename = match?.[1] ?? `PackingSlip_${deliveryNumber}.pdf`;
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+}
+
 const columns: Column<Record<string, unknown>>[] = [
   { key: "delivery_number", header: "DC Number", sortable: true },
   { key: "customer_name", header: "Customer", render: (row) => (row.customer_name as string) || "—" },
@@ -72,6 +93,18 @@ const columns: Column<Record<string, unknown>>[] = [
   { key: "transporter", header: "Transporter", render: (row) => (row.transporter as string) || "—" },
   { key: "lr_number", header: "LR #", render: (row) => (row.lr_number as string) || "—" },
   { key: "status", header: "Status", render: (row) => <StatusDot status={row.status as string} /> },
+  {
+    key: "id", header: "", className: "w-10",
+    render: (row) => (
+      <button
+        onClick={(e) => { e.stopPropagation(); handlePrintPackingSlip(row.id as string, row.delivery_number as string); }}
+        className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+        title="Print Packing Slip"
+      >
+        <Printer className="h-3.5 w-3.5" />
+      </button>
+    ),
+  },
 ];
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
@@ -84,6 +117,11 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
   const [transporter, setTransporter] = useState("");
   const [lrNumber, setLrNumber] = useState("");
   const [vehicleNumber, setVehicleNumber] = useState("");
+  const [cartonCount, setCartonCount] = useState("");
+  const [packageCount, setPackageCount] = useState("");
+  const [grossWeight, setGrossWeight] = useState("");
+  const [netWeight, setNetWeight] = useState("");
+  const [packingMarks, setPackingMarks] = useState("");
   const [notes, setNotes] = useState("");
   const [itemQtys, setItemQtys] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
@@ -117,6 +155,11 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
         transporter: transporter || null,
         lr_number: lrNumber || null,
         vehicle_number: vehicleNumber || null,
+        carton_count: cartonCount ? Number(cartonCount) : null,
+        package_count: packageCount ? Number(packageCount) : null,
+        gross_weight: grossWeight ? Number(grossWeight) : null,
+        net_weight: netWeight ? Number(netWeight) : null,
+        packing_marks: packingMarks || null,
         notes: notes || null,
         items: soItems.map((it) => ({
           so_item_id: it.id,
@@ -183,8 +226,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Delivery Date *</label>
-              <input required type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={deliveryDate} onChange={(v) => setDeliveryDate(v)} required />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Transporter</label>
@@ -203,6 +245,38 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
               <input value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value)}
                 className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="MH12AB1234" />
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Packing Details</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Cartons</label>
+                <input type="number" min="0" value={cartonCount} onChange={(e) => setCartonCount(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Packages</label>
+                <input type="number" min="0" value={packageCount} onChange={(e) => setPackageCount(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Gross Weight (kg)</label>
+                <input type="number" min="0" step="0.001" value={grossWeight} onChange={(e) => setGrossWeight(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Net Weight (kg)</label>
+                <input type="number" min="0" step="0.001" value={netWeight} onChange={(e) => setNetWeight(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+            </div>
+            <div className="mt-3">
+              <label className="text-xs font-medium text-muted-foreground">Packing Marks</label>
+              <input value={packingMarks} onChange={(e) => setPackingMarks(e.target.value)}
+                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="e.g. Handle with care, This side up" />
             </div>
           </div>
 
@@ -268,6 +342,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function DeliveriesPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
@@ -296,13 +371,13 @@ export default function DeliveriesPage() {
           <h1 className="text-2xl font-bold tracking-tight">Delivery Challans</h1>
           <p className="text-sm text-muted-foreground mt-1">Dispatch records and outbound inventory movements.</p>
         </div>
-        <button
+        <Can perm="sales.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: TEAL }}
         >
           <Plus className="h-4 w-4" /> New Delivery
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}
@@ -335,6 +410,7 @@ export default function DeliveriesPage() {
             columns={columns}
             data={deliveries as unknown as Record<string, unknown>[]}
             loading={isLoading}
+            onRowClick={(row) => router.push(`/sales/deliveries/${row.id as string}`)}
             emptyMessage="No delivery challans found"
           />
         </div>

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import admin, attachments, auth, health, agents, crm, notifications, products, master, purchase, sales, production, finance, inventory, reports, materials, whatsapp
+from app.api.v1.endpoints import documents, admin, attachments, auth, health, agents, crm, notifications, products, master, purchase, sales, production, finance, inventory, reports, materials, whatsapp
 
 api_router = APIRouter()
 
@@ -21,3 +21,4 @@ api_router.include_router(materials.router, prefix="/api/v1", tags=["materials"]
 api_router.include_router(crm.router, prefix="/api/v1", tags=["crm"])
 api_router.include_router(notifications.router, prefix="/api/v1", tags=["notifications"])
 api_router.include_router(whatsapp.router, prefix="/api/v1", tags=["whatsapp"])
+api_router.include_router(documents.router, prefix="/api/v1", tags=["documents"])

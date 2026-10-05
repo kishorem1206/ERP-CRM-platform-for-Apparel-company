@@ -1,5 +1,6 @@
 """Pydantic schemas for Product master CRUD."""
 from __future__ import annotations
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -19,6 +20,7 @@ class ProductVariantOut(BaseModel):
     size_name: Optional[str] = None
     mrp: Optional[Decimal] = None
     cost_price: Optional[Decimal] = None
+    wholesale_price: Optional[Decimal] = None
     is_active: bool
 
     model_config = {"from_attributes": True}
@@ -39,6 +41,7 @@ class ProductOut(BaseModel):
     mrp: Optional[Decimal] = None
     dealer_price: Optional[Decimal] = None
     cost_price: Optional[Decimal] = None
+    wholesale_price: Optional[Decimal] = None
     description: Optional[str] = None
     fabric_type: Optional[str] = None
     fabric_composition: Optional[str] = None
@@ -48,7 +51,29 @@ class ProductOut(BaseModel):
     season: Optional[str] = None
     gender: Optional[str] = None
     is_active: bool
+    merged_into_id: Optional[UUID] = None
     variants: list[ProductVariantOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class ProductMergeRequest(BaseModel):
+    target_product_id: UUID
+    notes: Optional[str] = None
+
+
+class ProductMergeLogOut(BaseModel):
+    id: UUID
+    source_product_id: UUID
+    source_code: str
+    source_name: str
+    target_product_id: UUID
+    target_code: str
+    target_name: str
+    notes: Optional[str] = None
+    merged_by: Optional[UUID] = None
+    merged_by_name: Optional[str] = None
+    merged_at: datetime
 
     model_config = {"from_attributes": True}
 
@@ -64,6 +89,7 @@ class ProductCreate(BaseModel):
     mrp: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     dealer_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
+    wholesale_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     description: Optional[str] = None
     fabric_type: Optional[str] = None
     fabric_composition: Optional[str] = None
@@ -83,6 +109,7 @@ class ProductUpdate(BaseModel):
     mrp: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     dealer_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
+    wholesale_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     description: Optional[str] = None
     fabric_type: Optional[str] = None
     fabric_composition: Optional[str] = None
@@ -100,6 +127,7 @@ class ProductVariantCreate(BaseModel):
     barcode: Optional[str] = None
     mrp: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
+    wholesale_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
 
 
 class CategoryOut(BaseModel):
@@ -119,6 +147,40 @@ class ColourOut(BaseModel):
     id: UUID
     name: str
     hex_code: Optional[str] = None
+    model_config = {"from_attributes": True}
+
+
+class ProcessMasterCreate(BaseModel):
+    name: str
+    default_unit: Optional[str] = None
+    default_tolerance_pct: Optional[Decimal] = None
+    default_min_rate: Optional[Decimal] = None
+    default_max_rate: Optional[Decimal] = None
+    default_planned_rate: Optional[Decimal] = None
+    sort_order: int = 0
+
+
+class ProcessMasterUpdate(BaseModel):
+    name: Optional[str] = None
+    default_unit: Optional[str] = None
+    default_tolerance_pct: Optional[Decimal] = None
+    default_min_rate: Optional[Decimal] = None
+    default_max_rate: Optional[Decimal] = None
+    default_planned_rate: Optional[Decimal] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class ProcessMasterOut(BaseModel):
+    id: UUID
+    name: str
+    default_unit: Optional[str] = None
+    default_tolerance_pct: Optional[Decimal] = None
+    default_min_rate: Optional[Decimal] = None
+    default_max_rate: Optional[Decimal] = None
+    default_planned_rate: Optional[Decimal] = None
+    sort_order: int
+    is_active: bool
     model_config = {"from_attributes": True}
 
 

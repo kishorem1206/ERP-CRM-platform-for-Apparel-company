@@ -5,6 +5,7 @@ import { Plus, X, Trash2 } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { DatePicker } from "@/components/shared/date-picker";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 export const INDIGO = "#0049A7";
@@ -438,12 +439,7 @@ export function QuoteFormModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Valid Until</label>
-              <input
-                className={inputCls}
-                type="date"
-                value={form.valid_until}
-                onChange={(e) => setField("valid_until", e.target.value)}
-              />
+              <DatePicker value={form.valid_until} onChange={(v) => setField("valid_until", v)} />
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">

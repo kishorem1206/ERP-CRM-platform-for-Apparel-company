@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ModalShell, Field, Input, Textarea, ModalActions, SearchableSelect } from "./ModalShell";
 import api from "@/lib/api";
+import { DatePicker } from "@/components/shared/date-picker";
 
 interface Props {
   open: boolean;
@@ -110,11 +111,7 @@ export function NewLotModal({ open, onClose }: Props) {
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Delivery Date">
-            <Input
-              type="date"
-              value={form.delivery_date}
-              onChange={(e) => set("delivery_date", e.target.value)}
-            />
+            <DatePicker value={form.delivery_date} onChange={(v) => set("delivery_date", v)} />
           </Field>
           <Field label="Season">
             <Input

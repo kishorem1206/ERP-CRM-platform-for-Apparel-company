@@ -3,10 +3,11 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.domain.business_rules import business_rules, BusinessRulesError
 from app.models.sales import (
     Customer, CustomerAddress, CustomerContact, CustomerDetail,
     Delivery, DeliveryItem, Invoice,
@@ -316,15 +317,56 @@ class SalesService:
         )
         return result.scalar_one_or_none()
 
+    async def get_committed_quantity(
+        self, company_id: UUID, product_id: UUID, variant_id: UUID | None = None,
+    ) -> Decimal:
+        """Outstanding (undelivered) quantity committed across all open Sales
+        Orders for a product/variant - ERP Upgrade §2's 'already committed to
+        other orders'. Cancelled orders are excluded; delivered_qty is kept
+        current by create_delivery(), so this is a live aggregate, not a
+        separate reservation ledger."""
+        result = await self.db.execute(
+            text("""
+                SELECT COALESCE(SUM(GREATEST(soi.quantity - soi.delivered_qty, 0)), 0)
+                FROM sales_order_items soi
+                JOIN sales_orders so ON so.id = soi.sales_order_id
+                WHERE so.company_id = :company_id
+                  AND so.status != 'cancelled'
+                  AND soi.product_id = :product_id
+                  AND (CAST(:variant_id AS UUID) IS NULL OR soi.variant_id = CAST(:variant_id AS UUID))
+            """),
+            {
+                "company_id": str(company_id),
+                "product_id": str(product_id),
+                "variant_id": str(variant_id) if variant_id else None,
+            },
+        )
+        return Decimal(result.scalar() or 0)
+
     async def create_sales_order(
         self, body: SalesOrderCreate, company_id: UUID, user_id: UUID, intrastate: bool = True,
     ) -> SalesOrder:
         now = datetime.now(timezone.utc)
+
+        # ERP Upgrade §5: validate against the customer PO's quantity
+        # tolerance BEFORE creating any row, so a rejected order leaves no
+        # partial state. Only runs when a PO quantity was actually given -
+        # a Sales Order "may" reference a PO, it isn't required to.
+        if body.customer_po_quantity:
+            total_qty = sum(item.quantity for item in body.items)
+            result = business_rules.validate_po_quantity(
+                body.customer_po_quantity, total_qty, body.po_tolerance_pct or Decimal("5"),
+            )
+            if not result.valid:
+                raise BusinessRulesError("PO_QUANTITY_TOLERANCE", result.reason)
+
         number = await _next_seq(self.db, "SO", company_id, SalesOrder)
         so = SalesOrder(
             company_id=company_id, order_number=number, customer_id=body.customer_id,
             quotation_id=body.quotation_id, order_date=body.order_date,
             expected_delivery=body.expected_delivery, notes=body.notes,
+            customer_po_number=body.customer_po_number, customer_po_quantity=body.customer_po_quantity,
+            po_tolerance_pct=body.po_tolerance_pct,
             created_by=user_id, created_at=now, updated_at=now,
         )
         self.db.add(so)
@@ -390,7 +432,11 @@ class SalesService:
         result = await self.db.execute(
             select(Delivery)
             .where(Delivery.id == did, Delivery.company_id == company_id)
-            .options(selectinload(Delivery.customer), selectinload(Delivery.items))
+            .options(
+                selectinload(Delivery.customer).selectinload(Customer.addresses),
+                selectinload(Delivery.items),
+                selectinload(Delivery.sales_order),
+            )
         )
         return result.scalar_one_or_none()
 
@@ -412,6 +458,9 @@ class SalesService:
             delivery_date=body.delivery_date, transporter=body.transporter,
             lr_number=body.lr_number, vehicle_number=body.vehicle_number,
             notes=body.notes, status="dispatched", dispatched_at=now,
+            carton_count=body.carton_count, package_count=body.package_count,
+            packing_marks=body.packing_marks, gross_weight=body.gross_weight,
+            net_weight=body.net_weight,
             created_by=user_id, created_at=now, updated_at=now,
         )
         self.db.add(d)
@@ -511,9 +560,26 @@ class SalesService:
             )
             delivery = d_res.scalar_one_or_none()
             if delivery:
+                # Tax comes from the order lines, pro-rated by delivered quantity -
+                # a delivery line carries no GST of its own, so summing delivery
+                # totals silently under-billed tax on every invoice.
+                so_item_ids = {i.so_item_id for i in delivery.items}
+                so_items = {
+                    si.id: si for si in (await self.db.execute(
+                        select(SalesOrderItem).where(SalesOrderItem.id.in_(so_item_ids))
+                    )).scalars().all()
+                }
                 for item in delivery.items:
-                    total += item.total_amount
-                subtotal = taxable = total  # simplified: no GST split on invoice re-copy
+                    si = so_items.get(item.so_item_id)
+                    if si is None or si.quantity <= 0:
+                        continue
+                    fraction = item.quantity / si.quantity
+                    subtotal += si.unit_price * item.quantity
+                    taxable += si.taxable_amount * fraction
+                    cgst += si.cgst_amount * fraction
+                    sgst += si.sgst_amount * fraction
+                    igst += si.igst_amount * fraction
+                total = taxable + cgst + sgst + igst
 
         if body.sales_order_id and taxable == Decimal("0"):
             so_res = await self.db.execute(

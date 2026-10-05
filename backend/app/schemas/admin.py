@@ -1,6 +1,6 @@
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserOut(BaseModel):
@@ -80,6 +80,7 @@ class CompanyUpdate(BaseModel):
     website: str | None = None
     fabric_variance_pct: float | None = None
     negative_stock_allowed: bool | None = None
+    bill_alert_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class CompanyOut(BaseModel):
@@ -98,5 +99,6 @@ class CompanyOut(BaseModel):
     currency: str
     fabric_variance_pct: float | None
     negative_stock_allowed: bool
+    bill_alert_days: int
 
     model_config = {"from_attributes": True}

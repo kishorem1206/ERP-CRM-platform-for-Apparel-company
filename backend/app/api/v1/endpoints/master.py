@@ -1,4 +1,5 @@
 """Master data reference endpoints — categories, sizes, colours, units, warehouses, HSN."""
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -9,8 +10,12 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.deps import AuthUser, DBSession
 from app.models.master import Category, SubCategory, Colour, Size, Unit, HsnCode, Warehouse
+from app.models.production import ProcessMaster
 from app.schemas.base import ApiResponse
-from app.schemas.product import CategoryOut, SizeOut, ColourOut, UnitOut, HsnOut, WarehouseOut
+from app.schemas.product import (
+    CategoryOut, SizeOut, ColourOut, UnitOut, HsnOut, WarehouseOut,
+    ProcessMasterCreate, ProcessMasterUpdate, ProcessMasterOut,
+)
 
 router = APIRouter(prefix="/master", tags=["master"])
 
@@ -264,6 +269,96 @@ async def delete_colour(colour_id: UUID, db: DBSession, user: AuthUser):
         await db.rollback()
         raise HTTPException(409, "Cannot delete — this colour is used by existing products, styles, or lots")
     return ApiResponse(success=True, message="Colour deleted")
+
+
+# ── Process Master ──────────────────────────────────────────────────────────
+
+@router.get("/processes")
+async def list_processes(db: DBSession, user: AuthUser):
+    user.require("master_data.view")
+    result = await db.execute(
+        select(ProcessMaster).where(ProcessMaster.company_id == user.company_id, ProcessMaster.is_active.is_(True))
+        .order_by(ProcessMaster.sort_order, ProcessMaster.name)
+    )
+    processes = result.scalars().all()
+    return ApiResponse(success=True, data=[ProcessMasterOut.model_validate(p) for p in processes])
+
+
+@router.post("/processes", status_code=201)
+async def create_process(body: ProcessMasterCreate, db: DBSession, user: AuthUser):
+    user.require("master_data.create")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Process name is required")
+    process = ProcessMaster(
+        company_id=user.company_id, name=name, default_unit=body.default_unit,
+        default_tolerance_pct=body.default_tolerance_pct, default_min_rate=body.default_min_rate,
+        default_max_rate=body.default_max_rate, default_planned_rate=body.default_planned_rate,
+        sort_order=body.sort_order, created_at=datetime.now(timezone.utc),
+    )
+    db.add(process)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A process with this name already exists", "Cannot create process")
+    await db.refresh(process)
+    return ApiResponse(success=True, data=ProcessMasterOut.model_validate(process), message="Process created")
+
+
+@router.patch("/processes/{process_id}")
+async def update_process(process_id: UUID, body: ProcessMasterUpdate, db: DBSession, user: AuthUser):
+    user.require("master_data.edit")
+    result = await db.execute(
+        select(ProcessMaster).where(ProcessMaster.id == process_id, ProcessMaster.company_id == user.company_id)
+    )
+    process = result.scalar_one_or_none()
+    if not process:
+        raise HTTPException(404, "Process not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Process name is required")
+        process.name = name
+    if body.default_unit is not None:
+        process.default_unit = body.default_unit
+    if body.default_tolerance_pct is not None:
+        process.default_tolerance_pct = body.default_tolerance_pct
+    if body.default_min_rate is not None:
+        process.default_min_rate = body.default_min_rate
+    if body.default_max_rate is not None:
+        process.default_max_rate = body.default_max_rate
+    if body.default_planned_rate is not None:
+        process.default_planned_rate = body.default_planned_rate
+    if body.sort_order is not None:
+        process.sort_order = body.sort_order
+    if body.is_active is not None:
+        process.is_active = body.is_active
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A process with this name already exists", "Cannot update process")
+    await db.refresh(process)
+    return ApiResponse(success=True, data=ProcessMasterOut.model_validate(process), message="Process updated")
+
+
+@router.delete("/processes/{process_id}")
+async def delete_process(process_id: UUID, db: DBSession, user: AuthUser):
+    user.require("master_data.delete")
+    result = await db.execute(
+        select(ProcessMaster).where(ProcessMaster.id == process_id, ProcessMaster.company_id == user.company_id)
+    )
+    process = result.scalar_one_or_none()
+    if not process:
+        raise HTTPException(404, "Process not found")
+    await db.delete(process)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Cannot delete — this process is used by existing styles")
+    return ApiResponse(success=True, message="Process deleted")
 
 
 # ── Units ───────────────────────────────────────────────────────────────────

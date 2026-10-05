@@ -12,6 +12,7 @@ import {
   QuoteStatusBadge,
   QuoteFormModal,
 } from "./_components";
+import { Can } from "@/lib/permissions";
 
 const STATUS_FILTERS = [
   { value: "", label: "All" },
@@ -78,13 +79,13 @@ export default function QuotesPage() {
             Proposals and quote tracking.
           </p>
         </div>
-        <button
+        <Can perm="crm.create"><button
           onClick={() => setShowModal(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Quote
-        </button>
+        </button></Can>
       </div>
 
       {deleteError && (
@@ -199,20 +200,20 @@ export default function QuotesPage() {
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-0.5">
-                        <button
+                        <Can perm="crm.edit"><button
                           onClick={(e) => { e.stopPropagation(); router.push(`/crm/quotes/${q.id}`); }}
                           className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground"
                           title="Edit quote"
                         >
                           <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
+                        </button></Can>
+                        <Can perm="crm.delete"><button
                           onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(q.id); }}
                           className="p-1 rounded transition-colors hover:bg-[#8174F5]/10 text-muted-foreground hover:text-[#8174F5]"
                           title="Delete quote"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        </button></Can>
                       </div>
                     </td>
                   </tr>

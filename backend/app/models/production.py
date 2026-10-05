@@ -35,10 +35,14 @@ class Style(Base):
     target_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # The real sellable Product/SKU master behind this Style (Garments_ERP_Style_Master_Specification.md
+    # §4-5). NULL for styles created before this link existed - never retroactively backfilled.
+    product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 
+    product: Mapped[Optional["Product"]] = relationship()
     lots: Mapped[list["ProductionLot"]] = relationship(back_populates="style")
     sizes: Mapped[list["StyleSize"]] = relationship(back_populates="style", cascade="all, delete-orphan", order_by="StyleSize.sort_order")
     colours: Mapped[list["StyleColour"]] = relationship(back_populates="style", cascade="all, delete-orphan", order_by="StyleColour.sort_order")
@@ -50,14 +54,48 @@ class Style(Base):
     additional_costs: Mapped[list["StyleAdditionalCost"]] = relationship(back_populates="style", cascade="all, delete-orphan")
 
 
+class SizeChart(Base):
+    """Reusable named size chart (e.g. "T-Shirt Standard") - a group of
+    sizes each with its own default quantity, selectable from Style
+    Creation instead of re-entering quantities on every Style (spec §1.1).
+    """
+    __tablename__ = "size_charts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    items: Mapped[list["SizeChartItem"]] = relationship(back_populates="size_chart", cascade="all, delete-orphan", order_by="SizeChartItem.sort_order")
+
+
+class SizeChartItem(Base):
+    __tablename__ = "size_chart_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    size_chart_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("size_charts.id", ondelete="CASCADE"), nullable=False)
+    size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
+    size_chart: Mapped["SizeChart"] = relationship(back_populates="items")
+
+
 class StyleSize(Base):
-    """Applicable size chart for a Style — references the Size Master."""
+    """Applicable size chart for a Style — references the Size Master.
+
+    quantity/size_chart_id are additive (spec §1.1): quantity may come
+    from a linked SizeChartItem's default or be a style-specific override
+    (override always wins — see ProductionService._build_style_size).
+    """
     __tablename__ = "style_sizes"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
     size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
     sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    size_chart_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("size_charts.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="sizes")
@@ -112,6 +150,27 @@ class StyleFabric(Base):
     style: Mapped["Style"] = relationship(back_populates="fabrics")
 
 
+class ProcessMaster(Base):
+    """Reusable process definitions (Knitting, Cutting, Making, ...) that a
+    Style's process rows can link to for dropdown selection and default
+    rate/unit/tolerance values (Garments_ERP spec §1.3/§26 - default vs
+    style-specific override; the style-specific value always wins).
+    """
+    __tablename__ = "process_masters"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    default_unit: Mapped[Optional[str]] = mapped_column(String(30))
+    default_tolerance_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    default_min_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    default_max_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    default_planned_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class StyleProcess(Base):
     """Configurable process in a Style's production workflow.
 
@@ -125,6 +184,7 @@ class StyleProcess(Base):
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
     seq: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     process_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    process_master_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("process_masters.id"))
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tolerance_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     input_unit: Mapped[Optional[str]] = mapped_column(String(30))
@@ -173,6 +233,23 @@ class StyleTrim(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="trims")
+    size_breakdown: Mapped[list["StyleTrimSize"]] = relationship(back_populates="style_trim", cascade="all, delete-orphan")
+
+
+class StyleTrimSize(Base):
+    """Size-wise trim consumption (spec §21, e.g. S=4 buttons, M=4, L=5,
+    XL=5) - only meaningful when the parent StyleTrim.category is
+    'Sizable'. Absence of rows here means the trim's flat `quantity`
+    applies uniformly regardless of size.
+    """
+    __tablename__ = "style_trim_sizes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    style_trim_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_trims.id", ondelete="CASCADE"), nullable=False)
+    size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(15, 4), nullable=False)
+
+    style_trim: Mapped["StyleTrim"] = relationship(back_populates="size_breakdown")
 
 
 class StylePackingMaterial(Base):
@@ -306,6 +383,8 @@ class ProductionLot(Base):
     material_issues: Mapped[list["MaterialIssue"]] = relationship(back_populates="production_lot")
     outputs: Mapped[list["ProductionOutput"]] = relationship(back_populates="production_lot")
     additional_costs: Mapped[list["LotAdditionalCost"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+    trims: Mapped[list["LotTrim"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+    packing_materials: Mapped[list["LotPackingMaterial"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
     fabric_processing: Mapped[list["FabricProcessingEntry"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
 
 
@@ -344,6 +423,12 @@ class ProductionStage(Base):
     received_qty: Mapped[int] = mapped_column(Integer, default=0)
     rejected_qty: Mapped[int] = mapped_column(Integer, default=0)
     rework_qty: Mapped[int] = mapped_column(Integer, default=0)
+    # Weight-based cutting (spec §9) - rollup totals across this stage's
+    # entries, mirroring how input_qty/output_qty already roll up.
+    input_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    output_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    wastage_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    recoverable_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     status: Mapped[str] = mapped_column(String(20), default="pending")
     assignment_type: Mapped[Optional[str]] = mapped_column(String(20))   # "vendor" | "internal_worker" | NULL (in-house)
     vendor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id"))
@@ -379,6 +464,13 @@ class ProductionStageEntry(Base):
     pieces_in: Mapped[int] = mapped_column(Integer, default=0)
     pieces_out: Mapped[int] = mapped_column(Integer, default=0)
     rejected: Mapped[int] = mapped_column(Integer, default=0)
+    # Weight-based cutting (spec §9) - opt-in per entry; piece-only entries
+    # leave these None. wastage_kg/recoverable_kg classify the remainder
+    # (input - output) rather than losing track of the balance.
+    input_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    output_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    wastage_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    recoverable_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     operator: Mapped[Optional[str]] = mapped_column(String(200))
     machine: Mapped[Optional[str]] = mapped_column(String(100))
     notes: Mapped[Optional[str]] = mapped_column(Text)
@@ -442,6 +534,50 @@ class LotAdditionalCost(Base):
     production_lot: Mapped["ProductionLot"] = relationship(back_populates="additional_costs")
 
 
+class LotTrim(Base):
+    """LOT-level snapshot of a StyleTrim, auto-fetched at LOT creation
+    (spec §21: "This should be fetched automatically when the Production
+    Lot is created"). planned_qty is computed from the style trim's
+    size-wise breakdown (if any) against this LOT's ProductionLotSize
+    rows, else the flat quantity x the LOT's total planned_qty.
+    """
+    __tablename__ = "lot_trims"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    style_trim_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_trims.id"))
+    trim_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    unit: Mapped[Optional[str]] = mapped_column(String(30))
+    category: Mapped[Optional[str]] = mapped_column(String(30))
+    planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    actual_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    production_lot: Mapped["ProductionLot"] = relationship(back_populates="trims")
+
+
+class LotPackingMaterial(Base):
+    """LOT-level snapshot of a StylePackingMaterial, auto-fetched at LOT
+    creation (spec §22/§23). Not size-wise - packing is per total
+    finished quantity, unlike trims.
+    """
+    __tablename__ = "lot_packing_materials"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    style_packing_material_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_packing_materials.id"))
+    material_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    unit: Mapped[Optional[str]] = mapped_column(String(30))
+    consumption_stage: Mapped[Optional[str]] = mapped_column(String(50))
+    planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    actual_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    production_lot: Mapped["ProductionLot"] = relationship(back_populates="packing_materials")
+
+
 class MaterialIssue(Base):
     """Material Issue Slip (MIS) — issues raw material from warehouse to production."""
     __tablename__ = "material_issues"
@@ -476,6 +612,16 @@ class MaterialIssueItem(Base):
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))
     total_cost: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))
     inv_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_transactions.id"))
+    # Return Remainder tracking (spec §18/§19): recorded once the stage's
+    # actual consumption is known. used + returned + wastage must never
+    # exceed issued_qty (enforced in record_mis_item_return). returned_qty
+    # going back to real inventory via InventoryService.receive() IS what
+    # makes it "recoverable/resale" - no separate flag needed.
+    used_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    returned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    wastage_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    return_inv_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_transactions.id"))
+    return_notes: Mapped[Optional[str]] = mapped_column(Text)
 
     material_issue: Mapped["MaterialIssue"] = relationship(back_populates="items")
 
@@ -491,6 +637,7 @@ class ProductionOutput(Base):
     warehouse_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("warehouses.id"), nullable=False)
     output_date: Mapped[date] = mapped_column(Date, nullable=False)
     product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id"))
     quantity: Mapped[Decimal] = mapped_column(Numeric(15, 4), nullable=False)
     # First-quality pieces received into sellable FG inventory — unchanged
     # meaning. rejected_qty is recorded alongside for visibility (§47.15) but is

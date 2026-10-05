@@ -113,6 +113,7 @@ class Product(BaseModel):
     mrp: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     dealer_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     cost_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    wholesale_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     description: Mapped[Optional[str]] = mapped_column(Text)
     fabric_type: Mapped[Optional[str]] = mapped_column(String(100))
     fabric_composition: Mapped[Optional[str]] = mapped_column(Text)
@@ -123,6 +124,7 @@ class Product(BaseModel):
     gender: Mapped[Optional[str]] = mapped_column(String(20))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    merged_into_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 
     variants: Mapped[list["ProductVariant"]] = relationship(back_populates="product")
@@ -142,6 +144,7 @@ class ProductVariant(Base):
     barcode: Mapped[Optional[str]] = mapped_column(String(50))
     mrp: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     cost_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    wholesale_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     product: Mapped["Product"] = relationship(back_populates="variants")

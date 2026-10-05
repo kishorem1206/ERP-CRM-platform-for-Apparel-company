@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Settings, CheckCircle2, XCircle, Loader2, Eye, EyeOff, X,
-  Mail, Plus, Pencil, Trash2, Globe,
+  Mail, Plus, Pencil, Trash2, Globe, Gauge, Users as UsersIcon,
 } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { QualificationStageCard } from "@/components/crm/qualification-stage-card";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -378,17 +380,143 @@ export default function CRMSettingsPage() {
       return res.data;
     },
     onSuccess: (data) => {
-      setTestResult(data?.data ?? { success: false, message: "Unknown result" });
+      // The endpoint returns { success, message, data: null } on success.
+      setTestResult({ success: true, message: data?.message ?? "Test email sent successfully" });
     },
     onError: (err: unknown) => {
-      const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-        "Connection test failed";
+      // App error envelope: { success: false, error: "<str>" }
+      const errField = (err as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+      const msg = typeof errField === "string" ? errField : "Connection test failed";
       setTestResult({ success: false, message: msg });
     },
   });
 
   // ── Template mutations ─────────────────────────────────────────────────────
+  // ── Lead Assignment (admin.settings) ────────────────────────────────────────
+  const { data: assignableUsersData } = useQuery({
+    queryKey: ["crm-assignable-users"],
+    queryFn: async () => (await api.get("/crm/assignable-users")).data,
+  });
+  const assignableUsers: { id: string; name: string }[] = assignableUsersData?.data ?? [];
+
+  const { data: rulesData } = useQuery({
+    queryKey: ["crm-assignment-rules"],
+    queryFn: async () => (await api.get("/crm/assignment-rules")).data,
+  });
+  const assignmentRules: { id: string; name: string; sort_order: number; is_active: boolean; source_id: string | null; min_score: number | null; location_tier: string | null; assign_to: string; assign_to_name: string | null }[] =
+    rulesData?.data ?? [];
+
+  const { data: poolData } = useQuery({
+    queryKey: ["crm-assignment-pool"],
+    queryFn: async () => (await api.get("/crm/assignment-pool")).data,
+  });
+  const assignmentPool: { id: string; user_id: string; user_name: string | null; sort_order: number; is_active: boolean }[] =
+    poolData?.data ?? [];
+
+  const [showRuleModal, setShowRuleModal] = useState(false);
+  const [poolAddUserId, setPoolAddUserId] = useState("");
+
+  const deleteRuleMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/crm/assignment-rules/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-assignment-rules"] }),
+  });
+  const toggleRuleMutation = useMutation({
+    mutationFn: ({ id, is_active }: { id: string; is_active: boolean }) =>
+      api.patch(`/crm/assignment-rules/${id}`, { is_active }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-assignment-rules"] }),
+  });
+  const addPoolMemberMutation = useMutation({
+    mutationFn: (user_id: string) => api.post("/crm/assignment-pool", { user_id, sort_order: assignmentPool.length }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["crm-assignment-pool"] }); setPoolAddUserId(""); },
+  });
+  const removePoolMemberMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/crm/assignment-pool/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-assignment-pool"] }),
+  });
+
+  const { data: responseTargetsData } = useQuery({
+    queryKey: ["crm-response-targets"],
+    queryFn: async () => (await api.get("/crm/response-targets")).data,
+  });
+  const responseTargets = responseTargetsData?.data as {
+    response_target_high_minutes: number; response_target_medium_hours: number; response_target_low_hours: number;
+    escalation_employee_hours: number; escalation_manager_hours: number;
+  } | undefined;
+  const [targetForm, setTargetForm] = useState({ high: "", medium: "", low: "", escEmp: "", escMgr: "" });
+  useEffect(() => {
+    if (responseTargets) {
+      setTargetForm({
+        high: String(responseTargets.response_target_high_minutes),
+        medium: String(responseTargets.response_target_medium_hours),
+        low: String(responseTargets.response_target_low_hours),
+        escEmp: String(responseTargets.escalation_employee_hours),
+        escMgr: String(responseTargets.escalation_manager_hours),
+      });
+    }
+  }, [responseTargets]);
+  const updateTargetsMutation = useMutation({
+    mutationFn: () => api.put("/crm/response-targets", {
+      response_target_high_minutes: parseInt(targetForm.high, 10),
+      response_target_medium_hours: parseInt(targetForm.medium, 10),
+      response_target_low_hours: parseInt(targetForm.low, 10),
+      escalation_employee_hours: parseInt(targetForm.escEmp, 10),
+      escalation_manager_hours: parseInt(targetForm.escMgr, 10),
+    }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-response-targets"] }),
+  });
+
+  // ── Predictive Scoring readiness (read-only status, not a feature) ─────────
+  const { data: readinessData } = useQuery({
+    queryKey: ["crm-predictive-readiness"],
+    queryFn: async () => (await api.get("/crm/predictive-scoring/readiness")).data,
+  });
+  const readiness = readinessData?.data as {
+    ready: boolean; leads_total: number; leads_total_required: number;
+    converted: number; not_converted: number; outcomes_required_per_class: number; reason: string;
+  } | undefined;
+
+  // ── Lead Scoring (admin.settings) ───────────────────────────────────────────
+  const { data: scoringRulesData, isLoading: rulesLoading } = useQuery({
+    queryKey: ["crm-scoring-rules"],
+    queryFn: async () => (await api.get("/crm/scoring-rules")).data,
+  });
+  const scoringRules: { id: string; category: string; code: string; label: string; weight: number; is_active: boolean }[] =
+    scoringRulesData?.data ?? [];
+
+  const { data: thresholdsData } = useQuery({
+    queryKey: ["crm-scoring-thresholds"],
+    queryFn: async () => (await api.get("/crm/scoring-thresholds")).data,
+  });
+  const thresholds = thresholdsData?.data as { lead_score_high_threshold: number; lead_score_medium_threshold: number } | undefined;
+  const [highThreshold, setHighThreshold] = useState("");
+  const [mediumThreshold, setMediumThreshold] = useState("");
+  useEffect(() => {
+    if (thresholds) {
+      setHighThreshold(String(thresholds.lead_score_high_threshold));
+      setMediumThreshold(String(thresholds.lead_score_medium_threshold));
+    }
+  }, [thresholds]);
+
+  const updateRuleMutation = useMutation({
+    mutationFn: ({ id, ...body }: { id: string; weight?: number; is_active?: boolean }) =>
+      api.patch(`/crm/scoring-rules/${id}`, body),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-scoring-rules"] }),
+  });
+
+  const updateThresholdsMutation = useMutation({
+    mutationFn: () =>
+      api.put("/crm/scoring-thresholds", {
+        lead_score_high_threshold: parseInt(highThreshold, 10),
+        lead_score_medium_threshold: parseInt(mediumThreshold, 10),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-scoring-thresholds"] }),
+  });
+
+  const rulesByCategory = scoringRules.reduce<Record<string, typeof scoringRules>>((acc, r) => {
+    (acc[r.category] ??= []).push(r);
+    return acc;
+  }, {});
+
   const toggleActiveMutation = useMutation({
     mutationFn: ({ id, is_active }: { id: string; is_active: boolean }) =>
       api.patch(`/crm/email-templates/${id}`, { is_active }),
@@ -622,7 +750,7 @@ export default function CRMSettingsPage() {
 
           {/* Actions */}
           <div className="flex items-center gap-3 pt-2">
-            <button
+            <Can perm="crm.edit"><button
               onClick={() => saveMutation.mutate()}
               disabled={
                 !form.host || !form.username || !form.from_name || !form.from_email || saveMutation.isPending
@@ -635,8 +763,8 @@ export default function CRMSettingsPage() {
               ) : (
                 "Save"
               )}
-            </button>
-            <button
+            </button></Can>
+            <Can perm="crm.edit"><button
               onClick={() => testMutation.mutate()}
               disabled={!config || testMutation.isPending}
               title={!config ? "Save your SMTP config first before testing" : undefined}
@@ -647,7 +775,7 @@ export default function CRMSettingsPage() {
               ) : (
                 "Test Connection"
               )}
-            </button>
+            </button></Can>
           </div>
         </div>
       </div>
@@ -709,7 +837,7 @@ export default function CRMSettingsPage() {
                   {/* Right: actions */}
                   <div className="flex items-center gap-2 shrink-0">
                     {/* Active toggle */}
-                    <button
+                    <Can perm="crm.edit"><button
                       type="button"
                       title={tpl.is_active ? "Deactivate" : "Activate"}
                       onClick={() =>
@@ -722,7 +850,7 @@ export default function CRMSettingsPage() {
                         className="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform"
                         style={{ transform: tpl.is_active ? "translateX(18px)" : "translateX(2px)" }}
                       />
-                    </button>
+                    </button></Can>
 
                     {/* Edit */}
                     <button
@@ -887,6 +1015,398 @@ export default function CRMSettingsPage() {
           </div>
         </ModalShell>
       )}
+
+      {/* ── Lead Assignment Section ──────────────────────────────────────────── */}
+      <Can perm="admin.settings">
+      <div className="bg-card border border-border rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            <div className="flex items-center gap-2">
+              <UsersIcon className="h-4 w-4 text-muted-foreground" />
+              <p className="font-semibold">Lead Assignment</p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              A new lead with no manual assignee is auto-assigned: the first matching rule wins, otherwise it rotates through the round-robin pool below.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowRuleModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
+            style={{ background: INDIGO }}
+          >
+            <Plus className="h-4 w-4" /> New Rule
+          </button>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Rules (checked in order)</p>
+            {assignmentRules.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4">No rules yet — every lead falls through to the round-robin pool.</p>
+            ) : (
+              <div className="divide-y divide-border rounded-xl border border-border overflow-hidden">
+                {assignmentRules.map((rule) => (
+                  <div key={rule.id} className={`flex items-center justify-between gap-4 px-4 py-2.5 ${rule.is_active ? "" : "opacity-50"}`}>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{rule.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {[
+                          rule.source_id && "specific source",
+                          rule.min_score !== null && `score ≥ ${rule.min_score}`,
+                          rule.location_tier && `${rule.location_tier} area`,
+                        ].filter(Boolean).join(" · ") || "Matches everything"}
+                        {" → "}{rule.assign_to_name ?? "—"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => toggleRuleMutation.mutate({ id: rule.id, is_active: !rule.is_active })}
+                        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+                        style={{ background: rule.is_active ? INDIGO : "hsl(var(--muted))" }}
+                      >
+                        <span
+                          className="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+                          style={{ transform: rule.is_active ? "translateX(18px)" : "translateX(3px)" }}
+                        />
+                      </button>
+                      <button
+                        onClick={() => deleteRuleMutation.mutate(rule.id)}
+                        className="p-1 rounded hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Round-Robin Pool</p>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {assignmentPool.length === 0 && <p className="text-sm text-muted-foreground">No one in the pool yet.</p>}
+              {assignmentPool.map((m) => (
+                <div key={m.id} className="flex items-center gap-2 rounded-full border border-border pl-3 pr-1.5 py-1.5 text-sm">
+                  <span>{m.user_name ?? "—"}</span>
+                  <button
+                    onClick={() => removePoolMemberMutation.mutate(m.id)}
+                    className="p-1 rounded-full hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="w-64">
+              <SearchableSelect
+                value={poolAddUserId}
+                onChange={(v) => { setPoolAddUserId(v); if (v) addPoolMemberMutation.mutate(v); }}
+                placeholder="Add employee to pool…"
+                accent={INDIGO}
+                options={assignableUsers
+                  .filter((u) => !assignmentPool.some((m) => m.user_id === u.id))
+                  .map((u) => ({ value: u.id, label: u.name }))}
+              />
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Response Targets &amp; Escalation</p>
+            <div className="flex flex-wrap gap-4 p-4 rounded-xl bg-muted/20">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">High priority (minutes)</label>
+                <input type="number" min={1} value={targetForm.high}
+                  onChange={(e) => setTargetForm((f) => ({ ...f, high: e.target.value }))}
+                  onBlur={() => updateTargetsMutation.mutate()}
+                  className="w-20 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Medium priority (hours)</label>
+                <input type="number" min={1} value={targetForm.medium}
+                  onChange={(e) => setTargetForm((f) => ({ ...f, medium: e.target.value }))}
+                  onBlur={() => updateTargetsMutation.mutate()}
+                  className="w-20 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Low priority (hours)</label>
+                <input type="number" min={1} value={targetForm.low}
+                  onChange={(e) => setTargetForm((f) => ({ ...f, low: e.target.value }))}
+                  onBlur={() => updateTargetsMutation.mutate()}
+                  className="w-20 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Notify employee after (hours)</label>
+                <input type="number" min={1} value={targetForm.escEmp}
+                  onChange={(e) => setTargetForm((f) => ({ ...f, escEmp: e.target.value }))}
+                  onBlur={() => updateTargetsMutation.mutate()}
+                  className="w-20 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Escalate to owner after (hours)</label>
+                <input type="number" min={1} value={targetForm.escMgr}
+                  onChange={(e) => setTargetForm((f) => ({ ...f, escMgr: e.target.value }))}
+                  onBlur={() => updateTargetsMutation.mutate()}
+                  className="w-20 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              "Notify employee" and "Escalate to owner" count from the response target above — e.g. a high-priority lead with a 30-minute target and a 2-hour employee escalation gets a reminder 2.5 hours after creation if still not contacted.
+            </p>
+          </div>
+        </div>
+      </div>
+      </Can>
+
+      {showRuleModal && (
+        <AssignmentRuleModal
+          sources={sources}
+          assignableUsers={assignableUsers}
+          onClose={() => setShowRuleModal(false)}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ["crm-assignment-rules"] })}
+        />
+      )}
+
+      {/* ── Predictive Scoring Section (status only — no model exists yet) ───── */}
+      <Can perm="admin.settings">
+      {readiness && (
+        <div className="bg-card border border-border rounded-2xl p-6">
+          <div className="flex items-center gap-2 mb-1">
+            <Gauge className="h-4 w-4 text-muted-foreground" />
+            <p className="font-semibold">Predictive Scoring</p>
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold uppercase bg-muted text-muted-foreground">
+              Not Available Yet
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground mb-4">
+            This isn't a feature yet — just an honest status check. Once enough real leads with known outcomes accumulate, this unlocks a model-based prediction alongside (not instead of) the rule-based score above. See docs/PREDICTIVE_SCORING_DATA_AUDIT.md.
+          </p>
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div className="p-3 rounded-xl bg-muted/20">
+              <p className="text-lg font-bold tabular-nums">{readiness.leads_total} / {readiness.leads_total_required}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">Total Leads</p>
+            </div>
+            <div className="p-3 rounded-xl bg-muted/20">
+              <p className="text-lg font-bold tabular-nums">{readiness.converted} / {readiness.outcomes_required_per_class}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">Converted Outcomes</p>
+            </div>
+            <div className="p-3 rounded-xl bg-muted/20">
+              <p className="text-lg font-bold tabular-nums">{readiness.not_converted} / {readiness.outcomes_required_per_class}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">Lost Outcomes</p>
+            </div>
+          </div>
+        </div>
+      )}
+      </Can>
+
+      {/* ── Qualification stage (drives the Sales KPI "Lead → Qualified") ──── */}
+      <Can perm="admin.settings">
+        <QualificationStageCard />
+      </Can>
+
+      {/* ── Lead Scoring Section ─────────────────────────────────────────────── */}
+      <Can perm="admin.settings">
+      <div className="bg-card border border-border rounded-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <Gauge className="h-4 w-4 text-muted-foreground" />
+            <p className="font-semibold">Lead Scoring</p>
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Every rule below contributes to a lead&rsquo;s score when it applies. Weights can be negative. Turn a rule off without losing its history by switching it inactive.
+          </p>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div className="flex flex-wrap items-end gap-4 p-4 rounded-xl bg-muted/20">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">High priority at score ≥</label>
+              <input
+                type="number" min={1} max={100} value={highThreshold}
+                onChange={(e) => setHighThreshold(e.target.value)}
+                onBlur={() => updateThresholdsMutation.mutate()}
+                className="w-24 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Medium priority at score ≥</label>
+              <input
+                type="number" min={0} max={99} value={mediumThreshold}
+                onChange={(e) => setMediumThreshold(e.target.value)}
+                onBlur={() => updateThresholdsMutation.mutate()}
+                className="w-24 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">Below the medium threshold, a lead is Low priority.</p>
+          </div>
+
+          {rulesLoading ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+              <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading…
+            </div>
+          ) : (
+            Object.entries(rulesByCategory).map(([category, rules]) => (
+              <div key={category}>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">
+                  {CATEGORY_LABELS[category] ?? category}
+                </p>
+                <div className="divide-y divide-border rounded-xl border border-border overflow-hidden">
+                  {rules.map((rule) => (
+                    <RuleRow key={rule.id} rule={rule} onSave={(body) => updateRuleMutation.mutate({ id: rule.id, ...body })} />
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      </Can>
     </div>
+  );
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  requirement: "Requirement", intent: "Intent", contact: "Contact",
+  business: "Business", location: "Location", repeat: "Repeat Contact", quality: "Message Quality",
+};
+
+function RuleRow({
+  rule, onSave,
+}: {
+  rule: { id: string; label: string; weight: number; is_active: boolean };
+  onSave: (body: { weight?: number; is_active?: boolean }) => void;
+}) {
+  const [weight, setWeight] = useState(String(rule.weight));
+  useEffect(() => setWeight(String(rule.weight)), [rule.weight]);
+
+  return (
+    <div className={`flex items-center justify-between gap-4 px-4 py-2.5 ${rule.is_active ? "" : "opacity-50"}`}>
+      <p className="text-sm">{rule.label}</p>
+      <div className="flex items-center gap-3 flex-shrink-0">
+        <input
+          type="number" value={weight}
+          onChange={(e) => setWeight(e.target.value)}
+          onBlur={() => {
+            const n = parseInt(weight, 10);
+            if (!Number.isNaN(n) && n !== rule.weight) onSave({ weight: n });
+          }}
+          className="w-16 rounded-lg border border-input bg-background px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <button
+          onClick={() => onSave({ is_active: !rule.is_active })}
+          className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+          style={{ background: rule.is_active ? INDIGO : "hsl(var(--muted))" }}
+          title={rule.is_active ? "Deactivate rule" : "Activate rule"}
+        >
+          <span
+            className="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform"
+            style={{ transform: rule.is_active ? "translateX(18px)" : "translateX(3px)" }}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AssignmentRuleModal({
+  sources, assignableUsers, onClose, onSaved,
+}: {
+  sources: { id: string; name: string }[];
+  assignableUsers: { id: string; name: string }[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [sourceId, setSourceId] = useState("");
+  const [minScore, setMinScore] = useState("");
+  const [locationTier, setLocationTier] = useState("");
+  const [assignTo, setAssignTo] = useState("");
+  const [error, setError] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: () => api.post("/crm/assignment-rules", {
+      name,
+      source_id: sourceId || undefined,
+      min_score: minScore ? parseInt(minScore, 10) : undefined,
+      location_tier: locationTier || undefined,
+      assign_to: assignTo,
+    }),
+    onSuccess: () => { onSaved(); onClose(); },
+    onError: (err: unknown) => {
+      const e = (err as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+      setError(typeof e === "string" ? e : "Could not create rule.");
+    },
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-md" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">New Assignment Rule</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Rule name</label>
+          <input
+            value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. IndiaMART high-value to senior team"
+            className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">If source is (optional)</label>
+          <SearchableSelect
+            value={sourceId} onChange={setSourceId} accent={INDIGO}
+            placeholder="Any source"
+            options={sources.map((s) => ({ value: s.id, label: s.name }))}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">And score is at least (optional)</label>
+          <input
+            type="number" min={0} max={100} value={minScore}
+            onChange={(e) => setMinScore(e.target.value)}
+            placeholder="Any score"
+            className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">And location tier is (optional)</label>
+          <SearchableSelect
+            value={locationTier} onChange={setLocationTier} accent={INDIGO}
+            placeholder="Any location"
+            options={[
+              { value: "preferred", label: "Preferred" },
+              { value: "secondary", label: "Secondary" },
+              { value: "non_serviceable", label: "Non-serviceable" },
+            ]}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Assign to</label>
+          <SearchableSelect
+            value={assignTo} onChange={setAssignTo} accent={INDIGO}
+            placeholder="Select employee…"
+            options={assignableUsers.map((u) => ({ value: u.id, label: u.name }))}
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-3 px-6 py-4 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => mutation.mutate()}
+          disabled={!name.trim() || !assignTo || mutation.isPending}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-colors disabled:opacity-50 hover:opacity-90"
+          style={{ background: INDIGO }}
+        >
+          {mutation.isPending ? "Saving…" : "Create Rule"}
+        </button>
+      </div>
+    </ModalShell>
   );
 }

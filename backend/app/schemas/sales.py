@@ -352,6 +352,9 @@ class SalesOrderCreate(BaseModel):
     expected_delivery: date | None = None
     notes: str | None = None
     intrastate: bool = True
+    customer_po_number: str | None = None
+    customer_po_quantity: Decimal | None = None
+    po_tolerance_pct: Decimal = Decimal("5")
     items: list[SOItemCreate]
 
 
@@ -377,6 +380,9 @@ class SalesOrderOut(BaseModel):
     igst_amount: Decimal
     total_amount: Decimal
     notes: str | None
+    customer_po_number: str | None = None
+    customer_po_quantity: Decimal | None = None
+    po_tolerance_pct: Decimal | None = None
     items: list[SOItemOut] = []
     model_config = {"from_attributes": True}
 
@@ -413,6 +419,11 @@ class DeliveryCreate(BaseModel):
     lr_number: str | None = None
     vehicle_number: str | None = None
     notes: str | None = None
+    carton_count: int | None = None
+    package_count: int | None = None
+    packing_marks: str | None = None
+    gross_weight: Decimal | None = None
+    net_weight: Decimal | None = None
     items: list[DeliveryItemCreate]
 
 
@@ -430,6 +441,11 @@ class DeliveryOut(BaseModel):
     vehicle_number: str | None
     notes: str | None
     dispatched_at: datetime | None
+    carton_count: int | None = None
+    package_count: int | None = None
+    packing_marks: str | None = None
+    gross_weight: Decimal | None = None
+    net_weight: Decimal | None = None
     items: list[DeliveryItemOut] = []
     model_config = {"from_attributes": True}
 
@@ -541,6 +557,14 @@ class PriceResolveOut(BaseModel):
     discount_amount: Decimal
     taxable_amount: Decimal
     source: str
+
+
+class StockCheckOut(BaseModel):
+    ordered_quantity: Decimal
+    available_stock: Decimal
+    committed_quantity: Decimal
+    remaining_quantity: Decimal
+    can_fulfill: bool
 
 
 class PriceHistoryOut(BaseModel):

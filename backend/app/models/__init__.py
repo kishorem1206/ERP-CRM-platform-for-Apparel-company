@@ -20,12 +20,12 @@ from app.models.sales import (
     Delivery, DeliveryItem, Invoice,
 )
 from app.models.production import (
-    Style, StyleSize, StyleColour, StyleYarn, StyleFabric,
-    StyleProcess, StyleSubProcess, StyleTrim, StylePackingMaterial,
+    Style, SizeChart, SizeChartItem, StyleSize, StyleColour, StyleYarn, StyleFabric,
+    ProcessMaster, StyleProcess, StyleSubProcess, StyleTrim, StyleTrimSize, StylePackingMaterial,
     StyleAdditionalCost,
     ProductionLot, ProductionLotSize,
     ProductionStage, ProductionStageEntry, ProductionStageChallan,
-    LotAdditionalCost, FabricProcessingEntry, InternalWorker,
+    LotAdditionalCost, LotTrim, LotPackingMaterial, FabricProcessingEntry, InternalWorker,
     MaterialIssue, MaterialIssueItem, ProductionOutput,
 )
 from app.models.crm import (
@@ -35,6 +35,8 @@ from app.models.crm import (
     CrmEmail, CrmEmailAttachment, CrmSmtpConfig,
     CrmEmailTemplate, CrmLeadImport,
     CrmLeadStageHistory, CrmNote,
+    CrmLeadScoringRule, CrmLeadServiceArea,
+    CrmLeadAssignmentRule, CrmLeadAssignmentPool, CrmRoundRobinState,
 )
 from app.models.whatsapp import WhatsappContact, WhatsappMessage, WhatsappTemplate
 from app.models.notification import Notification
@@ -58,12 +60,12 @@ __all__ = [
     "Quotation", "QuotationItem",
     "SalesOrder", "SalesOrderItem",
     "Delivery", "DeliveryItem", "Invoice",
-    "Style", "StyleSize", "StyleColour", "StyleYarn", "StyleFabric",
-    "StyleProcess", "StyleSubProcess", "StyleTrim", "StylePackingMaterial",
+    "Style", "SizeChart", "SizeChartItem", "StyleSize", "StyleColour", "StyleYarn", "StyleFabric",
+    "ProcessMaster", "StyleProcess", "StyleSubProcess", "StyleTrim", "StyleTrimSize", "StylePackingMaterial",
     "StyleAdditionalCost",
     "ProductionLot", "ProductionLotSize",
     "ProductionStage", "ProductionStageEntry", "ProductionStageChallan",
-    "LotAdditionalCost", "FabricProcessingEntry",
+    "LotAdditionalCost", "LotTrim", "LotPackingMaterial", "FabricProcessingEntry",
     "MaterialIssue", "MaterialIssueItem", "ProductionOutput",
     "Payment", "PaymentAllocation",
     "VendorPayment", "VendorPaymentAllocation",
@@ -73,7 +75,7 @@ __all__ = [
     "CrmActivity", "CrmProduct", "CrmQuote", "CrmQuoteItem",
     "CrmEmail", "CrmEmailAttachment", "CrmSmtpConfig",
     "CrmEmailTemplate", "CrmLeadImport",
-    "CrmLeadStageHistory", "CrmNote",
+    "CrmLeadStageHistory", "CrmNote", "CrmLeadScoringRule", "CrmLeadServiceArea", "CrmLeadAssignmentRule", "CrmLeadAssignmentPool", "CrmRoundRobinState",
     "WhatsappContact", "WhatsappMessage", "WhatsappTemplate",
     "Notification",
 ]

@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, X } from "lucide-react";
@@ -6,6 +7,8 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const BLUE = "#0049A7";
@@ -47,6 +50,33 @@ interface SalesOrder {
   total_amount: string;
 }
 
+// This app's error envelope is {"error": "..."} or {"error": {"message": "..."}}
+// (see backend/app/main.py's exception handlers) - not FastAPI's default
+// {"detail": ...}, which only basic Pydantic validation errors still use.
+// Reading only `.detail` (as this modal previously did) silently swallows
+// every business-rule error, e.g. the PO quantity tolerance message below.
+function parseApiError(e: unknown, fallback: string): string {
+  const data = (e as { response?: { data?: Record<string, unknown> } })?.response?.data;
+  if (!data) return fallback;
+  const err = data.error;
+  if (typeof err === "string") return err;
+  if (err && typeof (err as { message?: string }).message === "string")
+    return (err as { message: string }).message;
+  const detail = data.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail.length > 0)
+    return (detail as Array<{ msg: string }>)[0]?.msg ?? fallback;
+  return fallback;
+}
+
+interface StockCheck {
+  ordered_quantity: string;
+  available_stock: string;
+  committed_quantity: string;
+  remaining_quantity: string;
+  can_fulfill: boolean;
+}
+
 interface SOItem {
   product_id: string;
   unit_id: string;
@@ -54,6 +84,8 @@ interface SOItem {
   unit_price: string;
   gst_rate: string;
   hsn_code: string;
+  price_source: string;
+  stock_check: StockCheck | null;
 }
 
 const STATUS_FILTERS = [
@@ -80,7 +112,7 @@ const columns: Column<Record<string, unknown>>[] = [
   },
 ];
 
-const emptyItem = (): SOItem => ({ product_id: "", unit_id: "", quantity: "1", unit_price: "0", gst_rate: "0", hsn_code: "" });
+const emptyItem = (): SOItem => ({ product_id: "", unit_id: "", quantity: "1", unit_price: "0", gst_rate: "0", hsn_code: "", price_source: "", stock_check: null });
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
 function AddSOModal({ onClose }: { onClose: () => void }) {
@@ -91,6 +123,9 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
   const [expectedDelivery, setExpectedDelivery] = useState("");
   const [notes, setNotes] = useState("");
   const [intrastate, setIntrastate] = useState(true);
+  const [customerPoNumber, setCustomerPoNumber] = useState("");
+  const [customerPoQuantity, setCustomerPoQuantity] = useState("");
+  const [poTolerancePct, setPoTolerancePct] = useState("5");
   const [items, setItems] = useState<SOItem[]>([emptyItem()]);
   const [error, setError] = useState("");
 
@@ -115,6 +150,9 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
         expected_delivery: expectedDelivery || null,
         notes: notes || null,
         intrastate,
+        customer_po_number: customerPoNumber || null,
+        customer_po_quantity: customerPoQuantity ? Number(customerPoQuantity) : null,
+        po_tolerance_pct: poTolerancePct ? Number(poTolerancePct) : 5,
         items: items.map((it) => ({
           product_id: it.product_id,
           unit_id: it.unit_id,
@@ -128,14 +166,58 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ["sales-orders"] });
       onClose();
     },
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(typeof msg === "string" ? msg : "Failed to create sales order");
-    },
+    onError: (e: unknown) => setError(parseApiError(e, "Failed to create sales order")),
   });
 
   const updateItem = (i: number, k: keyof SOItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
+
+  // Selecting a product suggests its default price (customer-specific list ->
+  // generic list -> Wholesale Price -> MRP fallback) via the shared pricing
+  // resolver. Never forces the value — only fills it while still at the "0"
+  // default, so a price the user already edited is never clobbered.
+  const handleProductChange = (i: number, productId: string) => {
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, product_id: productId, price_source: "", stock_check: null } : it)));
+    if (!productId) return;
+    api
+      .get("/sales/price-lists/resolve", {
+        params: {
+          product_id: productId,
+          customer_id: customerId || undefined,
+          quantity: 1,
+          on_date: new Date().toISOString().slice(0, 10),
+        },
+      })
+      .then((res) => {
+        const result = res.data?.data;
+        if (!result || result.source === "not_found") return;
+        setItems((prev) =>
+          prev.map((it, idx) =>
+            idx === i && it.unit_price === "0"
+              ? { ...it, unit_price: String(result.unit_price), price_source: result.source }
+              : it
+          )
+        );
+      })
+      .catch(() => undefined);
+    runStockCheck(i, productId, items[i]?.quantity ?? "1");
+  };
+
+  // Informational only (ERP Upgrade §2) — shows Ordered/Available/Committed/
+  // Remaining so the user can judge fulfillability before confirming; never
+  // blocks the order. Re-run on product change and on quantity blur (not
+  // every keystroke, to avoid a network call per digit typed).
+  const runStockCheck = (i: number, productId: string, quantity: string) => {
+    if (!productId || !quantity || Number(quantity) <= 0) return;
+    api
+      .get("/sales/orders/stock-check", { params: { product_id: productId, quantity } })
+      .then((res) => {
+        const result = res.data?.data as StockCheck | undefined;
+        if (!result) return;
+        setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, stock_check: result } : it)));
+      })
+      .catch(() => undefined);
+  };
 
   return (
     <ModalPortal>
@@ -168,19 +250,43 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Order Date *</label>
-              <input required type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={orderDate} onChange={(v) => setOrderDate(v)} required />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Expected Delivery</label>
-              <input type="date" value={expectedDelivery} onChange={(e) => setExpectedDelivery(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={expectedDelivery} onChange={(v) => setExpectedDelivery(v)} />
             </div>
           </div>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="intrastate-so" checked={intrastate} onChange={(e) => setIntrastate(e.target.checked)}
               className="rounded border-input" />
             <label htmlFor="intrastate-so" className="text-sm">Intrastate (CGST+SGST)</label>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Customer PO Reference (optional)</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">PO Number</label>
+                <input value={customerPoNumber} onChange={(e) => setCustomerPoNumber(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">PO Quantity</label>
+                <input type="number" min="0" step="0.01" value={customerPoQuantity} onChange={(e) => setCustomerPoQuantity(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Tolerance %</label>
+                <input type="number" min="0" step="0.1" value={poTolerancePct} onChange={(e) => setPoTolerancePct(e.target.value)}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              </div>
+            </div>
+            {customerPoQuantity && (
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Order quantity must stay within ±{poTolerancePct || 5}% of {customerPoQuantity} to be accepted.
+              </p>
+            )}
           </div>
 
           <div>
@@ -208,7 +314,7 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
                       <td className="px-2 py-1">
                         <SearchableSelect
                           value={it.product_id}
-                          onChange={(v) => updateItem(i, "product_id", v)}
+                          onChange={(v) => handleProductChange(i, v)}
                           placeholder="Select…"
                           accent="#0049A7"
                           options={[
@@ -238,12 +344,25 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
                       <td className="px-2 py-1">
                         <input type="number" min="0.01" step="0.01" required value={it.quantity}
                           onChange={(e) => updateItem(i, "quantity", e.target.value)}
+                          onBlur={(e) => runStockCheck(i, it.product_id, e.target.value)}
                           className="w-20 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
+                        {it.stock_check && (
+                          <p className={`text-[10px] mt-0.5 whitespace-nowrap ${it.stock_check.can_fulfill ? "text-muted-foreground" : "text-amber-600"}`}>
+                            {Number(it.stock_check.available_stock).toLocaleString("en-IN")} avail ·{" "}
+                            {Number(it.stock_check.committed_quantity).toLocaleString("en-IN")} committed ·{" "}
+                            {Number(it.stock_check.remaining_quantity).toLocaleString("en-IN")} remaining
+                          </p>
+                        )}
                       </td>
                       <td className="px-2 py-1">
                         <input type="number" min="0" step="0.01" required value={it.unit_price}
-                          onChange={(e) => updateItem(i, "unit_price", e.target.value)}
+                          onChange={(e) => setItems((prev) => prev.map((row, idx) => (idx === i ? { ...row, unit_price: e.target.value, price_source: "" } : row)))}
                           className="w-24 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
+                        {it.price_source && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-nowrap">
+                            Suggested from {it.price_source.replace(/_/g, " ")}
+                          </p>
+                        )}
                       </td>
                       <td className="px-2 py-1">
                         <input type="number" min="0" max="28" step="0.1" value={it.gst_rate}
@@ -293,6 +412,7 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function SalesOrdersPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
@@ -321,13 +441,13 @@ export default function SalesOrdersPage() {
           <h1 className="text-2xl font-bold tracking-tight">Sales Orders</h1>
           <p className="text-sm text-muted-foreground mt-1">Confirmed orders from buyers — track delivery and status.</p>
         </div>
-        <button
+        <Can perm="sales.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: BLUE }}
         >
           <Plus className="h-4 w-4" /> New Order
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}
@@ -360,6 +480,7 @@ export default function SalesOrdersPage() {
             columns={columns}
             data={orders as unknown as Record<string, unknown>[]}
             loading={isLoading}
+            onRowClick={(row) => router.push(`/sales/orders/${row.id as string}`)}
             emptyMessage="No sales orders found"
           />
         </div>

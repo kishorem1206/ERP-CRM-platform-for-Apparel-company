@@ -1,8 +1,10 @@
 "use client";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Check, X, Ruler, Boxes, Palette, Scale, Warehouse as WarehouseIcon, Receipt } from "lucide-react";
+import { Plus, Pencil, Trash2, Check, X, Ruler, Boxes, Palette, Scale, Warehouse as WarehouseIcon, Receipt, Cog } from "lucide-react";
 import api from "@/lib/api";
+import { SearchableSelect } from "@/components/shared/searchable-select";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 
@@ -71,6 +73,20 @@ const ENTITIES: (EntityConfig & { icon: typeof Ruler })[] = [
     ],
   },
   {
+    key: "processes", endpoint: "/master/processes", title: "Processes",
+    description: "Reusable process definitions (Knitting, Cutting, Making, ...) with default rate/unit/tolerance, selectable from Style Creation.",
+    addLabel: "Process", icon: Cog,
+    fields: [
+      { key: "name", label: "Name", type: "text", placeholder: "e.g. Embroidery" },
+      { key: "default_unit", label: "Default Unit", type: "text", placeholder: "e.g. Pieces", width: "w-28" },
+      { key: "default_tolerance_pct", label: "Tolerance %", type: "number", width: "w-24", step: "0.01" },
+      { key: "default_min_rate", label: "Min Rate", type: "number", width: "w-24", step: "0.01" },
+      { key: "default_max_rate", label: "Max Rate", type: "number", width: "w-24", step: "0.01" },
+      { key: "default_planned_rate", label: "Planned Rate", type: "number", width: "w-28", step: "0.01" },
+      { key: "sort_order", label: "Sort Order", type: "number", width: "w-24" },
+    ],
+  },
+  {
     key: "warehouses", endpoint: "/master/warehouses", title: "Warehouses",
     description: "Storage locations tracked across inventory and production.",
     addLabel: "Warehouse", icon: WarehouseIcon, deactivateOnly: true,
@@ -116,13 +132,14 @@ function emptyForm(fields: FieldConfig[]): Record<string, string> {
 function FieldInput({ field, value, onChange }: { field: FieldConfig; value: string; onChange: (v: string) => void }) {
   if (field.options) {
     return (
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`rounded border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${field.width ?? "flex-1"}`}
-      >
-        {field.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
+      <div className={field.width ?? "flex-1"}>
+        <SearchableSelect
+          options={field.options}
+          value={value}
+          onChange={onChange}
+          accent={INDIGO}
+        />
+      </div>
     );
   }
   if (field.type === "color") {
@@ -236,13 +253,13 @@ function MasterEntitySection({ config }: { config: EntityConfig }) {
           <p className="text-sm text-muted-foreground mt-0.5">{config.description}</p>
         </div>
         {!adding && (
-          <button
+          <Can perm="master_data.create"><button
             onClick={() => { setAdding(true); setError(""); }}
             className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 active:scale-95"
             style={{ background: INDIGO }}
           >
             <Plus className="h-4 w-4" /> Add {config.addLabel}
-          </button>
+          </button></Can>
         )}
       </div>
 
@@ -367,7 +384,7 @@ function MasterEntitySection({ config }: { config: EntityConfig }) {
                         </>
                       ) : (
                         <>
-                          <button
+                          <Can perm="master_data.edit"><button
                             onClick={() => {
                               setError("");
                               setEditId(row.id);
@@ -379,23 +396,23 @@ function MasterEntitySection({ config }: { config: EntityConfig }) {
                             title="Edit"
                           >
                             <Pencil className="h-3.5 w-3.5" />
-                          </button>
+                          </button></Can>
                           {config.deactivateOnly ? (
-                            <button
+                            <Can perm="master_data.edit"><button
                               onClick={() => toggleActiveMut.mutate({ id: row.id, is_active: !row.is_active })}
                               className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
                               title={row.is_active ? "Deactivate" : "Activate"}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                            </button>
+                            </button></Can>
                           ) : (
-                            <button
+                            <Can perm="master_data.delete"><button
                               onClick={() => setConfirmDeleteId(row.id)}
                               className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                               title="Delete"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                            </button>
+                            </button></Can>
                           )}
                         </>
                       )}

@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -59,6 +59,9 @@ class CrmPipeline(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     rotten_days: Mapped[Optional[int]] = mapped_column(Integer, default=30)
+    qualified_stage_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("crm_pipeline_stages.id", ondelete="SET NULL", use_alter=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -66,6 +69,7 @@ class CrmPipeline(Base):
         back_populates="pipeline",
         order_by="CrmPipelineStage.sort_order",
         cascade="all, delete-orphan",
+        foreign_keys="CrmPipelineStage.pipeline_id",
     )
 
 
@@ -83,7 +87,7 @@ class CrmPipelineStage(Base):
     is_lost: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
-    pipeline: Mapped["CrmPipeline"] = relationship(back_populates="stages")
+    pipeline: Mapped["CrmPipeline"] = relationship(back_populates="stages", foreign_keys=[pipeline_id])
     leads: Mapped[list["CrmLead"]] = relationship(back_populates="stage")
 
 
@@ -149,6 +153,31 @@ class CrmLead(Base):
     next_action: Mapped[Optional[str]] = mapped_column(String(300))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     sales_order_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("sales_orders.id", ondelete="SET NULL"), nullable=True)
+
+    # ── Lead Intelligence (normalized intake) ──────────────────────────────
+    source_lead_id: Mapped[Optional[str]] = mapped_column(String(200))
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    raw_source_data: Mapped[Optional[Any]] = mapped_column(JSONB)
+    normalized_data: Mapped[Optional[Any]] = mapped_column(JSONB)
+
+    # ── Lead Intelligence (scoring) ─────────────────────────────────────────
+    score: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    priority: Mapped[Optional[str]] = mapped_column(String(10))
+    score_version: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    score_breakdown: Mapped[Optional[Any]] = mapped_column(JSONB)
+    scored_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    # ── Lead Intelligence (duplicate / repeat-contact detection) ───────────
+    duplicate_status: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    duplicate_of_lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_leads.id", ondelete="SET NULL"))
+    is_repeat_contact: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # ── Lead Intelligence Phase 2 (response time + escalation) ─────────────
+    first_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    response_target_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    escalation_employee_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    escalation_manager_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -485,3 +514,75 @@ class CrmNote(Base):
 
     person: Mapped[Optional["CrmPerson"]] = relationship(back_populates="notes")
     lead: Mapped[Optional["CrmLead"]] = relationship(back_populates="notes")
+
+
+class CrmLeadScoringRule(Base):
+    """One configurable scoring rule (spec Step 22). `code` is the stable
+    key the scoring engine references in code; `weight` and `is_active`
+    are what an admin edits. Never hardcode weights in the engine - always
+    read them from here."""
+    __tablename__ = "crm_lead_scoring_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    weight: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CrmLeadServiceArea(Base):
+    """Configurable preferred/secondary service-area tiers for the location
+    scoring signal (spec Step 7). A location with no matching row here is
+    treated as untiered ("other"), never penalized."""
+    __tablename__ = "crm_lead_service_areas"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    location_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    tier: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CrmLeadAssignmentRule(Base):
+    """Ordered, company-scoped assignment rule (spec Step 2). The first
+    active rule whose conditions all match wins; conditions left null are
+    ignored (not required to match)."""
+    __tablename__ = "crm_lead_assignment_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("crm_lead_sources.id", ondelete="SET NULL"))
+    min_score: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    location_tier: Mapped[Optional[str]] = mapped_column(String(20))
+    assign_to: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CrmLeadAssignmentPool(Base):
+    """Round-robin candidate list (spec Step 1)."""
+    __tablename__ = "crm_lead_assignment_pool"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CrmRoundRobinState(Base):
+    """Single row per company: who got the last round-robin lead, so the
+    next one goes to the next person in the pool's sort_order."""
+    __tablename__ = "crm_round_robin_state"
+
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), primary_key=True)
+    last_assigned_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -22,13 +22,14 @@ interface YarnRow { key: string; yarn_name: string; lot_id: string; quantity: st
 interface FabricRow { key: string; fabric_name: string; lot_id: string; consumption: string; unit: string; excess_pct: string; gsm: string; dyeing_rate: string; printing_rate: string; notes: string }
 interface SubProcessRow { key: string; name: string }
 interface ProcessRow {
-  key: string; process_name: string; is_enabled: boolean;
+  key: string; process_name: string; process_master_id: string; is_enabled: boolean;
   tolerance_pct: string; input_unit: string; output_unit: string; conversion_rule: string;
   min_rate: string; max_rate: string; planned_rate: string; notes: string;
   sub_processes: SubProcessRow[];
 }
-interface TrimRow { key: string; process_key: string; trim_name: string; lot_id: string; quantity: string; unit: string; category: string; excess_pct: string; notes: string }
+interface TrimRow { key: string; process_key: string; trim_name: string; lot_id: string; quantity: string; unit: string; category: string; excess_pct: string; notes: string; size_breakdown: Record<string, string> }
 interface PackingRow { key: string; material_name: string; quantity: string; unit: string; excess_pct: string; consumption_stage: string; notes: string }
+interface AdditionalCostRow { key: string; cost_type: "additional" | "agent_commission"; description: string; amount: string; basis: string; party_vendor_id: string; notes: string }
 const GENDER_OPTIONS = ["Men's", "Women's", "Kids", "Newborn Baby"];
 
 // ── Section shell ────────────────────────────────────────────────────────────
@@ -93,6 +94,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   const [season, setSeason] = useState("");
   const [finalOutputUnit, setFinalOutputUnit] = useState("Pieces");
   const [targetPrice, setTargetPrice] = useState("");
+  const [productId, setProductId] = useState("");
+  const [linkedProduct, setLinkedProduct] = useState<{ code: string | null; gst_rate: number | null } | null>(null);
 
   // ── Section 2 & 3: Sizes / Colours / SKU ──────────────────────────────────
   const [sizeIds, setSizeIds] = useState<string[]>([]);
@@ -101,6 +104,9 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   const [rangeTo, setRangeTo] = useState("");
   const [rangeStep, setRangeStep] = useState("1");
   const [addingSizes, setAddingSizes] = useState(false);
+  const [sizeQuantities, setSizeQuantities] = useState<Record<string, string>>({});
+  const [sizeChartBySize, setSizeChartBySize] = useState<Record<string, string>>({});
+  const [loadChartId, setLoadChartId] = useState("");
 
   // ── Section 4 & 5: Yarn / Fabric ───────────────────────────────────────────
   const [yarns, setYarns] = useState<YarnRow[]>([]);
@@ -114,6 +120,9 @@ export function StyleForm({ styleId }: { styleId?: string }) {
 
   // ── Section 9: Packing Material Planning ──────────────────────────────────
   const [packingMaterials, setPackingMaterials] = useState<PackingRow[]>([]);
+
+  // ── Section 10: Additional Costs & Agent Commission ────────────────────────
+  const [additionalCosts, setAdditionalCosts] = useState<AdditionalCostRow[]>([]);
 
   const [err, setErr] = useState<string | null>(null);
 
@@ -142,6 +151,23 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     queryKey: ["vendors", "ref"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
   });
+  const products = useQuery({
+    queryKey: ["products", "ref"],
+    queryFn: async () => (await api.get("/products", { params: { page_size: 200 } })).data.data as { id: string; name: string; code: string }[],
+  });
+  const processMasters = useQuery({
+    queryKey: ["master-processes"],
+    queryFn: async () => (await api.get("/master/processes")).data.data as {
+      id: string; name: string; default_unit: string | null; default_tolerance_pct: number | null;
+      default_min_rate: number | null; default_max_rate: number | null; default_planned_rate: number | null;
+    }[],
+  });
+  const sizeCharts = useQuery({
+    queryKey: ["size-charts"],
+    queryFn: async () => (await api.get("/production/size-charts")).data.data as {
+      id: string; name: string; items: { size_id: string; quantity: number | null }[];
+    }[],
+  });
 
   // ── Existing style (edit mode only) ─────────────────────────────────────────
   interface StyleDetail {
@@ -150,18 +176,20 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     final_output_unit: string | null;
     pieces_per_box: number | null; fabric_source: string;
     target_price: number | null;
-    sizes: { size_id: string; sort_order: number }[];
+    product_id: string | null; product_code: string | null; gst_rate: number | null;
+    sizes: { size_id: string; sort_order: number; quantity: number | null; size_chart_id: string | null }[];
     colours: { colour_id: string; sort_order: number }[];
     yarns: { yarn_name: string; lot_id: string | null; quantity: number | null; unit: string | null; notes: string | null }[];
     fabrics: { fabric_name: string; lot_id: string | null; consumption: number | null; unit: string | null; excess_pct: number | null; gsm: number | null; dyeing_rate: number | null; printing_rate: number | null; notes: string | null }[];
     processes: {
-      seq: number; process_name: string; is_enabled: boolean; tolerance_pct: number | null;
+      seq: number; process_name: string; process_master_id: string | null; is_enabled: boolean; tolerance_pct: number | null;
       input_unit: string | null; output_unit: string | null; conversion_rule: string | null;
       min_rate: number | null; max_rate: number | null; planned_rate: number | null; notes: string | null;
       sub_processes: { seq: number; name: string }[];
     }[];
-    trims: { process_seq: number | null; trim_name: string; lot_id: string | null; quantity: number | null; unit: string | null; category: string | null; excess_pct: number | null; notes: string | null }[];
+    trims: { process_seq: number | null; trim_name: string; lot_id: string | null; quantity: number | null; unit: string | null; category: string | null; excess_pct: number | null; notes: string | null; size_breakdown: { size_id: string; quantity: number }[] }[];
     packing_materials: { material_name: string; quantity: number | null; unit: string | null; excess_pct: number | null; consumption_stage: string | null; notes: string | null }[];
+    additional_costs: { cost_type: string; description: string; amount: number | null; basis: string | null; party_vendor_id: string | null; notes: string | null }[];
   }
   const styleQuery = useQuery({
     queryKey: ["style-detail", styleId],
@@ -183,7 +211,11 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     setSeason(d.season ?? "");
     setFinalOutputUnit(d.final_output_unit ?? "Pieces");
     setTargetPrice(d.target_price != null ? String(d.target_price) : "");
+    setProductId(d.product_id ?? "");
+    setLinkedProduct(d.product_id ? { code: d.product_code, gst_rate: d.gst_rate } : null);
     setSizeIds([...d.sizes].sort((a, b) => a.sort_order - b.sort_order).map((s) => s.size_id));
+    setSizeQuantities(Object.fromEntries(d.sizes.map((s) => [s.size_id, s.quantity != null ? String(s.quantity) : ""])));
+    setSizeChartBySize(Object.fromEntries(d.sizes.filter((s) => s.size_chart_id).map((s) => [s.size_id, s.size_chart_id as string])));
     setColourIds([...d.colours].sort((a, b) => a.sort_order - b.sort_order).map((c) => c.colour_id));
     setYarns(d.yarns.map((y) => ({
       key: newId(), yarn_name: y.yarn_name, lot_id: y.lot_id ?? "",
@@ -200,7 +232,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     })));
     const loadedProcesses = [...d.processes].sort((a, b) => a.seq - b.seq).map((p) => ({
       seq: p.seq, row: {
-      key: newId(), process_name: p.process_name, is_enabled: p.is_enabled,
+      key: newId(), process_name: p.process_name, process_master_id: p.process_master_id ?? "", is_enabled: p.is_enabled,
       tolerance_pct: p.tolerance_pct != null ? String(p.tolerance_pct) : "",
       input_unit: p.input_unit ?? "", output_unit: p.output_unit ?? "", conversion_rule: p.conversion_rule ?? "",
       min_rate: p.min_rate != null ? String(p.min_rate) : "", max_rate: p.max_rate != null ? String(p.max_rate) : "",
@@ -212,22 +244,49 @@ export function StyleForm({ styleId }: { styleId?: string }) {
       key: newId(), process_key: loadedProcesses.find((lp) => lp.seq === t.process_seq)?.row.key ?? "", trim_name: t.trim_name, lot_id: t.lot_id ?? "",
       quantity: t.quantity != null ? String(t.quantity) : "", unit: t.unit ?? "",
       category: t.category ?? "Sizable", excess_pct: t.excess_pct != null ? String(t.excess_pct) : "", notes: t.notes ?? "",
+      size_breakdown: Object.fromEntries(t.size_breakdown.map((sb) => [sb.size_id, String(sb.quantity)])),
     })));
     setPackingMaterials(d.packing_materials.map((p) => ({
       key: newId(), material_name: p.material_name,
       quantity: p.quantity != null ? String(p.quantity) : "", unit: p.unit ?? "",
       excess_pct: p.excess_pct != null ? String(p.excess_pct) : "", consumption_stage: p.consumption_stage ?? "", notes: p.notes ?? "",
     })));
+    setAdditionalCosts(d.additional_costs.map((a) => ({
+      key: newId(), cost_type: a.cost_type === "agent_commission" ? "agent_commission" : "additional",
+      description: a.description, amount: a.amount != null ? String(a.amount) : "",
+      basis: a.basis ?? "", party_vendor_id: a.party_vendor_id ?? "", notes: a.notes ?? "",
+    })));
   }, [styleQuery.data]);
 
   const sizeById = useMemo(() => new Map((sizes.data ?? []).map((s) => [s.id, s.name])), [sizes.data]);
   const colourById = useMemo(() => new Map((colours.data ?? []).map((c) => [c.id, c.name])), [colours.data]);
+  const agentVendors = useMemo(() => (vendors.data ?? []).filter((v) => v.vendor_type === "agent"), [vendors.data]);
 
   function toggleSize(id: string) {
     setSizeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
   function toggleColour(id: string) {
     setColourIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+  function updateSizeQuantity(sizeId: string, qty: string) {
+    setSizeQuantities((prev) => ({ ...prev, [sizeId]: qty }));
+  }
+  function loadSizeChart(chartId: string) {
+    setLoadChartId(chartId);
+    const chart = (sizeCharts.data ?? []).find((c) => c.id === chartId);
+    if (!chart) return;
+    const newIds = chart.items.map((i) => i.size_id);
+    setSizeIds((prev) => Array.from(new Set([...prev, ...newIds])));
+    setSizeQuantities((prev) => {
+      const next = { ...prev };
+      for (const i of chart.items) next[i.size_id] = i.quantity != null ? String(i.quantity) : "";
+      return next;
+    });
+    setSizeChartBySize((prev) => {
+      const next = { ...prev };
+      for (const i of chart.items) next[i.size_id] = chartId;
+      return next;
+    });
   }
 
   async function addSizeRange() {
@@ -306,13 +365,31 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   // ── Process rows ─────────────────────────────────────────────────────────
   function addProcess() {
     setProcesses((r) => [...r, {
-      key: newId(), process_name: "", is_enabled: true,
+      key: newId(), process_name: "", process_master_id: "", is_enabled: true,
       tolerance_pct: "", input_unit: "", output_unit: "", conversion_rule: "",
       min_rate: "", max_rate: "", planned_rate: "", notes: "", sub_processes: [],
     }]);
   }
   function updateProcess(key: string, patch: Partial<ProcessRow>) {
     setProcesses((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+  function selectProcessMaster(key: string, masterId: string) {
+    const master = (processMasters.data ?? []).find((m) => m.id === masterId);
+    setProcesses((r) => r.map((row) => {
+      if (row.key !== key) return row;
+      if (!master) return { ...row, process_master_id: "" };
+      return {
+        ...row,
+        process_master_id: masterId,
+        process_name: row.process_name.trim() ? row.process_name : master.name,
+        tolerance_pct: row.tolerance_pct || (master.default_tolerance_pct != null ? String(master.default_tolerance_pct) : ""),
+        input_unit: row.input_unit || master.default_unit || "",
+        output_unit: row.output_unit || master.default_unit || "",
+        min_rate: row.min_rate || (master.default_min_rate != null ? String(master.default_min_rate) : ""),
+        max_rate: row.max_rate || (master.default_max_rate != null ? String(master.default_max_rate) : ""),
+        planned_rate: row.planned_rate || (master.default_planned_rate != null ? String(master.default_planned_rate) : ""),
+      };
+    }));
   }
   function removeProcess(key: string) {
     setProcesses((r) => r.filter((row) => row.key !== key));
@@ -346,10 +423,13 @@ export function StyleForm({ styleId }: { styleId?: string }) {
 
   // ── Trim rows ────────────────────────────────────────────────────────────
   function addTrim(processKey = "") {
-    setTrims((r) => [...r, { key: newId(), process_key: processKey, trim_name: "", lot_id: "", quantity: "", unit: "Nos", category: "Sizable", excess_pct: "", notes: "" }]);
+    setTrims((r) => [...r, { key: newId(), process_key: processKey, trim_name: "", lot_id: "", quantity: "", unit: "Nos", category: "Sizable", excess_pct: "", notes: "", size_breakdown: {} }]);
   }
   function updateTrim(key: string, patch: Partial<TrimRow>) {
     setTrims((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+  function updateTrimSizeQty(key: string, sizeId: string, qty: string) {
+    setTrims((r) => r.map((row) => (row.key === key ? { ...row, size_breakdown: { ...row.size_breakdown, [sizeId]: qty } } : row)));
   }
   function removeTrim(key: string) {
     setTrims((r) => r.filter((row) => row.key !== key));
@@ -366,6 +446,17 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     setPackingMaterials((r) => r.filter((row) => row.key !== key));
   }
 
+  // ── Additional cost rows ─────────────────────────────────────────────────
+  function addAdditionalCost() {
+    setAdditionalCosts((r) => [...r, { key: newId(), cost_type: "additional", description: "", amount: "", basis: "", party_vendor_id: "", notes: "" }]);
+  }
+  function updateAdditionalCost(key: string, patch: Partial<AdditionalCostRow>) {
+    setAdditionalCosts((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+  function removeAdditionalCost(key: string) {
+    setAdditionalCosts((r) => r.filter((row) => row.key !== key));
+  }
+
   const mut = useMutation({
     mutationFn: async () => {
       const payload = {
@@ -379,7 +470,12 @@ export function StyleForm({ styleId }: { styleId?: string }) {
         season: season.trim() || undefined,
         final_output_unit: finalOutputUnit || undefined,
         target_price: targetPrice ? Number(targetPrice) : undefined,
-        sizes: sizeIds.map((size_id, i) => ({ size_id, sort_order: i })),
+        product_id: productId || undefined,
+        sizes: sizeIds.map((size_id, i) => ({
+          size_id, sort_order: i,
+          quantity: sizeQuantities[size_id] ? Number(sizeQuantities[size_id]) : undefined,
+          size_chart_id: sizeChartBySize[size_id] || undefined,
+        })),
         colours: colourIds.map((colour_id, i) => ({ colour_id, sort_order: i })),
         yarns: (fabricSource === "yarn" ? yarns : []).filter((y) => y.yarn_name.trim()).map((y) => ({
           yarn_name: y.yarn_name.trim(),
@@ -402,6 +498,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
         processes: processes.filter((p) => p.process_name.trim()).map((p, i) => ({
           seq: i,
           process_name: p.process_name.trim(),
+          process_master_id: p.process_master_id || undefined,
           is_enabled: p.is_enabled,
           tolerance_pct: p.tolerance_pct ? Number(p.tolerance_pct) : undefined,
           input_unit: p.input_unit || undefined,
@@ -426,6 +523,9 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           })(),
           excess_pct: t.excess_pct ? Number(t.excess_pct) : undefined,
           notes: t.notes || undefined,
+          size_breakdown: t.category === "Sizable"
+            ? Object.entries(t.size_breakdown).filter(([, v]) => v).map(([size_id, qty]) => ({ size_id, quantity: Number(qty) }))
+            : [],
         })),
         packing_materials: packingMaterials.filter((p) => p.material_name.trim()).map((p) => ({
           material_name: p.material_name.trim(),
@@ -434,6 +534,14 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           excess_pct: p.excess_pct ? Number(p.excess_pct) : undefined,
           consumption_stage: p.consumption_stage || undefined,
           notes: p.notes || undefined,
+        })),
+        additional_costs: additionalCosts.filter((a) => a.description.trim()).map((a) => ({
+          cost_type: a.cost_type,
+          description: a.description.trim(),
+          amount: a.amount ? Number(a.amount) : undefined,
+          basis: a.basis || undefined,
+          party_vendor_id: a.cost_type === "agent_commission" && a.party_vendor_id ? a.party_vendor_id : undefined,
+          notes: a.notes || undefined,
         })),
       };
       return isEdit
@@ -476,6 +584,27 @@ export function StyleForm({ styleId }: { styleId?: string }) {
         <SegControl options={TRIM_CATEGORIES} value={t.category} onChange={(v) => updateTrim(t.key, { category: v })} />
         <Input type="number" step="0.01" value={t.excess_pct} onChange={(e) => updateTrim(t.key, { excess_pct: e.target.value })} placeholder="Excess %" />
       </div>
+      {t.category === "Sizable" && sizeIds.length > 0 && (
+        <div className="pt-1">
+          <p className="text-[11px] text-muted-foreground mb-1.5">
+            Qty per size (§21) — overrides the flat Qty above when filled in; fetched automatically into every Lot created from this Style.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            {sizeIds.map((sId) => (
+              <div key={sId} className="flex items-center gap-1.5">
+                <span className="text-xs font-medium">{sizeById.get(sId) ?? "—"}</span>
+                <input
+                  type="number" step="0.0001"
+                  value={t.size_breakdown[sId] ?? ""}
+                  onChange={(e) => updateTrimSizeQty(t.key, sId, e.target.value)}
+                  placeholder="Qty"
+                  className="w-20 rounded border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -544,10 +673,34 @@ export function StyleForm({ styleId }: { styleId?: string }) {
               <Input type="number" step="0.01" value={targetPrice} onChange={(e) => setTargetPrice(e.target.value)} placeholder="0.00" />
             </Field>
           </div>
+          <Field label="Link to Product" hint="Leave blank to auto-create a new sellable Product for this Style. Linking carries over GST/HSN from the Product master.">
+            <SearchableSelect
+              value={productId}
+              onChange={setProductId}
+              placeholder="— Auto-create a new Product —"
+              accent={INDIGO}
+              options={(products.data ?? []).map((p) => ({ value: p.id, label: p.name, meta: p.code }))}
+            />
+            {isEdit && linkedProduct && (
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Linked Product: <span className="font-mono">{linkedProduct.code ?? "—"}</span>
+                {linkedProduct.gst_rate != null && <> · GST {linkedProduct.gst_rate}%</>}
+              </p>
+            )}
+          </Field>
         </Section>
 
         {/* 2 & 3. Sizes / Colours / SKU */}
         <Section n={2} title="Sizes, Colours & SKU" subtitle="Applicable size chart and colour variants — Style + variant dimensions form the SKU">
+          <Field label="Load from Size Chart" hint="Optional — merges a reusable chart's sizes and default quantities in; edit any value below afterward without affecting the saved chart">
+            <SearchableSelect
+              value={loadChartId}
+              onChange={loadSizeChart}
+              placeholder="— None —"
+              accent={INDIGO}
+              options={(sizeCharts.data ?? []).map((c) => ({ value: c.id, label: c.name }))}
+            />
+          </Field>
           <Field label="Applicable Sizes">
             <div className="flex gap-1.5 flex-wrap">
               {(sizes.data ?? []).map((s) => (
@@ -600,6 +753,29 @@ export function StyleForm({ styleId }: { styleId?: string }) {
               For a numeric size run (e.g. kidswear in cm): enter "75" to "100" with step "5" → generates 75, 80, 85, 90, 95, 100. Leave "To" blank to add a single custom size.
             </p>
           </Field>
+          {sizeIds.length > 0 && (
+            <Field label="Quantity per Size" hint="Quantity/configuration applicable for each size — from the loaded chart, or entered directly">
+              <div className="space-y-1.5">
+                {sizeIds.map((sId) => (
+                  <div key={sId} className="flex items-center gap-2">
+                    <span className="text-xs font-medium w-20 flex-shrink-0">{sizeById.get(sId) ?? "—"}</span>
+                    <Input
+                      type="number" step="0.001"
+                      value={sizeQuantities[sId] ?? ""}
+                      onChange={(e) => updateSizeQuantity(sId, e.target.value)}
+                      placeholder="Quantity"
+                      className="!py-1.5 w-32"
+                    />
+                    {sizeChartBySize[sId] && (
+                      <span className="text-[11px] text-muted-foreground">
+                        from {(sizeCharts.data ?? []).find((c) => c.id === sizeChartBySize[sId])?.name ?? "chart"}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Field>
+          )}
           <Field label="Applicable Colours">
             <div className="flex gap-1.5 flex-wrap">
               {(colours.data ?? []).map((c) => (
@@ -719,6 +895,15 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   <RemoveRowButton onClick={() => removeProcess(p.key)} />
                 </div>
                 <div className="p-3 space-y-3">
+                  <Field label="Process (from master)" hint="Optional — select to auto-fill the name and blank fields below from a reusable default; your own entries are never overwritten">
+                    <SearchableSelect
+                      value={p.process_master_id}
+                      onChange={(v) => selectProcessMaster(p.key, v)}
+                      placeholder="— Custom / no master —"
+                      accent={INDIGO}
+                      options={(processMasters.data ?? []).map((m) => ({ value: m.id, label: m.name }))}
+                    />
+                  </Field>
                   <div className="grid grid-cols-4 gap-2">
                     <Field label="Tolerance %">
                       <Input type="number" step="0.01" value={p.tolerance_pct} onChange={(e) => updateProcess(p.key, { tolerance_pct: e.target.value })} placeholder="0" />
@@ -799,6 +984,38 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           </div>
         </Section>
 
+        {/* 10. Additional Costs & Agent Commission */}
+        <Section n={fabricSource === "yarn" ? 8 : 7} title="Additional Costs & Agent Commission" subtitle="Named cost components outside Fabric/Cutting/Making/Trims — flows into every LOT created from this Style">
+          <div className="space-y-3">
+            {additionalCosts.map((a) => (
+              <div key={a.key} className="p-3 rounded-xl border border-border bg-background space-y-2">
+                <div className="flex items-start gap-2">
+                  <SegControl
+                    options={["Additional", "Agent Commission"]}
+                    value={a.cost_type === "agent_commission" ? "Agent Commission" : "Additional"}
+                    onChange={(v) => updateAdditionalCost(a.key, { cost_type: v === "Agent Commission" ? "agent_commission" : "additional" })}
+                  />
+                  <Input value={a.description} onChange={(e) => updateAdditionalCost(a.key, { description: e.target.value })} placeholder="Description, e.g. Freight / Agent commission for Order #123" className="flex-1" />
+                  <RemoveRowButton onClick={() => removeAdditionalCost(a.key)} />
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Input type="number" step="0.01" value={a.amount} onChange={(e) => updateAdditionalCost(a.key, { amount: e.target.value })} placeholder="Amount (₹)" />
+                  <Input value={a.basis} onChange={(e) => updateAdditionalCost(a.key, { basis: e.target.value })} placeholder="Basis, e.g. per_piece, lumpsum" />
+                  {a.cost_type === "agent_commission" && (
+                    <SearchableSelect
+                      value={a.party_vendor_id}
+                      onChange={(v) => updateAdditionalCost(a.key, { party_vendor_id: v })}
+                      placeholder="Select Agent"
+                      accent={INDIGO}
+                      options={agentVendors.map((v) => ({ value: v.id, label: v.name }))}
+                    />
+                  )}
+                </div>
+              </div>
+            ))}
+            <AddRowButton onClick={addAdditionalCost} label="Add Cost" />
+          </div>
+        </Section>
 
         {err && (
           <p className="text-sm text-[#1D0DB0] bg-[#1D0DB0]/10 border border-[#1D0DB0]/20 rounded-xl px-4 py-3">{err}</p>

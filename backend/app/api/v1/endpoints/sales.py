@@ -3,11 +3,14 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from app.api.v1.deps import AuthUser, DBSession
-from app.models.master import Product, ProductVariant
+from app.domain.business_rules import BusinessRulesError
+from app.models.company import Company
+from app.models.master import Product, ProductVariant, Unit
 from app.models.sales import Customer, Delivery, Invoice, NatureOfBusiness, PriceHistory, PriceList, PriceListItem, Quotation, SalesOrder
 from app.models.user import User
 from app.schemas.base import ApiResponse, PaginatedMeta
@@ -19,8 +22,10 @@ from app.schemas.sales import (
     PriceHistoryOut, PriceListCreate, PriceListItemCreate, PriceListItemOut,
     PriceListItemUpdate, PriceListOut, PriceListUpdate, PriceResolveOut,
     QuotationCreate, QuotationItemOut, QuotationOut, QuotationUpdate,
-    SalesOrderCreate, SalesOrderOut, SalesOrderUpdate, SOItemOut,
+    SalesOrderCreate, SalesOrderOut, SalesOrderUpdate, SOItemOut, StockCheckOut,
 )
+from app.services.inventory import InventoryService
+from app.services.packing_slip import packing_slip_filename, render_packing_slip_pdf
 from app.services.pricing import PricingService
 from app.services.sales import SalesService
 
@@ -60,6 +65,8 @@ def _so_out(so: SalesOrder) -> SalesOrderOut:
         subtotal=so.subtotal, discount_amount=so.discount_amount, taxable_amount=so.taxable_amount,
         cgst_amount=so.cgst_amount, sgst_amount=so.sgst_amount, igst_amount=so.igst_amount,
         total_amount=so.total_amount, notes=so.notes,
+        customer_po_number=so.customer_po_number, customer_po_quantity=so.customer_po_quantity,
+        po_tolerance_pct=so.po_tolerance_pct,
         items=[SOItemOut.model_validate(i) for i in so.items],
     )
 
@@ -72,6 +79,8 @@ def _delivery_out(d: Delivery) -> DeliveryOut:
         warehouse_id=d.warehouse_id, delivery_date=d.delivery_date, status=d.status,
         transporter=d.transporter, lr_number=d.lr_number, vehicle_number=d.vehicle_number,
         notes=d.notes, dispatched_at=d.dispatched_at,
+        carton_count=d.carton_count, package_count=d.package_count, packing_marks=d.packing_marks,
+        gross_weight=d.gross_weight, net_weight=d.net_weight,
         items=[DeliveryItemOut.model_validate(i) for i in d.items],
     )
 
@@ -266,8 +275,36 @@ async def create_sales_order(body: SalesOrderCreate, db: DBSession, user: AuthUs
     if not body.items:
         raise HTTPException(400, "Sales order must have at least one item")
     svc = SalesService(db)
-    so = await svc.create_sales_order(body, user.company_id, user.user_id)
+    try:
+        so = await svc.create_sales_order(body, user.company_id, user.user_id)
+    except BusinessRulesError as e:
+        raise HTTPException(422, str(e))
     return ApiResponse(success=True, data=_so_out(so))
+
+
+@router.get("/orders/stock-check")
+async def check_order_stock(
+    db: DBSession, user: AuthUser,
+    product_id: UUID, quantity: Decimal, variant_id: UUID | None = None,
+):
+    """Informational only (ERP Upgrade §2) - never blocks order creation.
+    Lets the Sales Order form show Ordered/Available/Committed/Remaining
+    before the user confirms, without forcing the order to fit. Must stay
+    registered before GET /orders/{so_id} - otherwise FastAPI tries to
+    parse "stock-check" as a so_id UUID and 422s before this ever matches."""
+    user.require("sales.view")
+    sales_svc = SalesService(db)
+    inv_svc = InventoryService(db)
+    available = await inv_svc.get_total_balance(user.company_id, product_id, variant_id)
+    committed = await sales_svc.get_committed_quantity(user.company_id, product_id, variant_id)
+    remaining = available - committed
+    return ApiResponse(success=True, data=StockCheckOut(
+        ordered_quantity=quantity,
+        available_stock=available,
+        committed_quantity=committed,
+        remaining_quantity=remaining,
+        can_fulfill=remaining >= quantity,
+    ))
 
 
 @router.get("/orders/{so_id}")
@@ -328,6 +365,99 @@ async def get_delivery(delivery_id: UUID, db: DBSession, user: AuthUser):
     if not d:
         raise HTTPException(404, "Delivery not found")
     return ApiResponse(success=True, data=_delivery_out(d))
+
+
+@router.get("/deliveries/{delivery_id}/packing-slip")
+async def get_packing_slip(delivery_id: UUID, db: DBSession, user: AuthUser):
+    """Printable Packing Slip (ERP Upgrade §4), generated server-side from
+    the existing Delivery record - no second source of truth, no new
+    fields required from the caller."""
+    user.require("sales.view")
+    svc = SalesService(db)
+    d = await svc.get_delivery(delivery_id, user.company_id)
+    if not d:
+        raise HTTPException(404, "Delivery not found")
+
+    company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+
+    product_ids = {i.product_id for i in d.items}
+    variant_ids = {i.variant_id for i in d.items if i.variant_id}
+    unit_ids = {i.unit_id for i in d.items}
+
+    products = {}
+    if product_ids:
+        rows = await db.execute(
+            select(Product).where(Product.id.in_(product_ids)).options(selectinload(Product.hsn))
+        )
+        products = {p.id: p for p in rows.scalars()}
+
+    variants = {}
+    if variant_ids:
+        rows = await db.execute(select(ProductVariant).where(ProductVariant.id.in_(variant_ids)))
+        variants = {v.id: v for v in rows.scalars()}
+
+    units = {}
+    if unit_ids:
+        rows = await db.execute(select(Unit).where(Unit.id.in_(unit_ids)))
+        units = {u.id: u for u in rows.scalars()}
+
+    item_rows = []
+    for i in d.items:
+        product = products.get(i.product_id)
+        variant = variants.get(i.variant_id) if i.variant_id else None
+        unit = units.get(i.unit_id)
+        item_rows.append({
+            "product_name": product.name if product else None,
+            "sku_or_hsn": (variant.sku if variant else None) or (product.hsn.hsn if product and product.hsn else None),
+            "quantity": str(i.quantity),
+            "unit": unit.abbreviation if unit else None,
+        })
+
+    customer_dict = None
+    if d.customer:
+        default_addr = next((a for a in d.customer.addresses if a.is_default), d.customer.addresses[0] if d.customer.addresses else None)
+        address_str = None
+        if default_addr:
+            parts = [default_addr.line1, default_addr.line2, default_addr.city, default_addr.state, default_addr.pincode]
+            address_str = ", ".join(p for p in parts if p)
+        customer_dict = {
+            "name": d.customer.legal_name,
+            "address": address_str,
+            "gstin": d.customer.gstin,
+            "phone": d.customer.mobile,
+        }
+
+    sales_order_dict = None
+    if d.sales_order:
+        sales_order_dict = {"order_number": d.sales_order.order_number, "order_date": str(d.sales_order.order_date)}
+
+    delivery_dict = {
+        "delivery_number": d.delivery_number,
+        "delivery_date": str(d.delivery_date),
+        "carton_count": d.carton_count,
+        "package_count": d.package_count,
+        "packing_marks": d.packing_marks,
+        "gross_weight": str(d.gross_weight) if d.gross_weight is not None else None,
+        "net_weight": str(d.net_weight) if d.net_weight is not None else None,
+        "transporter": d.transporter,
+        "lr_number": d.lr_number,
+        "vehicle_number": d.vehicle_number,
+        "dispatched_at": d.dispatched_at.strftime("%d %b %Y, %H:%M") if d.dispatched_at else None,
+    }
+
+    pdf_bytes = render_packing_slip_pdf(
+        company_name=company.name if company else None,
+        delivery=delivery_dict,
+        sales_order=sales_order_dict,
+        customer=customer_dict,
+        items=item_rows,
+    )
+    filename = packing_slip_filename(d.delivery_number)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Invoices ──────────────────────────────────────────────────────────────────

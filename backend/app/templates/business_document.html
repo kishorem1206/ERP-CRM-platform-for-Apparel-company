@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 14mm 14mm 16mm 14mm;
+    @bottom-left { content: "{{ company.name }} · {{ doc.title }} {{ doc.number }}"; font-size: 8pt; color: #64748b; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #64748b; } }
+  * { box-sizing: border-box; }
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color: #0f172a; font-size: 9.5pt; line-height: 1.4; margin: 0; }
+  .header { display: flex; justify-content: space-between; border-bottom: 2px solid #0049A7; padding-bottom: 10px; }
+  .company-name { font-size: 17pt; font-weight: 700; color: #0049A7; margin: 0 0 4px 0; }
+  .muted { color: #64748b; }
+  .small { font-size: 8.5pt; }
+  .title-block { text-align: right; }
+  .doc-title { font-size: 16pt; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin: 0; }
+  .status { display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 10px; background: #e0e7ff; color: #3730a3; font-size: 8pt; font-weight: 700; text-transform: uppercase; }
+  .meta { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  .meta td { padding: 4px 0; vertical-align: top; }
+  .meta .label { color: #64748b; width: 26%; }
+  .parties { display: flex; gap: 12px; margin-top: 12px; }
+  .party { flex: 1; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; }
+  .party-label { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; color: #0049A7; letter-spacing: 0.6px; margin-bottom: 3px; }
+  .party-name { font-weight: 700; font-size: 10.5pt; }
+  table.items { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  table.items th { background: #0049A7; color: #fff; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.4px; padding: 6px 6px; text-align: left; }
+  table.items td { padding: 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  table.items tr:nth-child(even) td { background: #f8fafc; }
+  .r { text-align: right; white-space: nowrap; }
+  .c { text-align: center; }
+  .totals { width: 42%; margin-left: auto; margin-top: 10px; border-collapse: collapse; }
+  .totals td { padding: 4px 6px; }
+  .totals .grand td { border-top: 2px solid #0049A7; font-size: 11pt; font-weight: 700; color: #0049A7; padding-top: 8px; }
+  .notes { margin-top: 16px; display: flex; gap: 12px; }
+  .notes > div { flex: 1; }
+  .section-title { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.6px; margin-bottom: 3px; }
+  .sign { margin-top: 28px; display: flex; justify-content: space-between; align-items: flex-end; }
+  .sign .box { width: 42%; border-top: 1px solid #94a3b8; padding-top: 4px; text-align: center; font-size: 8.5pt; color: #475569; }
+  .empty { padding: 14px; text-align: center; color: #64748b; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <p class="company-name">{{ company.name }}</p>
+      {% if company.address %}<div class="muted small">{{ company.address }}</div>{% endif %}
+      <div class="muted small">
+        {% if company.gstin %}GSTIN: {{ company.gstin }}{% endif %}
+        {% if company.pan %} &nbsp;·&nbsp; PAN: {{ company.pan }}{% endif %}
+      </div>
+      <div class="muted small">
+        {% if company.phone %}Phone: {{ company.phone }}{% endif %}
+        {% if company.email %} &nbsp;·&nbsp; {{ company.email }}{% endif %}
+      </div>
+    </div>
+    <div class="title-block">
+      <p class="doc-title">{{ doc.title }}</p>
+      <div class="small"><strong>No.</strong> {{ doc.number }}</div>
+      <div class="small"><strong>Date</strong> {{ doc.date }}</div>
+      {% if doc.status %}<span class="status">{{ doc.status }}</span>{% endif %}
+    </div>
+  </div>
+
+  {% if doc.meta %}
+  <table class="meta">
+    {% for i in range(0, doc.meta|length, 2) %}
+    <tr>
+      <td class="label">{{ doc.meta[i][0] }}</td><td>{{ doc.meta[i][1] }}</td>
+      {% if i + 1 < doc.meta|length %}<td class="label">{{ doc.meta[i + 1][0] }}</td><td>{{ doc.meta[i + 1][1] }}</td>{% else %}<td></td><td></td>{% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <div class="parties">
+    {% for party in doc.parties %}
+    <div class="party">
+      <div class="party-label">{{ party.label }}</div>
+      <div class="party-name">{{ party.name or "—" }}</div>
+      {% for line in party.lines %}<div class="small">{{ line }}</div>{% endfor %}
+      {% if party.gstin %}<div class="small">GSTIN: {{ party.gstin }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <table class="items">
+    <thead>
+      <tr>
+        <th style="width:4%">#</th>
+        <th>Description</th>
+        <th style="width:9%">HSN</th>
+        <th class="r" style="width:9%">Qty</th>
+        <th style="width:7%">Unit</th>
+        <th class="r" style="width:11%">Rate</th>
+        <th class="r" style="width:8%">Disc %</th>
+        <th class="r" style="width:13%">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in doc.lines %}
+      <tr>
+        <td class="c">{{ loop.index }}</td>
+        <td>{{ item.description }}{% if item.sub %}<div class="muted small">{{ item.sub }}</div>{% endif %}</td>
+        <td>{{ item.hsn or "" }}</td>
+        <td class="r">{{ item.qty }}</td>
+        <td>{{ item.unit or "" }}</td>
+        <td class="r">{{ item.rate or "" }}</td>
+        <td class="r">{{ item.discount or "" }}</td>
+        <td class="r">{{ item.amount or "" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="empty">No line items.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <table class="totals">
+    {% for label, value in doc.totals %}
+    <tr><td class="muted">{{ label }}</td><td class="r">{{ value }}</td></tr>
+    {% endfor %}
+    {% if doc.grand_total %}
+    <tr class="grand"><td>{{ doc.grand_total_label or "Total" }}</td><td class="r">{{ doc.grand_total }}</td></tr>
+    {% endif %}
+  </table>
+
+  {% if doc.notes or doc.terms %}
+  <div class="notes">
+    {% if doc.notes %}<div><div class="section-title">Notes</div><div class="small">{{ doc.notes }}</div></div>{% endif %}
+    {% if doc.terms %}<div><div class="section-title">Terms</div><div class="small">{{ doc.terms }}</div></div>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="sign">
+    <div class="small muted">Generated {{ generated_at }}</div>
+    <div class="box">For {{ company.name }}<br>Authorised signatory</div>
+  </div>
+</body>
+</html>

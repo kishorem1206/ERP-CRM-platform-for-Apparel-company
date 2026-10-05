@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Users, Plus, Search, Edit2 } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -117,13 +118,13 @@ export default function CustomersPage() {
           <h1 className="text-2xl font-bold tracking-tight">Customers</h1>
           <p className="text-sm text-muted-foreground mt-1">Manage buyer profiles, credit terms, and contact details.</p>
         </div>
-        <button
+        <Can perm="sales.create"><button
           onClick={() => router.push("/crm/customers/new")}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Customer
-        </button>
+        </button></Can>
       </div>
 
       {/* Search + filter strip */}

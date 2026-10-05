@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ContactValue(BaseModel):
@@ -126,8 +126,13 @@ class PipelineOut(BaseModel):
     name: str
     is_default: bool
     rotten_days: int | None
+    qualified_stage_id: UUID | None = None
     stages: list[PipelineStageOut] = []
     model_config = {"from_attributes": True}
+
+
+class QualificationStageUpdate(BaseModel):
+    stage_id: UUID | None = None
 
 
 # ── Lead Source / Type ────────────────────────────────────────────────────────
@@ -261,6 +266,18 @@ class LeadOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     tags: list[TagOut] = []
+    score: int | None = None
+    priority: str | None = None
+    score_version: int | None = None
+    score_breakdown: list[dict] | None = None
+    scored_at: datetime | None = None
+    duplicate_status: str = "none"
+    is_repeat_contact: bool = False
+    first_contacted_at: datetime | None = None
+    response_target_at: datetime | None = None
+    time_to_assignment_minutes: int | None = None
+    time_to_first_response_minutes: int | None = None
+    sales_order_id: UUID | None = None
     model_config = {"from_attributes": True}
 
 
@@ -286,6 +303,13 @@ class LeadListOut(BaseModel):
     follow_up_type: str | None = None
     follow_up_status: str = "none"
     created_at: datetime
+    score: int | None = None
+    priority: str | None = None
+    duplicate_status: str = "none"
+    is_repeat_contact: bool = False
+    first_contacted_at: datetime | None = None
+    response_target_at: datetime | None = None
+    sales_order_id: UUID | None = None
     model_config = {"from_attributes": True}
 
 
@@ -882,3 +906,144 @@ class Person360Out(BaseModel):
     activities: list[ActivityOut] = []
     notes: list[NoteOut] = []
     model_config = {"from_attributes": True}
+
+
+# ── Lead Intelligence ────────────────────────────────────────────────────────
+
+class ScoringRuleOut(BaseModel):
+    id: UUID
+    category: str
+    code: str
+    label: str
+    weight: int
+    is_active: bool
+    model_config = {"from_attributes": True}
+
+
+class ScoringRuleUpdate(BaseModel):
+    weight: int | None = None
+    is_active: bool | None = None
+
+
+class ScoringThresholdsOut(BaseModel):
+    lead_score_high_threshold: int
+    lead_score_medium_threshold: int
+    model_config = {"from_attributes": True}
+
+
+class ScoringThresholdsUpdate(BaseModel):
+    lead_score_high_threshold: int | None = Field(default=None, ge=1, le=100)
+    lead_score_medium_threshold: int | None = Field(default=None, ge=0, le=99)
+
+
+class ServiceAreaCreate(BaseModel):
+    location_name: str
+    tier: str
+
+
+class ServiceAreaUpdate(BaseModel):
+    location_name: str | None = None
+    tier: str | None = None
+
+
+class ServiceAreaOut(BaseModel):
+    id: UUID
+    location_name: str
+    tier: str
+    model_config = {"from_attributes": True}
+
+
+class DuplicateCheckOut(BaseModel):
+    status: str
+    matched_person_id: UUID | None = None
+    matched_organization_id: UUID | None = None
+    matched_customer_id: UUID | None = None
+    reason: str = ""
+
+
+class RepeatContactOut(BaseModel):
+    previous_lead_id: UUID
+    previous_date: datetime
+    previous_source: str | None = None
+    previous_status: str
+    previous_stage_name: str | None = None
+    previous_assigned_to_name: str | None = None
+
+
+# ── Lead Assignment (Phase 2) ────────────────────────────────────────────────
+
+class AssignmentRuleCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+    source_id: UUID | None = None
+    min_score: int | None = Field(default=None, ge=0, le=100)
+    location_tier: str | None = None
+    assign_to: UUID
+
+
+class AssignmentRuleUpdate(BaseModel):
+    name: str | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
+    source_id: UUID | None = None
+    min_score: int | None = Field(default=None, ge=0, le=100)
+    location_tier: str | None = None
+    assign_to: UUID | None = None
+
+
+class AssignmentRuleOut(BaseModel):
+    id: UUID
+    name: str
+    sort_order: int
+    is_active: bool
+    source_id: UUID | None
+    min_score: int | None
+    location_tier: str | None
+    assign_to: UUID
+    assign_to_name: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class AssignmentPoolMemberIn(BaseModel):
+    user_id: UUID
+    sort_order: int = 0
+
+
+class AssignmentPoolMemberOut(BaseModel):
+    id: UUID
+    user_id: UUID
+    user_name: str | None = None
+    sort_order: int
+    is_active: bool
+    model_config = {"from_attributes": True}
+
+
+class ResponseTargetsOut(BaseModel):
+    response_target_high_minutes: int
+    response_target_medium_hours: int
+    response_target_low_hours: int
+    escalation_employee_hours: int
+    escalation_manager_hours: int
+    model_config = {"from_attributes": True}
+
+
+class ResponseTargetsUpdate(BaseModel):
+    response_target_high_minutes: int | None = Field(default=None, ge=1, le=1440)
+    response_target_medium_hours: int | None = Field(default=None, ge=1, le=168)
+    response_target_low_hours: int | None = Field(default=None, ge=1, le=336)
+    escalation_employee_hours: int | None = Field(default=None, ge=1, le=72)
+    escalation_manager_hours: int | None = Field(default=None, ge=1, le=168)
+
+
+# ── Predictive Scoring (Phase 3) ─────────────────────────────────────────────
+
+class PredictiveScoringReadinessOut(BaseModel):
+    ready: bool
+    leads_total: int
+    leads_total_required: int
+    converted: int
+    not_converted: int
+    outcomes_required_per_class: int
+    reason: str
+    checked_at: datetime

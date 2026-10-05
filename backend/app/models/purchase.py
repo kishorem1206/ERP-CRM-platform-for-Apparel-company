@@ -164,5 +164,10 @@ class PurchaseEntryItem(Base):
     quality_status: Mapped[str] = mapped_column(String(20), default="pending")
     notes: Mapped[Optional[str]] = mapped_column(Text)
     inv_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_transactions.id"))
+    # Excess Delivery (spec §6): the portion of accepted_qty that pushed the
+    # linked PO item's cumulative received_qty past its ordered_qty - "the
+    # excess must be recorded rather than silently ignored." None when this
+    # item has no po_item_id (nothing "planned" to exceed).
+    excess_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 3))
 
     purchase_entry: Mapped["PurchaseEntry"] = relationship(back_populates="items")

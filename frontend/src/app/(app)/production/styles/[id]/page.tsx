@@ -3,16 +3,17 @@ import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Copy, Pencil } from "lucide-react";
 import api from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 
-interface SizeOut { id: string; size_id: string; sort_order: number }
+interface SizeOut { id: string; size_id: string; sort_order: number; quantity: string | null }
 interface ColourOut { id: string; colour_id: string; sort_order: number }
 interface YarnOut { id: string; yarn_name: string; lot_id: string | null; quantity: string | null; unit: string | null; notes: string | null }
 interface FabricOut { id: string; fabric_name: string; lot_id: string | null; consumption: string | null; unit: string | null; excess_pct: string | null; gsm: string | null; dyeing_rate: string | null; printing_rate: string | null; notes: string | null }
 interface SubProcessOut { id: string; seq: number; name: string; notes: string | null }
 interface ProcessOut {
-  id: string; seq: number; process_name: string; is_enabled: boolean;
+  id: string; seq: number; process_name: string; process_master_id: string | null; is_enabled: boolean;
   tolerance_pct: string | null; input_unit: string | null; output_unit: string | null; conversion_rule: string | null;
   min_rate: string | null; max_rate: string | null; planned_rate: string | null; notes: string | null;
   sub_processes: SubProcessOut[];
@@ -35,6 +36,7 @@ interface StyleDetail {
   id: string; name: string; code: string | null; description: string | null;
   garment_type: string | null; gender: string | null; season: string | null;
   final_output_unit: string | null; target_price: string | null; version: number; is_active: boolean;
+  product_id: string | null; product_code: string | null; gst_rate: string | null;
   sizes: SizeOut[]; colours: ColourOut[]; yarns: YarnOut[]; fabrics: FabricOut[];
   processes: ProcessOut[]; trims: TrimOut[]; packing_materials: PackingOut[];
   additional_costs: AdditionalCostOut[];
@@ -137,23 +139,27 @@ export default function StyleDetailPage() {
                   Target Price: ₹{Number(style.target_price).toLocaleString("en-IN")}
                 </span>
               )}
+              <span className="text-xs px-2.5 py-1 rounded bg-muted font-mono">
+                Product: {style.product_code ?? "—"}
+                {style.gst_rate != null && ` · GST ${Number(style.gst_rate)}%`}
+              </span>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            <button
+            <Can perm="production.create"><button
               onClick={() => cloneMut.mutate()}
               disabled={cloneMut.isPending}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-input hover:bg-muted transition-colors disabled:opacity-50"
             >
               <Copy className="h-4 w-4" /> {cloneMut.isPending ? "Cloning…" : "Clone"}
-            </button>
-            <button
+            </button></Can>
+            <Can perm="production.edit"><button
               onClick={() => router.push(`/production/styles/${id}/edit`)}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
               style={{ background: INDIGO }}
             >
               <Pencil className="h-4 w-4" /> Edit Style
-            </button>
+            </button></Can>
           </div>
         </div>
       </div>
@@ -167,7 +173,9 @@ export default function StyleDetailPage() {
               <p className="text-xs font-medium text-muted-foreground mb-2">Sizes</p>
               <div className="flex gap-1.5 flex-wrap">
                 {sortedSizes.map((s) => (
-                  <span key={s.id} className="px-2.5 py-1 rounded-lg text-xs font-medium bg-muted">{sizeById.get(s.size_id) ?? "—"}</span>
+                  <span key={s.id} className="px-2.5 py-1 rounded-lg text-xs font-medium bg-muted">
+                    {sizeById.get(s.size_id) ?? "—"}{s.quantity ? `: ${Number(s.quantity)}` : ""}
+                  </span>
                 ))}
                 {sortedSizes.length === 0 && <Empty text="None" />}
               </div>

@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useState, useEffect, Fragment } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, X } from "lucide-react";
 import api from "@/lib/api";
@@ -7,6 +8,8 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const TEAL = "#8174F5";
 
@@ -18,14 +21,18 @@ interface PurchaseEntry {
   invoice_number: string | null;
   status: string;
   total_amount: string;
+  items?: { excess_qty: string | null }[];
 }
 
 interface GRNItem {
+  po_item_id?: string;
   product_id: string;
   unit_id: string;
   received_qty: string;
   accepted_qty: string;
   unit_price: string;
+  ordered_qty?: number;
+  received_so_far?: number;
 }
 
 const STATUS_FILTERS = [
@@ -41,6 +48,19 @@ const columns: Column<Record<string, unknown>>[] = [
   { key: "entry_date", header: "Date", sortable: true },
   { key: "invoice_number", header: "Invoice #", render: (row) => (row.invoice_number as string) || "—" },
   { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status as string} /> },
+  {
+    key: "excess",
+    header: "",
+    render: (row) => {
+      const items = (row.items as { excess_qty: string | null }[] | undefined) ?? [];
+      const hasExcess = items.some((it) => it.excess_qty != null && Number(it.excess_qty) > 0);
+      return hasExcess ? (
+        <span className="px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: "#A096F718", color: "#A096F7" }}>
+          Excess
+        </span>
+      ) : null;
+    },
+  },
   {
     key: "total_amount",
     header: "Total",
@@ -61,12 +81,31 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [purchaseOrderId, setPurchaseOrderId] = useState("");
   const [items, setItems] = useState<GRNItem[]>([emptyItem()]);
   const [error, setError] = useState("");
 
   const { data: vendors } = useQuery({
     queryKey: ["vendors-list"],
     queryFn: async () => (await api.get("/purchase/vendors?page_size=200")).data.data ?? [],
+  });
+  const { data: vendorPOs } = useQuery({
+    queryKey: ["purchase-orders-for-grn", vendorId],
+    queryFn: async () => {
+      const [approved, partial] = await Promise.all([
+        api.get("/purchase/orders", { params: { vendor_id: vendorId, status: "approved", page_size: 100 } }),
+        api.get("/purchase/orders", { params: { vendor_id: vendorId, status: "partial", page_size: 100 } }),
+      ]);
+      return [...(approved.data.data ?? []), ...(partial.data.data ?? [])] as { id: string; po_number: string }[];
+    },
+    enabled: !!vendorId,
+  });
+  const { data: selectedPO } = useQuery({
+    queryKey: ["purchase-order-detail-for-grn", purchaseOrderId],
+    queryFn: async () => (await api.get(`/purchase/orders/${purchaseOrderId}`)).data.data as {
+      items: { id: string; product_id: string; unit_id: string; ordered_qty: string; received_qty: string; unit_price: string }[];
+    },
+    enabled: !!purchaseOrderId,
   });
   const { data: warehouses } = useQuery({
     queryKey: ["warehouses-list"],
@@ -84,6 +123,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
   const mut = useMutation({
     mutationFn: () =>
       api.post("/purchase/entries", {
+        purchase_order_id: purchaseOrderId || null,
         vendor_id: vendorId,
         warehouse_id: warehouseId,
         entry_date: entryDate,
@@ -91,6 +131,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
         invoice_date: invoiceDate || null,
         notes: notes || null,
         items: items.map((it) => ({
+          po_item_id: it.po_item_id || null,
           product_id: it.product_id,
           unit_id: it.unit_id,
           received_qty: parseFloat(it.received_qty),
@@ -111,6 +152,28 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
 
   const updateItem = (i: number, k: keyof GRNItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
+
+  useEffect(() => {
+    setPurchaseOrderId("");
+  }, [vendorId]);
+
+  useEffect(() => {
+    if (!selectedPO) return;
+    setItems(selectedPO.items.map((poItem) => {
+      const remaining = Number(poItem.ordered_qty) - Number(poItem.received_qty);
+      const qty = remaining > 0 ? String(remaining) : "0";
+      return {
+        po_item_id: poItem.id,
+        product_id: poItem.product_id,
+        unit_id: poItem.unit_id,
+        received_qty: qty,
+        accepted_qty: qty,
+        unit_price: poItem.unit_price,
+        ordered_qty: Number(poItem.ordered_qty),
+        received_so_far: Number(poItem.received_qty),
+      };
+    }));
+  }, [selectedPO]);
 
   return (
     <ModalPortal>
@@ -141,6 +204,18 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
               </div>
             </div>
             <div>
+              <label className="text-xs font-medium text-muted-foreground">Purchase Order (optional)</label>
+              <div className="mt-1">
+                <SearchableSelect
+                  value={purchaseOrderId}
+                  onChange={setPurchaseOrderId}
+                  placeholder={vendorId ? "— Manual entry —" : "Select a vendor first"}
+                  accent={TEAL}
+                  options={(vendorPOs ?? []).map((po) => ({ value: po.id, label: po.po_number }))}
+                />
+              </div>
+            </div>
+            <div>
               <label className="text-xs font-medium text-muted-foreground">Warehouse *</label>
               <div className="mt-1">
                 <SearchableSelect
@@ -157,8 +232,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">GRN Date *</label>
-              <input required type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={entryDate} onChange={(v) => setEntryDate(v)} required />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Vendor Invoice #</label>
@@ -168,8 +242,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Invoice Date</label>
-              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={invoiceDate} onChange={(v) => setInvoiceDate(v)} />
             </div>
           </div>
 
@@ -192,8 +265,13 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((it, i) => (
-                    <tr key={i} className="border-t">
+                  {items.map((it, i) => {
+                    const projectedTotal = (it.received_so_far ?? 0) + (parseFloat(it.accepted_qty) || 0);
+                    const excessPreview = it.ordered_qty != null && projectedTotal > it.ordered_qty
+                      ? projectedTotal - it.ordered_qty : 0;
+                    return (
+                    <Fragment key={i}>
+                    <tr className="border-t">
                       <td className="px-2 py-1 min-w-[160px]">
                         <SearchableSelect
                           value={it.product_id}
@@ -242,7 +320,21 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                         )}
                       </td>
                     </tr>
-                  ))}
+                    {it.ordered_qty != null && (
+                      <tr>
+                        <td colSpan={6} className="px-2 pb-1.5 text-[11px] text-muted-foreground">
+                          Ordered: {it.ordered_qty} · Received so far: {it.received_so_far ?? 0}
+                          {excessPreview > 0 && (
+                            <span className="ml-2 font-semibold" style={{ color: "#8174F5" }}>
+                              +{excessPreview} excess
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -270,6 +362,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function GRNPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
@@ -298,13 +391,13 @@ export default function GRNPage() {
           <h1 className="text-2xl font-bold tracking-tight">Goods Receipt</h1>
           <p className="text-sm text-muted-foreground mt-1">Record incoming materials against purchase orders.</p>
         </div>
-        <button
+        <Can perm="purchase.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 active:scale-95"
           style={{ background: TEAL }}
         >
           <Plus className="h-4 w-4" /> New GRN
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}
@@ -336,6 +429,7 @@ export default function GRNPage() {
           columns={columns}
           data={entries as unknown as Record<string, unknown>[]}
           loading={isLoading}
+          onRowClick={(row) => router.push(`/purchase/grn/${row.id as string}`)}
           emptyMessage="No GRNs found"
         />
       </div>

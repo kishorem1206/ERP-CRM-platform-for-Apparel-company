@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      - APP_ENV=development
+      - APP_ENV=production
       # Override localhost URLs with Docker service names
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - POSTGRES_HOST=postgres

@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, X } from "lucide-react";
@@ -7,6 +8,7 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { Can } from "@/lib/permissions";
 
 const LAVENDER = "#0F78FF";
 
@@ -214,6 +216,7 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function VendorsPage() {
+  const router = useRouter();
   const [typeFilter, setTypeFilter] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -244,13 +247,13 @@ export default function VendorsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Vendors</h1>
           <p className="text-sm text-muted-foreground mt-1">Yarn mills, fabric suppliers, job workers, agents, and trim vendors.</p>
         </div>
-        <button
+        <Can perm="purchase.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 active:scale-95"
           style={{ background: LAVENDER }}
         >
           <Plus className="h-4 w-4" /> New Vendor
-        </button>
+        </button></Can>
       </div>
 
       {/* Search + filter strip */}
@@ -296,6 +299,7 @@ export default function VendorsPage() {
           columns={columns}
           data={vendors as unknown as Record<string, unknown>[]}
           loading={isLoading}
+          onRowClick={(row) => router.push(`/purchase/vendors/${row.id as string}`)}
           emptyMessage="No vendors found"
         />
       </div>

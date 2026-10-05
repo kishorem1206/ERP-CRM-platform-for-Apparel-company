@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Save } from "lucide-react";
 import api from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -25,6 +26,7 @@ type CompanyData = {
   currency: string;
   fabric_variance_pct: number | null;
   negative_stock_allowed: boolean;
+  bill_alert_days: number;
 };
 
 type FormState = {
@@ -41,6 +43,7 @@ type FormState = {
   website: string;
   fabric_variance_pct: string;
   negative_stock_allowed: boolean;
+  bill_alert_days: string;
 };
 
 function toForm(d: CompanyData): FormState {
@@ -58,6 +61,7 @@ function toForm(d: CompanyData): FormState {
     website: d.website ?? "",
     fabric_variance_pct: d.fabric_variance_pct != null ? String(d.fabric_variance_pct) : "3",
     negative_stock_allowed: d.negative_stock_allowed,
+    bill_alert_days: String(d.bill_alert_days ?? 7),
   };
 }
 
@@ -119,6 +123,7 @@ export default function CompanySettingsPage() {
         ...form,
         state_code: form?.state_code ? Number(form.state_code) : null,
         fabric_variance_pct: form?.fabric_variance_pct ? Number(form.fabric_variance_pct) : null,
+        bill_alert_days: form?.bill_alert_days ? Number(form.bill_alert_days) : null,
       }),
     onSuccess: () => {
       setSuccess("Settings saved successfully.");
@@ -207,6 +212,16 @@ export default function CompanySettingsPage() {
             className="w-40 border rounded-xl px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/40"
           />
         </div>
+        <div>
+          <label className="block text-xs font-medium mb-1 text-muted-foreground">Bill / invoice alert after (days)</label>
+          <input
+            type="number" step="1" min="1" max="365"
+            value={form.bill_alert_days}
+            onChange={(e) => set("bill_alert_days", e.target.value)}
+            className="w-40 border rounded-xl px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/40"
+          />
+          <p className="text-xs text-muted-foreground mt-1">Alert when a job-work challan's vendor bill is still missing this many days after material was sent out.</p>
+        </div>
         <label className="flex items-center gap-3 cursor-pointer">
           <input
             type="checkbox"
@@ -222,7 +237,7 @@ export default function CompanySettingsPage() {
       </div>
 
       <div className="flex justify-end">
-        <button
+        <Can perm="admin.settings"><button
           onClick={() => saveMut.mutate()}
           disabled={saveMut.isPending}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-50"
@@ -230,7 +245,7 @@ export default function CompanySettingsPage() {
         >
           <Save className="h-4 w-4" />
           {saveMut.isPending ? "Saving…" : "Save Settings"}
-        </button>
+        </button></Can>
       </div>
     </div>
   );

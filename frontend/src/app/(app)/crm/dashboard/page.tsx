@@ -5,6 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { TrendingUp, CheckCircle2, BarChart2, Clock } from "lucide-react";
 import api from "@/lib/api";
 import { getCurrentUserId } from "@/lib/auth";
+import { SalesKpiSection } from "@/components/crm/sales-kpi-section";
+import { OpenPipelineSection } from "@/components/crm/open-pipeline-section";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -435,6 +437,15 @@ export default function CRMDashboardPage() {
   });
   const leadsNeedingAction = leadsNeedingActionData ?? [];
 
+  // Company-wide: high-priority leads nobody has made first contact with
+  // yet (spec Step 20's "Leads Requiring Immediate Action" widget).
+  const { data: urgentLeadsData } = useQuery({
+    queryKey: ["crm-urgent-leads"],
+    queryFn: () => api.get("/crm/leads?priority=high&status=open&page_size=100").then((r) => r.data.data as { first_contacted_at: string | null }[]),
+    refetchInterval: 60_000,
+  });
+  const urgentUncontactedCount = (urgentLeadsData ?? []).filter((l) => !l.first_contacted_at).length;
+
   const totalLeads =
     (data?.status_counts.open ?? 0) +
     (data?.status_counts.won ?? 0) +
@@ -454,6 +465,22 @@ export default function CRMDashboardPage() {
           Pipeline analytics, conversion rates, and activity summary.
         </p>
       </div>
+
+      <SalesKpiSection />
+
+      <OpenPipelineSection />
+
+      {/* Leads requiring immediate action — company-wide */}
+      {urgentUncontactedCount > 0 && (
+        <Link
+          href="/crm/my-work"
+          className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold border transition-colors hover:brightness-95"
+          style={{ background: `${RED}0F`, borderColor: `${RED}30`, color: RED }}
+        >
+          🔥 {urgentUncontactedCount} high-priority lead{urgentUncontactedCount === 1 ? " has" : "s have"} not been contacted yet.{" "}
+          <span className="underline underline-offset-2">View in My Work</span>
+        </Link>
+      )}
 
       {/* Activity alerts */}
       {!isLoading && (

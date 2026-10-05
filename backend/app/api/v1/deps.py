@@ -24,6 +24,12 @@ class CurrentUser:
                 detail={"code": "FORBIDDEN", "message": f"Permission required: {permission}"},
             )
 
+    def has_permission(self, permission: str) -> bool:
+        """Boolean check for conditional field-level redaction (e.g. Stock
+        Value admin-only visibility) - never a substitute for require()'s
+        hard endpoint-level block."""
+        return permission in self.permissions
+
 
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],

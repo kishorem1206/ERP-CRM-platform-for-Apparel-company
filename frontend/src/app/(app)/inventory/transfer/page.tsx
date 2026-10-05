@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -172,8 +173,7 @@ export default function TransferPage() {
 
           <div>
             <label className={labelClass}>Date</label>
-            <input type="date" className={inputClass} value={form.transaction_date}
-              onChange={(e) => set("transaction_date", e.target.value)} required />
+            <DatePicker value={form.transaction_date} onChange={(v) => set("transaction_date", v)} required />
           </div>
 
           <div>

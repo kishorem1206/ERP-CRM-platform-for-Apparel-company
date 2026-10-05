@@ -7,6 +7,7 @@ import {
   MessageCircle, Plus, Pencil, Trash2, X, Check,
 } from "lucide-react";
 import api from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 
@@ -190,14 +191,14 @@ function NoteCard({
             className="w-full text-sm border border-input rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
           />
           <div className="flex gap-2">
-            <button
+            <Can perm="crm.edit"><button
               onClick={() => updateMut.mutate(draft)}
               disabled={updateMut.isPending || !draft.trim()}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium text-white disabled:opacity-50"
               style={{ background: INDIGO }}
             >
               <Check className="h-3 w-3" /> Save
-            </button>
+            </button></Can>
             <button
               onClick={() => { setEditing(false); setDraft(note.body); }}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border border-input hover:bg-muted"
@@ -214,19 +215,19 @@ function NoteCard({
               {note.created_by_name ?? "You"} · {new Date(note.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
             </p>
             <div className="flex gap-1">
-              <button
+              <Can perm="crm.edit"><button
                 onClick={() => setEditing(true)}
                 className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
               >
                 <Pencil className="h-3.5 w-3.5" />
-              </button>
-              <button
+              </button></Can>
+              <Can perm="crm.edit"><button
                 onClick={() => deleteMut.mutate()}
                 disabled={deleteMut.isPending}
                 className="p-1 rounded hover:bg-violet-50 hover:text-violet-600 transition-colors text-muted-foreground"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              </button></Can>
             </div>
           </div>
         </>
@@ -252,12 +253,12 @@ function AddNoteForm({ personId }: { personId: string }) {
 
   if (!open) {
     return (
-      <button
+      <Can perm="crm.create"><button
         onClick={() => setOpen(true)}
         className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
       >
         <Plus className="h-4 w-4" /> Add Note
-      </button>
+      </button></Can>
     );
   }
 

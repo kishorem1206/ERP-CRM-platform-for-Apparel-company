@@ -267,18 +267,21 @@ def check_job_work_challans():
                 SELECT
                     pl.company_id,
                     pc.challan_number,
-                    pc.in_date,
+                    pc.status,
+                    COALESCE(pc.in_date, pc.out_date) AS reference_date,
                     v.name AS vendor_name,
                     ps.stage_name,
                     pl.lot_number
                 FROM production_stage_challans pc
                 JOIN production_stages ps ON ps.id = pc.production_stage_id
                 JOIN production_lots pl ON pl.id = ps.production_lot_id
+                JOIN companies co ON co.id = pl.company_id
                 JOIN vendors v ON v.id = pc.vendor_id
-                WHERE pc.status = 'received'
+                WHERE pc.status <> 'cancelled'
                   AND pc.bill_received = false
-                  AND pc.in_date < CURRENT_DATE - INTERVAL '7 days'
-                ORDER BY pc.in_date ASC
+                  AND COALESCE(pc.in_date, pc.out_date)
+                      < CURRENT_DATE - make_interval(days => co.bill_alert_days)
+                ORDER BY reference_date ASC
             """))).mappings().all()
 
             by_company = defaultdict(list)
@@ -287,9 +290,9 @@ def check_job_work_challans():
             for company_id, challans in by_company.items():
                 first = challans[0]
                 body = (
-                    f"{len(challans)} job-work challan(s) have been received but the vendor's bill "
-                    f"is still pending. Oldest: {first['challan_number']} — {first['stage_name']} "
-                    f"on {first['lot_number']}, from {first['vendor_name']}, received {first['in_date']}."
+                    f"{len(challans)} job-work challan(s) are past the bill alert window with the vendor's bill "
+                    f"still pending. Oldest: {first['challan_number']} — {first['stage_name']} "
+                    f"on {first['lot_number']}, from {first['vendor_name']}, dated {first['reference_date']}."
                 )
                 notif = await create_notification(
                     db, company_id=company_id, notification_type="job_work_bill_pending",
@@ -419,6 +422,95 @@ def flag_missed_followups():
             await db.commit()
 
     _run(_flag())
+
+
+@celery_app.task(name="app.workers.tasks.escalate_uncontacted_high_priority_leads")
+def escalate_uncontacted_high_priority_leads():
+    """Phase 2 Step 8: a HIGH-priority lead that nobody has made first
+    contact with yet gets escalated in two stages — first a reminder to
+    the assigned employee (after companies.escalation_employee_hours past
+    its response_target_at), then a notification to the company owner(s)
+    (after escalation_manager_hours). Each stage notifies at most once per
+    lead (gated by escalation_employee_notified_at /
+    escalation_manager_notified_at) — idempotency, spec Step 18. Distinct
+    from flag_missed_followups: this is about a lead nobody has touched at
+    all yet, not an already-scheduled follow-up that lapsed."""
+    import logging
+    from app.db.session import AsyncSessionLocal
+    from app.services.notification import create_notification, publish_notification
+
+    log = logging.getLogger(__name__)
+
+    async def _escalate():
+        async with AsyncSessionLocal() as db:
+            now = datetime.now(timezone.utc)
+
+            employee_due = await db.execute(text("""
+                SELECT l.id, l.company_id, l.title, l.assigned_to, c.escalation_employee_hours
+                FROM crm_leads l JOIN companies c ON c.id = l.company_id
+                WHERE l.priority = 'high'
+                  AND l.first_contacted_at IS NULL
+                  AND l.response_target_at IS NOT NULL
+                  AND l.escalation_employee_notified_at IS NULL
+                  AND l.assigned_to IS NOT NULL
+                  AND l.status = 'open'
+                  AND NOW() > l.response_target_at + make_interval(hours => c.escalation_employee_hours)
+            """))
+            for row in employee_due.mappings().all():
+                notif = await create_notification(
+                    db, company_id=row["company_id"], notification_type="lead_response_overdue",
+                    title="High-priority lead not yet contacted",
+                    body=f'"{row["title"]}" is still waiting for first contact.',
+                    user_id=row["assigned_to"], data={"lead_id": str(row["id"])},
+                )
+                await db.execute(
+                    text("UPDATE crm_leads SET escalation_employee_notified_at = :now WHERE id = :id"),
+                    {"now": now, "id": row["id"]},
+                )
+                try:
+                    publish_notification(str(row["company_id"]), {
+                        "id": str(notif.id), "type": "lead_response_overdue",
+                        "title": notif.title, "body": notif.body, "user_id": str(row["assigned_to"]),
+                    })
+                except Exception:
+                    log.warning("Failed to publish lead_response_overdue notification", exc_info=True)
+            await db.commit()
+
+            manager_due = await db.execute(text("""
+                SELECT l.id, l.company_id, l.title, l.assigned_to, c.escalation_manager_hours
+                FROM crm_leads l JOIN companies c ON c.id = l.company_id
+                WHERE l.priority = 'high'
+                  AND l.first_contacted_at IS NULL
+                  AND l.response_target_at IS NOT NULL
+                  AND l.escalation_manager_notified_at IS NULL
+                  AND l.status = 'open'
+                  AND NOW() > l.response_target_at + make_interval(hours => c.escalation_manager_hours)
+            """))
+            for row in manager_due.mappings().all():
+                owners = await db.execute(text(
+                    "SELECT id FROM users WHERE company_id = :cid AND is_owner = true AND is_active = true"
+                ), {"cid": row["company_id"]})
+                for (owner_id,) in owners.all():
+                    notif = await create_notification(
+                        db, company_id=row["company_id"], notification_type="lead_response_overdue_manager",
+                        title="Unassigned response: high-priority lead",
+                        body=f'"{row["title"]}" has had no first contact well past its response target.',
+                        user_id=owner_id, data={"lead_id": str(row["id"])},
+                    )
+                    try:
+                        publish_notification(str(row["company_id"]), {
+                            "id": str(notif.id), "type": "lead_response_overdue_manager",
+                            "title": notif.title, "body": notif.body, "user_id": str(owner_id),
+                        })
+                    except Exception:
+                        log.warning("Failed to publish manager escalation notification", exc_info=True)
+                await db.execute(
+                    text("UPDATE crm_leads SET escalation_manager_notified_at = :now WHERE id = :id"),
+                    {"now": now, "id": row["id"]},
+                )
+            await db.commit()
+
+    _run(_escalate())
 
 
 @celery_app.task(name="app.workers.tasks.send_whatsapp_automation")

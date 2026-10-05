@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Download, TrendingUp, TrendingDown, Trophy, Activity as ActivityIcon, Calendar, ArrowRight } from "lucide-react";
+import { Download, TrendingUp, TrendingDown, Trophy, Activity as ActivityIcon } from "lucide-react";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   FunnelChart, Funnel, LabelList, PieChart, Pie, Cell,
@@ -10,6 +10,7 @@ import {
   BarChart,
 } from "recharts";
 import api from "@/lib/api";
+import { DateRangeFilter, RangePreset, presetRange } from "@/components/shared/date-picker";
 
 // ── Palette — every colour is a shade of the sidebar's Blue/Purple ─────────────
 const INDIGO = "#0049A7";
@@ -438,42 +439,11 @@ function SectionCard({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function CRMReportsPage() {
-  const defaultFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const defaultTo = new Date().toISOString().slice(0, 10);
-
-  const [fromInput, setFromInput] = useState(defaultFrom);
-  const [toInput, setToInput] = useState(defaultTo);
-  const [appliedRange, setAppliedRange] = useState({ from: defaultFrom, to: defaultTo });
+  const [appliedRange, setAppliedRange] = useState(() => presetRange(90));
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const { from, to } = appliedRange;
-
-  const applyFilter = useCallback(() => {
-    setAppliedRange({ from: fromInput, to: toInput });
-  }, [fromInput, toInput]);
-
-  const applyPreset = useCallback((days: number | "ytd") => {
-    const toStr = new Date().toISOString().slice(0, 10);
-    const fromStr = days === "ytd"
-      ? `${new Date().getFullYear()}-01-01`
-      : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    setFromInput(fromStr);
-    setToInput(toStr);
-    setAppliedRange({ from: fromStr, to: toStr });
-  }, []);
-
-  const activePreset = (() => {
-    const today = new Date().toISOString().slice(0, 10);
-    if (to !== today) return null;
-    const days = Math.round((new Date(today).getTime() - new Date(from).getTime()) / 86_400_000);
-    if (from === `${new Date().getFullYear()}-01-01`) return "ytd";
-    if (days === 7) return 7;
-    if (days === 30) return 30;
-    if (days === 90) return 90;
-    return null;
-  })();
-
-  const PRESETS: { label: string; value: number | "ytd" }[] = [
+  const REPORT_PRESETS: RangePreset[] = [
     { label: "7D", value: 7 },
     { label: "30D", value: 30 },
     { label: "90D", value: 90 },
@@ -541,48 +511,10 @@ export default function CRMReportsPage() {
           <p className="text-sm text-muted-foreground mt-1">Pipeline analytics, source breakdown, activity performance, and quote metrics.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Quick presets */}
-          <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl">
-            {PRESETS.map((p) => (
-              <button
-                key={p.label}
-                onClick={() => applyPreset(p.value)}
-                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150"
-                style={
-                  activePreset === p.value
-                    ? { background: "hsl(var(--card))", color: INDIGO, boxShadow: "var(--shadow-xs)" }
-                    : { color: "hsl(var(--muted-foreground))" }
-                }
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Unified date-range control */}
-          <div className="flex items-center gap-2 bg-card border border-border rounded-xl pl-3 pr-1 py-1">
-            <Calendar className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-            <input
-              type="date"
-              value={fromInput}
-              onChange={(e) => setFromInput(e.target.value)}
-              className="text-sm bg-transparent border-none outline-none w-[124px]"
-            />
-            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground/50 flex-shrink-0" />
-            <input
-              type="date"
-              value={toInput}
-              onChange={(e) => setToInput(e.target.value)}
-              className="text-sm bg-transparent border-none outline-none w-[124px]"
-            />
-            <button
-              onClick={applyFilter}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 active:scale-95 flex-shrink-0"
-              style={{ background: INDIGO }}
-            >
-              Apply
-            </button>
-          </div>
+          <DateRangeFilter
+            from={from} to={to} accent={INDIGO} presets={REPORT_PRESETS}
+            onChange={(f, t) => setAppliedRange({ from: f, to: t })}
+          />
 
           <button onClick={() => showToast("Export coming soon")} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-border bg-card hover:bg-muted/50 transition-all active:scale-95">
             <Download className="h-4 w-4" /> Export

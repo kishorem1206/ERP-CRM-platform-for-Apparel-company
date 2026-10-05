@@ -87,16 +87,6 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   );
 }
 
-// Reusable select
-export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      {...props}
-      className={`w-full rounded-xl border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 ${props.className ?? ""}`}
-    />
-  );
-}
-
 // Reusable textarea
 export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (

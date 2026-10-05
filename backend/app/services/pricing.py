@@ -13,7 +13,7 @@ class PriceResult:
     discount_pct: Decimal
     discount_amount: Decimal
     taxable_amount: Decimal
-    source: str  # e.g. "customer_price_list", "default_price_list", "mrp"
+    source: str  # e.g. "customer_price_list", "price_list", "wholesale", "mrp", "not_found"
 
 
 @dataclass
@@ -82,13 +82,14 @@ class PricingService:
     ) -> PriceResult:
         """Resolution order (each step only tried if the previous finds
         nothing): customer-specific price-list override -> generic price
-        for the customer's assigned list -> Product.mrp -> not_found. The
-        `source` on the result distinguishes an actually-configured price
-        from the MRP fallback, so callers never mistake one for the other."""
+        for the customer's assigned list -> Product/Variant.wholesale_price
+        -> Product/Variant.mrp -> not_found. The `source` on the result
+        distinguishes an actually-configured price from either fallback, so
+        callers never mistake one for the other."""
         if self.db is None:
             raise RuntimeError("get_price requires a database session")
 
-        from app.models.master import Product
+        from app.models.master import Product, ProductVariant
         from app.models.sales import Customer, PriceList, PriceListItem
 
         price_list_id: UUID | None = None
@@ -138,8 +139,27 @@ class PricingService:
 
         result = await self.db.execute(select(Product).where(Product.id == product_id))
         product = result.scalar_one_or_none()
-        if product and product.mrp:
-            unit_price = Decimal(str(product.mrp))
+
+        variant = None
+        if variant_id:
+            variant_result = await self.db.execute(select(ProductVariant).where(ProductVariant.id == variant_id))
+            variant = variant_result.scalar_one_or_none()
+
+        wholesale_price = (variant.wholesale_price if variant else None) or (product.wholesale_price if product else None)
+        if wholesale_price:
+            unit_price = Decimal(str(wholesale_price))
+            taxable = _round(unit_price * quantity)
+            return PriceResult(
+                unit_price=unit_price,
+                discount_pct=Decimal("0"),
+                discount_amount=Decimal("0"),
+                taxable_amount=taxable,
+                source="wholesale",
+            )
+
+        mrp = (variant.mrp if variant else None) or (product.mrp if product else None)
+        if mrp:
+            unit_price = Decimal(str(mrp))
             taxable = _round(unit_price * quantity)
             return PriceResult(
                 unit_price=unit_price,

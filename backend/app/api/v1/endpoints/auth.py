@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -11,7 +12,10 @@ from app.api.v1.deps import AuthUser, DBSession
 from app.core.config import settings
 from app.core.security import (
     check_rate_limit,
-    consume_pending_2fa,
+    PENDING_2FA_MAX_FAILURES,
+    clear_pending_2fa,
+    get_pending_2fa,
+    record_failed_2fa,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -27,6 +31,8 @@ from app.core.security import (
 )
 from app.models.user import RefreshToken, User
 from app.schemas.base import ApiResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -177,9 +183,9 @@ async def login(body: LoginRequest, request: Request, response: Response, db: DB
 
 @router.post("/auth/login/verify-2fa")
 async def verify_2fa_login(body: Verify2FARequest, response: Response, db: DBSession):
-    user_id = await consume_pending_2fa(body.session_id)
+    user_id = await get_pending_2fa(body.session_id)
     if not user_id:
-        raise HTTPException(status_code=401, detail="2FA session expired or invalid.")
+        raise HTTPException(status_code=401, detail="2FA session expired. Please sign in again.")
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -187,8 +193,13 @@ async def verify_2fa_login(body: Verify2FARequest, response: Response, db: DBSes
         raise HTTPException(status_code=401, detail="User not found.")
 
     if not verify_totp(user.totp_secret, body.code):
-        raise HTTPException(status_code=401, detail="Invalid 2FA code.")
+        failures = await record_failed_2fa(body.session_id)
+        if failures >= PENDING_2FA_MAX_FAILURES:
+            await clear_pending_2fa(body.session_id)
+            raise HTTPException(status_code=401, detail="Too many incorrect codes. Please sign in again.")
+        raise HTTPException(status_code=401, detail="Invalid 2FA code. Check the current code in your authenticator app and try again.")
 
+    await clear_pending_2fa(body.session_id)
     access_token = await _issue_tokens(db, user, response)
     await db.commit()
     return ApiResponse(success=True, data=TokenResponse(access_token=access_token))
@@ -289,11 +300,13 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request, db: DBS
     otp = generate_otp()
     await store_otp(body.email, otp)
 
-    from app.core.config import settings
     if settings.is_development:
         return ApiResponse(success=True, data={"otp": otp}, message="OTP generated (dev mode — not emailed).")
-    # In production: send email via SMTP (not yet configured)
-    return ApiResponse(success=True, message="OTP sent to your email.")
+    # Password-reset OTP email delivery is not wired up yet (no transactional
+    # mailer). Log it server-side so an administrator can relay it, rather
+    # than silently discarding it.
+    logger.warning("Password reset OTP not emailed (no mailer configured): email=%s otp=%s", body.email, otp)
+    return ApiResponse(success=True, message="If that email exists, an OTP has been sent. Contact your administrator if you do not receive it.")
 
 
 @router.post("/auth/reset-password")

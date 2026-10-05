@@ -47,5 +47,9 @@ celery_app.conf.update(
             "task": "app.workers.tasks.flag_missed_followups",
             "schedule": 60 * 60,
         },
+        "escalate-uncontacted-high-priority-leads-every-30m": {
+            "task": "app.workers.tasks.escalate_uncontacted_high_priority_leads",
+            "schedule": 30 * 60,
+        },
     },
 )

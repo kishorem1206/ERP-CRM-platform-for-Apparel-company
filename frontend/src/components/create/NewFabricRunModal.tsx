@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ModalShell, Field, Input, Textarea, ModalActions, SearchableSelect } from "./ModalShell";
 import api from "@/lib/api";
+import { DatePicker } from "@/components/shared/date-picker";
 
 interface Props {
   open: boolean;
@@ -82,11 +83,7 @@ export function NewFabricRunModal({ open, onClose }: Props) {
             />
           </Field>
           <Field label="Started">
-            <Input
-              type="date"
-              value={form.started_at}
-              onChange={(e) => set("started_at", e.target.value)}
-            />
+            <DatePicker value={form.started_at} onChange={(v) => set("started_at", v)} />
           </Field>
         </div>
 

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -295,13 +296,13 @@ export default function ProductsPage() {
             Service and product catalog for quoting.
           </p>
         </div>
-        <button
+        <Can perm="crm.create"><button
           onClick={() => router.push("/crm/products/new")}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Product
-        </button>
+        </button></Can>
       </div>
 
       {/* Search */}
@@ -384,14 +385,14 @@ export default function ProductsPage() {
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <button
+                        <Can perm="crm.edit"><button
                           onClick={() => openEdit(p)}
                           className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                           title="Edit"
                         >
                           <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
+                        </button></Can>
+                        <Can perm="crm.edit"><button
                           onClick={() =>
                             toggleMutation.mutate({ id: p.id, is_active: !p.is_active })
                           }
@@ -404,7 +405,7 @@ export default function ProductsPage() {
                           ) : (
                             <ToggleLeft className="h-4 w-4" />
                           )}
-                        </button>
+                        </button></Can>
                       </div>
                     </td>
                   </tr>

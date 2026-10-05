@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 const inputCls =
@@ -143,12 +144,12 @@ function EditOrgModal({
         </div>
       </div>
       <div className="flex items-center justify-between gap-3 p-6 border-t">
-        <button
+        <Can perm="crm.delete"><button
           onClick={() => setConfirmDelete(true)}
           className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-xl text-violet-500 hover:bg-violet-50 transition-colors"
         >
           <Trash2 className="h-3.5 w-3.5" /> Delete
-        </button>
+        </button></Can>
         <div className="flex gap-3">
           <button
             onClick={onClose}
@@ -283,13 +284,13 @@ export default function OrganizationsPage() {
             Company accounts, websites, and address details.
           </p>
         </div>
-        <button
+        <Can perm="crm.create"><button
           onClick={() => router.push("/crm/organizations/new")}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Organization
-        </button>
+        </button></Can>
       </div>
 
       <div className="bg-card border border-border rounded-2xl overflow-hidden">

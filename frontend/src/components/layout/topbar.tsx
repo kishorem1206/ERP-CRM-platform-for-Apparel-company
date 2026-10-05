@@ -41,7 +41,7 @@ async function runSearch(q: string): Promise<SearchResult[]> {
   const [custRes, vendRes, prodRes] = await Promise.allSettled([
     api.get(`/sales/customers?search=${s}&page_size=5`),
     api.get(`/purchase/vendors?search=${s}&page_size=5`),
-    api.get(`/inventory/products?search=${s}&page_size=5`),
+    api.get(`/products?search=${s}&page_size=5`),
   ]);
 
   const results: SearchResult[] = [];

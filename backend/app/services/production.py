@@ -1,19 +1,21 @@
 """ProductionService: lots, stages, MIS, stage entries, FG output."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.master import Product
+from app.domain.business_rules import BusinessRulesError, business_rules
+from app.models.master import Product, ProductVariant
 from app.models.production import (
-    FabricProcessingEntry, InternalWorker, LotAdditionalCost, MaterialIssue, MaterialIssueItem,
-    ProductionLot, ProductionLotSize, ProductionOutput,
-    ProductionStage, ProductionStageChallan, ProductionStageEntry, Style, StyleAdditionalCost,
+    FabricProcessingEntry, InternalWorker, LotAdditionalCost, LotPackingMaterial, LotTrim,
+    MaterialIssue, MaterialIssueItem,
+    ProcessMaster, ProductionLot, ProductionLotSize, ProductionOutput,
+    ProductionStage, ProductionStageChallan, ProductionStageEntry, SizeChart, SizeChartItem, Style, StyleAdditionalCost,
     StyleColour, StyleFabric, StylePackingMaterial, StyleProcess,
-    StyleSize, StyleSubProcess, StyleTrim, StyleYarn,
+    StyleSize, StyleSubProcess, StyleTrim, StyleTrimSize, StyleYarn,
 )
 from app.models.sales import SalesOrder, SalesOrderItem
 from app.schemas.inventory import IssueParams, ReceiveParams
@@ -21,14 +23,16 @@ from app.schemas.production import (
     FabricProcessingComplete, FabricProcessingCreate, FabricProcessingUpdate,
     InternalWorkerCreate,
     LotAdditionalCostCreate, LotAdditionalCostUpdate, LotCostComponentOut, LotCostSummaryOut,
-    MaterialIssueCreate, MISItemCreate,
+    LotPackingActualUpdate, LotTrimActualUpdate,
+    MaterialIssueCreate, MISItemCreate, MISItemReturnUpdate,
     ProductionLotCreate, ProductionLotUpdate,
-    ProductionOutputCreate,
+    ProductionOutputCreate, SizeChartCreate, StyleSizeIn,
     StageChallanBillUpdate, StageChallanCreate, StageChallanReceive,
-    StageCreate, StageEntryCreate, StageUpdate, StyleCreate,
+    StageCreate, StageEntryCreate, StageUpdate, StyleCreate, StyleProcessIn,
     TargetPriceCheckOut, TargetPriceSuggestion,
 )
 from app.services.inventory import InventoryService
+from app.services.sku import build_variant_sku
 
 
 def _stage_accepted_qty(stage: ProductionStage) -> int:
@@ -476,12 +480,13 @@ class ProductionService:
 
     def _style_detail_query(self):
         return select(Style).options(
+            selectinload(Style.product).selectinload(Product.hsn),
             selectinload(Style.sizes),
             selectinload(Style.colours),
             selectinload(Style.yarns),
             selectinload(Style.fabrics),
             selectinload(Style.processes).selectinload(StyleProcess.sub_processes),
-            selectinload(Style.trims),
+            selectinload(Style.trims).selectinload(StyleTrim.size_breakdown),
             selectinload(Style.packing_materials),
             selectinload(Style.additional_costs),
         )
@@ -492,6 +497,185 @@ class ProductionService:
         )
         return result.scalar_one_or_none()
 
+    async def _resolve_style_product(
+        self, body: StyleCreate, company_id: UUID, user_id: UUID, existing_product_id: UUID | None = None,
+    ) -> UUID:
+        """Every Style must have a real sellable Product/SKU master behind it
+        (Garments_ERP_Style_Master_Specification.md §4-5) rather than Style
+        duplicating product identity in free-text fields. If the caller
+        points at an existing Product, (re)link it (company-scoped, error
+        otherwise); if the Style is already linked and the caller didn't ask
+        to change it, keep that link; otherwise auto-create one from the
+        Style's own fields so the guarantee holds without an extra manual step.
+        """
+        if body.product_id:
+            result = await self.db.execute(
+                select(Product).where(Product.id == body.product_id, Product.company_id == company_id)
+            )
+            product = result.scalar_one_or_none()
+            if not product:
+                raise BusinessRulesError("product_not_found", "Linked product not found")
+            return product.id
+
+        if existing_product_id:
+            return existing_product_id
+
+        product = Product(
+            company_id=company_id,
+            code=body.code or f"STY-{uuid4().hex[:8].upper()}",
+            name=body.name, product_type="finished_good",
+            gender=body.gender, season=body.season,
+            created_by=user_id,
+        )
+        self.db.add(product)
+        await self.db.flush()
+        return product.id
+
+    async def _ensure_variants(self, style: Style) -> None:
+        """Turns a Style's size x colour combinations into real ProductVariant
+        SKUs under its linked product (§4: "Style + applicable variant
+        dimensions = SKU/variant"). Existence-checked so repeated calls (every
+        update_style run) never duplicate a variant that already exists.
+        """
+        if not style.product_id:
+            return
+        # Query fresh rather than via style.sizes/style.colours: update_style
+        # deletes+reinserts those child rows earlier in the same session, and
+        # the already-identity-mapped `style` object's relationship
+        # collections won't reflect that without an explicit reload.
+        size_ids = (await self.db.execute(
+            select(StyleSize.size_id).where(StyleSize.style_id == style.id)
+        )).scalars().all()
+        colour_ids = (await self.db.execute(
+            select(StyleColour.colour_id).where(StyleColour.style_id == style.id)
+        )).scalars().all()
+        sizes = size_ids or [None]
+        colours = colour_ids or [None]
+        if sizes == [None] and colours == [None]:
+            return
+
+        existing = await self.db.execute(
+            select(ProductVariant.size_id, ProductVariant.colour_id)
+            .where(ProductVariant.product_id == style.product_id)
+        )
+        existing_pairs = {(row.size_id, row.colour_id) for row in existing}
+
+        product = (await self.db.execute(select(Product).where(Product.id == style.product_id))).scalar_one()
+        for size_id in sizes:
+            for colour_id in colours:
+                if (size_id, colour_id) in existing_pairs:
+                    continue
+                sku = await build_variant_sku(self.db, product.code, size_id, colour_id)
+                self.db.add(ProductVariant(product_id=style.product_id, sku=sku, size_id=size_id, colour_id=colour_id))
+                existing_pairs.add((size_id, colour_id))
+        await self.db.flush()
+
+    async def _fetch_process_masters(self, processes: list, company_id: UUID) -> dict[UUID, "ProcessMaster"]:
+        ids = {p.process_master_id for p in processes if p.process_master_id}
+        if not ids:
+            return {}
+        result = await self.db.execute(
+            select(ProcessMaster).where(ProcessMaster.id.in_(ids), ProcessMaster.company_id == company_id)
+        )
+        return {pm.id: pm for pm in result.scalars().all()}
+
+    def _build_style_process(self, style_id: UUID, proc: StyleProcessIn, masters: dict, now: datetime) -> StyleProcess:
+        """Builds a StyleProcess row, filling tolerance/unit/rate fields from
+        the linked ProcessMaster's defaults only where the style-specific
+        value is None — the style-specific value always wins (§26).
+        """
+        master = masters.get(proc.process_master_id) if proc.process_master_id else None
+        return StyleProcess(
+            style_id=style_id, seq=proc.seq, process_name=proc.process_name,
+            process_master_id=proc.process_master_id,
+            is_enabled=proc.is_enabled,
+            tolerance_pct=proc.tolerance_pct if proc.tolerance_pct is not None else (master.default_tolerance_pct if master else None),
+            input_unit=proc.input_unit if proc.input_unit is not None else (master.default_unit if master else None),
+            output_unit=proc.output_unit if proc.output_unit is not None else (master.default_unit if master else None),
+            conversion_rule=proc.conversion_rule,
+            min_rate=proc.min_rate if proc.min_rate is not None else (master.default_min_rate if master else None),
+            max_rate=proc.max_rate if proc.max_rate is not None else (master.default_max_rate if master else None),
+            planned_rate=proc.planned_rate if proc.planned_rate is not None else (master.default_planned_rate if master else None),
+            notes=proc.notes, created_at=now,
+        )
+
+    async def _fetch_size_chart_items(self, sizes: list, company_id: UUID) -> dict[tuple, Decimal | None]:
+        """Returns {(size_chart_id, size_id): quantity} for every chart
+        referenced by `sizes`, scoped to this company.
+        """
+        chart_ids = {s.size_chart_id for s in sizes if s.size_chart_id}
+        if not chart_ids:
+            return {}
+        result = await self.db.execute(
+            select(SizeChartItem.size_chart_id, SizeChartItem.size_id, SizeChartItem.quantity)
+            .join(SizeChart, SizeChart.id == SizeChartItem.size_chart_id)
+            .where(SizeChartItem.size_chart_id.in_(chart_ids), SizeChart.company_id == company_id)
+        )
+        return {(row.size_chart_id, row.size_id): row.quantity for row in result.all()}
+
+    def _build_style_size(self, style_id: UUID, sz: StyleSizeIn, chart_items: dict, now: datetime) -> StyleSize:
+        """Builds a StyleSize row, falling back to the linked SizeChartItem's
+        quantity only when the incoming style-specific quantity is None —
+        the style-specific value always wins (§26, same rule as processes).
+        """
+        quantity = sz.quantity
+        if quantity is None and sz.size_chart_id:
+            quantity = chart_items.get((sz.size_chart_id, sz.size_id))
+        return StyleSize(
+            style_id=style_id, size_id=sz.size_id, sort_order=sz.sort_order,
+            quantity=quantity, size_chart_id=sz.size_chart_id, created_at=now,
+        )
+
+    # ── Size Chart Master ────────────────────────────────────────────────
+
+    async def list_size_charts(self, company_id: UUID) -> list[SizeChart]:
+        result = await self.db.execute(
+            select(SizeChart).where(SizeChart.company_id == company_id)
+            .options(selectinload(SizeChart.items)).order_by(SizeChart.name)
+        )
+        return result.scalars().all()
+
+    async def get_size_chart(self, chart_id: UUID, company_id: UUID) -> SizeChart | None:
+        result = await self.db.execute(
+            select(SizeChart).where(SizeChart.id == chart_id, SizeChart.company_id == company_id)
+            .options(selectinload(SizeChart.items))
+        )
+        return result.scalar_one_or_none()
+
+    async def create_size_chart(self, body: SizeChartCreate, company_id: UUID) -> SizeChart:
+        now = datetime.now(timezone.utc)
+        chart = SizeChart(company_id=company_id, name=body.name, created_at=now)
+        self.db.add(chart)
+        await self.db.flush()
+        for it in body.items:
+            self.db.add(SizeChartItem(size_chart_id=chart.id, size_id=it.size_id, quantity=it.quantity, sort_order=it.sort_order))
+        await self.db.flush()
+        return await self.get_size_chart(chart.id, company_id)
+
+    async def update_size_chart(self, chart_id: UUID, body: SizeChartCreate, company_id: UUID) -> SizeChart | None:
+        chart = await self.get_size_chart(chart_id, company_id)
+        if not chart:
+            return None
+        chart.name = body.name
+        await self.db.execute(delete(SizeChartItem).where(SizeChartItem.size_chart_id == chart_id))
+        await self.db.flush()
+        for it in body.items:
+            self.db.add(SizeChartItem(size_chart_id=chart_id, size_id=it.size_id, quantity=it.quantity, sort_order=it.sort_order))
+        await self.db.flush()
+        # `chart` was loaded above before the delete+reinsert — its `items`
+        # collection is stale in the session identity map (the exact bug
+        # fixed for update_style in Phase 2). Expire before the re-fetch.
+        self.db.expire(chart)
+        return await self.get_size_chart(chart_id, company_id)
+
+    async def delete_size_chart(self, chart_id: UUID, company_id: UUID) -> bool:
+        chart = await self.get_size_chart(chart_id, company_id)
+        if not chart:
+            return False
+        await self.db.delete(chart)
+        await self.db.flush()
+        return True
+
     async def create_style(self, body: StyleCreate, company_id: UUID, user_id: UUID) -> Style:
         """Create a Style Master: the complete production blueprint.
 
@@ -501,18 +685,21 @@ class ProductionService:
         Garments_ERP_Style_Master_Specification.md §21.
         """
         now = datetime.now(timezone.utc)
+        product_id = await self._resolve_style_product(body, company_id, user_id)
         s = Style(
             company_id=company_id, created_at=now, created_by=user_id,
             name=body.name, code=body.code, description=body.description,
             garment_type=body.garment_type, gender=body.gender, season=body.season,
             final_output_unit=body.final_output_unit, target_price=body.target_price,
             pieces_per_box=body.pieces_per_box, fabric_source=body.fabric_source,
+            product_id=product_id,
         )
         self.db.add(s)
         await self.db.flush()
 
+        size_chart_items = await self._fetch_size_chart_items(body.sizes, company_id)
         for sz in body.sizes:
-            self.db.add(StyleSize(style_id=s.id, size_id=sz.size_id, sort_order=sz.sort_order, created_at=now))
+            self.db.add(self._build_style_size(s.id, sz, size_chart_items, now))
 
         for cl in body.colours:
             self.db.add(StyleColour(style_id=s.id, colour_id=cl.colour_id, sort_order=cl.sort_order, created_at=now))
@@ -531,15 +718,9 @@ class ProductionService:
                 notes=fb.notes, created_at=now,
             ))
 
+        process_masters = await self._fetch_process_masters(body.processes, company_id)
         for proc in body.processes:
-            p = StyleProcess(
-                style_id=s.id, seq=proc.seq, process_name=proc.process_name,
-                is_enabled=proc.is_enabled, tolerance_pct=proc.tolerance_pct,
-                input_unit=proc.input_unit, output_unit=proc.output_unit,
-                conversion_rule=proc.conversion_rule, min_rate=proc.min_rate,
-                max_rate=proc.max_rate, planned_rate=proc.planned_rate,
-                notes=proc.notes, created_at=now,
-            )
+            p = self._build_style_process(s.id, proc, process_masters, now)
             self.db.add(p)
             await self.db.flush()
             for sub in proc.sub_processes:
@@ -549,12 +730,16 @@ class ProductionService:
                 ))
 
         for tr in body.trims:
-            self.db.add(StyleTrim(
+            t = StyleTrim(
                 style_id=s.id, trim_name=tr.trim_name, lot_id=tr.lot_id,
                 quantity=tr.quantity, unit=tr.unit, category=tr.category,
                 process_seq=tr.process_seq,
                 excess_pct=tr.excess_pct, notes=tr.notes, created_at=now,
-            ))
+            )
+            self.db.add(t)
+            await self.db.flush()
+            for tsz in tr.size_breakdown:
+                self.db.add(StyleTrimSize(style_trim_id=t.id, size_id=tsz.size_id, quantity=tsz.quantity))
 
         for pm in body.packing_materials:
             self.db.add(StylePackingMaterial(
@@ -571,7 +756,9 @@ class ProductionService:
             ))
 
         await self.db.flush()
-        return await self.get_style(s.id, company_id)
+        style = await self.get_style(s.id, company_id)
+        await self._ensure_variants(style)
+        return style
 
     async def clone_style(self, style_id: UUID, company_id: UUID, user_id: UUID) -> Style | None:
         """Clone an existing Style into a new, independently-editable Style.
@@ -590,7 +777,7 @@ class ProductionService:
             garment_type=source.garment_type, gender=source.gender, season=source.season,
             final_output_unit=source.final_output_unit, target_price=source.target_price,
             pieces_per_box=source.pieces_per_box, fabric_source=source.fabric_source,
-            sizes=[{"size_id": x.size_id, "sort_order": x.sort_order} for x in source.sizes],
+            sizes=[{"size_id": x.size_id, "sort_order": x.sort_order, "quantity": x.quantity, "size_chart_id": x.size_chart_id} for x in source.sizes],
             colours=[{"colour_id": x.colour_id, "sort_order": x.sort_order} for x in source.colours],
             yarns=[{"yarn_name": x.yarn_name, "lot_id": x.lot_id, "quantity": x.quantity,
                      "unit": x.unit, "notes": x.notes} for x in source.yarns],
@@ -599,14 +786,16 @@ class ProductionService:
                        "dyeing_rate": x.dyeing_rate, "printing_rate": x.printing_rate, "notes": x.notes}
                       for x in source.fabrics],
             processes=[{
-                "seq": p.seq, "process_name": p.process_name, "is_enabled": p.is_enabled,
+                "seq": p.seq, "process_name": p.process_name, "process_master_id": p.process_master_id, "is_enabled": p.is_enabled,
                 "tolerance_pct": p.tolerance_pct, "input_unit": p.input_unit, "output_unit": p.output_unit,
                 "conversion_rule": p.conversion_rule, "min_rate": p.min_rate, "max_rate": p.max_rate,
                 "planned_rate": p.planned_rate, "notes": p.notes,
                 "sub_processes": [{"seq": sp.seq, "name": sp.name, "notes": sp.notes} for sp in p.sub_processes],
             } for p in source.processes],
             trims=[{"trim_name": x.trim_name, "lot_id": x.lot_id, "quantity": x.quantity, "unit": x.unit,
-                     "category": x.category, "process_seq": x.process_seq, "excess_pct": x.excess_pct, "notes": x.notes} for x in source.trims],
+                     "category": x.category, "process_seq": x.process_seq, "excess_pct": x.excess_pct, "notes": x.notes,
+                     "size_breakdown": [{"size_id": sb.size_id, "quantity": sb.quantity} for sb in x.size_breakdown]}
+                    for x in source.trims],
             packing_materials=[{"material_name": x.material_name, "quantity": x.quantity, "unit": x.unit,
                                   "excess_pct": x.excess_pct, "consumption_stage": x.consumption_stage,
                                   "notes": x.notes} for x in source.packing_materials],
@@ -616,7 +805,7 @@ class ProductionService:
         )
         return await self.create_style(payload, company_id, user_id)
 
-    async def update_style(self, style_id: UUID, body: StyleCreate, company_id: UUID) -> Style | None:
+    async def update_style(self, style_id: UUID, body: StyleCreate, company_id: UUID, user_id: UUID) -> Style | None:
         """Update a Style Master: full replace of scalar fields and every child section.
 
         This never touches existing LOTs — a LOT's production_stages were
@@ -638,6 +827,7 @@ class ProductionService:
         s.pieces_per_box = body.pieces_per_box
         s.fabric_source = body.fabric_source
         s.target_price = body.target_price
+        s.product_id = await self._resolve_style_product(body, company_id, user_id, existing_product_id=s.product_id)
         s.updated_at = now
 
         await self.db.execute(delete(StyleSize).where(StyleSize.style_id == style_id))
@@ -650,8 +840,9 @@ class ProductionService:
         await self.db.execute(delete(StyleAdditionalCost).where(StyleAdditionalCost.style_id == style_id))
         await self.db.flush()
 
+        size_chart_items = await self._fetch_size_chart_items(body.sizes, company_id)
         for sz in body.sizes:
-            self.db.add(StyleSize(style_id=style_id, size_id=sz.size_id, sort_order=sz.sort_order, created_at=now))
+            self.db.add(self._build_style_size(style_id, sz, size_chart_items, now))
 
         for cl in body.colours:
             self.db.add(StyleColour(style_id=style_id, colour_id=cl.colour_id, sort_order=cl.sort_order, created_at=now))
@@ -670,15 +861,9 @@ class ProductionService:
                 notes=fb.notes, created_at=now,
             ))
 
+        process_masters = await self._fetch_process_masters(body.processes, company_id)
         for proc in body.processes:
-            p = StyleProcess(
-                style_id=style_id, seq=proc.seq, process_name=proc.process_name,
-                is_enabled=proc.is_enabled, tolerance_pct=proc.tolerance_pct,
-                input_unit=proc.input_unit, output_unit=proc.output_unit,
-                conversion_rule=proc.conversion_rule, min_rate=proc.min_rate,
-                max_rate=proc.max_rate, planned_rate=proc.planned_rate,
-                notes=proc.notes, created_at=now,
-            )
+            p = self._build_style_process(style_id, proc, process_masters, now)
             self.db.add(p)
             await self.db.flush()
             for sub in proc.sub_processes:
@@ -688,12 +873,16 @@ class ProductionService:
                 ))
 
         for tr in body.trims:
-            self.db.add(StyleTrim(
+            t = StyleTrim(
                 style_id=style_id, trim_name=tr.trim_name, lot_id=tr.lot_id,
                 quantity=tr.quantity, unit=tr.unit, category=tr.category,
                 process_seq=tr.process_seq,
                 excess_pct=tr.excess_pct, notes=tr.notes, created_at=now,
-            ))
+            )
+            self.db.add(t)
+            await self.db.flush()
+            for tsz in tr.size_breakdown:
+                self.db.add(StyleTrimSize(style_trim_id=t.id, size_id=tsz.size_id, quantity=tsz.quantity))
 
         for pm in body.packing_materials:
             self.db.add(StylePackingMaterial(
@@ -710,7 +899,15 @@ class ProductionService:
             ))
 
         await self.db.flush()
-        return await self.get_style(style_id, company_id)
+        # `s` (now `style`) was loaded at the top of this method, before the
+        # delete+reinsert of every child section above - its relationship
+        # collections (sizes, colours, processes, ...) are stale in the
+        # session identity map. Expire so the re-fetch below actually reloads
+        # them instead of silently returning the pre-update snapshot.
+        self.db.expire(s)
+        style = await self.get_style(style_id, company_id)
+        await self._ensure_variants(style)
+        return style
 
     # ── Production Lots ────────────────────────────────────────────────────
 
@@ -726,6 +923,8 @@ class ProductionService:
                 selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
                 selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
                 selectinload(ProductionLot.additional_costs),
+                selectinload(ProductionLot.trims),
+                selectinload(ProductionLot.packing_materials),
                 selectinload(ProductionLot.fabric_processing),
                 selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
                 selectinload(ProductionLot.outputs),
@@ -747,6 +946,8 @@ class ProductionService:
                 selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
                 selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
                 selectinload(ProductionLot.additional_costs),
+                selectinload(ProductionLot.trims),
+                selectinload(ProductionLot.packing_materials),
                 selectinload(ProductionLot.fabric_processing),
                 selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
                 selectinload(ProductionLot.outputs),
@@ -791,6 +992,9 @@ class ProductionService:
                 .options(
                     selectinload(Style.processes).selectinload(StyleProcess.sub_processes),
                     selectinload(Style.additional_costs),
+                    selectinload(Style.sizes),
+                    selectinload(Style.trims).selectinload(StyleTrim.size_breakdown),
+                    selectinload(Style.packing_materials),
                 )
             )
             style = style_result.scalar_one_or_none()
@@ -835,10 +1039,58 @@ class ProductionService:
                 party_vendor_id=ac.party_vendor_id, notes=ac.notes, created_at=now,
             ))
 
-        for sz in body.sizes:
-            self.db.add(ProductionLotSize(
-                production_lot_id=lot.id, size_id=sz.size_id, planned_qty=sz.planned_qty,
-            ))
+        resolved_size_qty: dict[UUID, int] = {}
+        if body.sizes:
+            for sz in body.sizes:
+                self.db.add(ProductionLotSize(
+                    production_lot_id=lot.id, size_id=sz.size_id, planned_qty=sz.planned_qty,
+                ))
+                resolved_size_qty[sz.size_id] = sz.planned_qty
+        elif style:
+            # §1.1: "quantity for each size must be configurable and
+            # reusable from Style Creation" - default the LOT's per-size
+            # plan from the Style's own quantities when the caller didn't
+            # explicitly provide sizes.
+            for ssz in style.sizes:
+                if ssz.quantity is not None:
+                    self.db.add(ProductionLotSize(
+                        production_lot_id=lot.id, size_id=ssz.size_id, planned_qty=int(ssz.quantity),
+                    ))
+                    resolved_size_qty[ssz.size_id] = int(ssz.quantity)
+
+        # Snapshot Style Trims / Packing Materials (§21: "fetched automatically
+        # when the Production Lot is created"). Trims with a size-wise
+        # breakdown are summed against this LOT's resolved per-size plan;
+        # flat trims and packing materials scale off the LOT's total
+        # planned_qty. Either way scaled by excess_pct when set.
+        if style:
+            for tr in style.trims:
+                if tr.size_breakdown:
+                    base_qty = sum(
+                        float(sb.quantity) * resolved_size_qty.get(sb.size_id, 0)
+                        for sb in tr.size_breakdown
+                    )
+                else:
+                    base_qty = float(tr.quantity) * body.planned_qty if tr.quantity is not None else None
+                planned_qty = None
+                if base_qty is not None:
+                    excess_mult = 1 + float(tr.excess_pct) / 100 if tr.excess_pct is not None else 1
+                    planned_qty = Decimal(str(base_qty * excess_mult))
+                self.db.add(LotTrim(
+                    production_lot_id=lot.id, style_trim_id=tr.id, trim_name=tr.trim_name,
+                    unit=tr.unit, category=tr.category, planned_qty=planned_qty, created_at=now,
+                ))
+
+            for pm in style.packing_materials:
+                planned_qty = None
+                if pm.quantity is not None:
+                    base_qty = float(pm.quantity) * body.planned_qty
+                    excess_mult = 1 + float(pm.excess_pct) / 100 if pm.excess_pct is not None else 1
+                    planned_qty = Decimal(str(base_qty * excess_mult))
+                self.db.add(LotPackingMaterial(
+                    production_lot_id=lot.id, style_packing_material_id=pm.id, material_name=pm.material_name,
+                    unit=pm.unit, consumption_stage=pm.consumption_stage, planned_qty=planned_qty, created_at=now,
+                ))
 
         # Stages are sorted by created_at for display (ProductionStage has no
         # explicit seq column); stagger by a millisecond per row so creation
@@ -887,6 +1139,8 @@ class ProductionService:
                      selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
                      selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
                      selectinload(ProductionLot.additional_costs),
+                     selectinload(ProductionLot.trims),
+                     selectinload(ProductionLot.packing_materials),
                      selectinload(ProductionLot.fabric_processing),
                      selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
                      selectinload(ProductionLot.outputs))
@@ -1055,13 +1309,65 @@ class ProductionService:
         )
         return result.scalar_one()
 
+    async def fabric_blockers(self, lot: ProductionLot) -> list[str]:
+        """Why garment work can't start on this lot yet (spec §33). Empty
+        list = fabric-ready, or the lot has no style and so nothing to gate.
+        """
+        if not lot.style_id:
+            return []
+        style = (await self.db.execute(select(Style).where(Style.id == lot.style_id))).scalar_one_or_none()
+        if not style:
+            return []
+        has_config = (await self.db.execute(
+            select(func.count(StyleFabric.id)).where(StyleFabric.style_id == style.id)
+        )).scalar_one() > 0
+        issued = (await self.db.execute(
+            select(func.coalesce(func.sum(MaterialIssueItem.issued_qty), 0))
+            .join(MaterialIssue, MaterialIssue.id == MaterialIssueItem.material_issue_id)
+            .join(Product, Product.id == MaterialIssueItem.product_id)
+            .where(MaterialIssue.production_lot_id == lot.id, Product.product_type == "fabric")
+        )).scalar_one()
+        processed = (await self.db.execute(
+            select(func.count(FabricProcessingEntry.id)).where(
+                FabricProcessingEntry.production_lot_id == lot.id,
+                FabricProcessingEntry.status == "completed",
+            )
+        )).scalar_one()
+        result = business_rules.validate_fabric_ready(
+            has_fabric_config=has_config, fabric_source=style.fabric_source,
+            fabric_issued_qty=Decimal(issued), completed_fabric_processing=processed,
+        )
+        return [] if result.valid else [result.reason]
+
+    async def _require_fabric_ready(self, lot_id: UUID) -> None:
+        lot = (await self.db.execute(select(ProductionLot).where(ProductionLot.id == lot_id))).scalar_one()
+        blockers = await self.fabric_blockers(lot)
+        if blockers:
+            raise BusinessRulesError("fabric_not_ready", blockers[0])
+
     async def add_stage_entry(
         self, stage_id: UUID, body: StageEntryCreate, user_id: UUID,
     ) -> ProductionStageEntry:
+        if body.pieces_in > 0:
+            stage_lot_id = (await self.db.execute(
+                select(ProductionStage.production_lot_id).where(ProductionStage.id == stage_id)
+            )).scalar_one_or_none()
+            if stage_lot_id:
+                await self._require_fabric_ready(stage_lot_id)
         now = datetime.now(timezone.utc)
+        if body.input_weight_kg is not None and body.output_weight_kg is not None:
+            remainder = body.input_weight_kg - body.output_weight_kg
+            classified = (body.wastage_kg or Decimal("0")) + (body.recoverable_kg or Decimal("0"))
+            if classified > remainder:
+                raise QuantityValidationError(
+                    f"Wastage + Recoverable ({classified} kg) cannot exceed the unaccounted "
+                    f"remainder (input - output = {remainder} kg) for this entry."
+                )
         entry = ProductionStageEntry(
             stage_id=stage_id, entry_date=body.entry_date,
             pieces_in=body.pieces_in, pieces_out=body.pieces_out, rejected=body.rejected,
+            input_weight_kg=body.input_weight_kg, output_weight_kg=body.output_weight_kg,
+            wastage_kg=body.wastage_kg, recoverable_kg=body.recoverable_kg,
             operator=body.operator, machine=body.machine, notes=body.notes,
             created_at=now, created_by=user_id,
         )
@@ -1085,6 +1391,14 @@ class ProductionService:
             stage.input_qty = new_input
             stage.output_qty = new_output
             stage.rejected_qty += body.rejected
+            if body.input_weight_kg is not None:
+                stage.input_weight_kg = (stage.input_weight_kg or Decimal("0")) + body.input_weight_kg
+            if body.output_weight_kg is not None:
+                stage.output_weight_kg = (stage.output_weight_kg or Decimal("0")) + body.output_weight_kg
+            if body.wastage_kg is not None:
+                stage.wastage_kg = (stage.wastage_kg or Decimal("0")) + body.wastage_kg
+            if body.recoverable_kg is not None:
+                stage.recoverable_kg = (stage.recoverable_kg or Decimal("0")) + body.recoverable_kg
             stage.updated_at = now
             if stage.status == "pending" and body.pieces_in > 0:
                 stage.status = "in_progress"
@@ -1111,10 +1425,11 @@ class ProductionService:
         # Validate any correction to sent/received/rejected as one consistent
         # set (§7 — editing a stage must not create impossible quantities):
         # received + rejected must never exceed sent.
+        quantity_touched = any(k in updates for k in ("sent_qty", "received_qty", "rejected_qty"))
         new_sent = updates.get("sent_qty", stage.sent_qty)
         new_received = updates.get("received_qty", stage.received_qty)
         new_rejected = updates.get("rejected_qty", stage.rejected_qty)
-        if new_received + new_rejected > new_sent:
+        if stage.assignment_type and quantity_touched and new_received + new_rejected > new_sent:
             raise QuantityValidationError(
                 f"Received ({new_received}) + Rejected ({new_rejected}) cannot exceed Sent OUT ({new_sent})."
             )
@@ -1142,6 +1457,8 @@ class ProductionService:
         stage = result.scalar_one_or_none()
         if not stage:
             return None
+        if body.out_qty > 0:
+            await self._require_fabric_ready(stage.production_lot_id)
 
         # Sent OUT cannot exceed what's actually available from the previous
         # stage (§3) — the stage's own planned_qty, kept in sync by
@@ -1274,6 +1591,27 @@ class ProductionService:
         await self.db.flush()
         return challan
 
+    async def get_challan_for_document(self, challan_id: UUID, company_id: UUID) -> ProductionStageChallan | None:
+        """Loads a job-work challan with the full stage -> lot -> style ->
+        product -> hsn chain needed to render its Delivery Challan PDF
+        (spec §17) - reuses the Style<->Product link from Phase 1 rather
+        than duplicating HSN/GST onto the challan itself.
+        """
+        result = await self.db.execute(
+            select(ProductionStageChallan)
+            .join(ProductionStage, ProductionStage.id == ProductionStageChallan.production_stage_id)
+            .join(ProductionLot, ProductionLot.id == ProductionStage.production_lot_id)
+            .where(ProductionStageChallan.id == challan_id, ProductionLot.company_id == company_id)
+            .options(
+                selectinload(ProductionStageChallan.stage)
+                .selectinload(ProductionStage.production_lot)
+                .selectinload(ProductionLot.style)
+                .selectinload(Style.product)
+                .selectinload(Product.hsn),
+            )
+        )
+        return result.scalar_one_or_none()
+
     # ── Fabric Processing (dyeing/printing) ─────────────────────────────────
 
     async def create_fabric_processing(
@@ -1399,6 +1737,38 @@ class ProductionService:
         await self.db.flush()
         return cost
 
+    async def update_lot_trim_actual(
+        self, trim_id: UUID, body: LotTrimActualUpdate, company_id: UUID,
+    ) -> LotTrim | None:
+        result = await self.db.execute(
+            select(LotTrim)
+            .join(ProductionLot, ProductionLot.id == LotTrim.production_lot_id)
+            .where(LotTrim.id == trim_id, ProductionLot.company_id == company_id)
+        )
+        trim = result.scalar_one_or_none()
+        if not trim:
+            return None
+        for field, val in body.model_dump(exclude_unset=True).items():
+            setattr(trim, field, val)
+        await self.db.flush()
+        return trim
+
+    async def update_lot_packing_actual(
+        self, packing_id: UUID, body: LotPackingActualUpdate, company_id: UUID,
+    ) -> LotPackingMaterial | None:
+        result = await self.db.execute(
+            select(LotPackingMaterial)
+            .join(ProductionLot, ProductionLot.id == LotPackingMaterial.production_lot_id)
+            .where(LotPackingMaterial.id == packing_id, ProductionLot.company_id == company_id)
+        )
+        packing = result.scalar_one_or_none()
+        if not packing:
+            return None
+        for field, val in body.model_dump(exclude_unset=True).items():
+            setattr(packing, field, val)
+        await self.db.flush()
+        return packing
+
     # ── Material Issues (MIS) ──────────────────────────────────────────────
 
     async def list_mis(
@@ -1489,6 +1859,67 @@ class ProductionService:
         )
         return result.scalar_one()
 
+    async def record_mis_item_return(
+        self, item_id: UUID, body: MISItemReturnUpdate, company_id: UUID, user_id: UUID,
+    ) -> MaterialIssueItem | None:
+        """Records Used/Returned/Wastage against an issued material
+        (spec §18/§19). A returned quantity flows back into real inventory
+        via InventoryService.receive() - the same unified-inventory
+        principle create_mis's issue() call already follows, just the
+        inverse movement - which is what makes it "recoverable/resale"
+        rather than a bare status flag.
+        """
+        result = await self.db.execute(
+            select(MaterialIssueItem)
+            .join(MaterialIssue, MaterialIssue.id == MaterialIssueItem.material_issue_id)
+            .where(MaterialIssueItem.id == item_id, MaterialIssue.company_id == company_id)
+            .options(selectinload(MaterialIssueItem.material_issue))
+        )
+        item = result.scalar_one_or_none()
+        if not item:
+            return None
+
+        used = body.used_qty if body.used_qty is not None else item.used_qty
+        returned = body.returned_qty if body.returned_qty is not None else item.returned_qty
+        wastage = body.wastage_qty if body.wastage_qty is not None else item.wastage_qty
+        total = (used or Decimal("0")) + (returned or Decimal("0")) + (wastage or Decimal("0"))
+        if total > item.issued_qty:
+            raise QuantityValidationError(
+                f"Used + Returned + Wastage ({total}) cannot exceed the issued quantity ({item.issued_qty})"
+            )
+
+        previous_returned = item.returned_qty or Decimal("0")
+        delta = (returned or Decimal("0")) - previous_returned
+        if delta > 0:
+            mis = item.material_issue
+            inv_txn = await self.inv.receive(
+                ReceiveParams(
+                    company_id=company_id,
+                    product_id=item.product_id,
+                    variant_id=item.variant_id,
+                    warehouse_id=mis.warehouse_id,
+                    quantity=delta,
+                    unit_id=item.unit_id,
+                    unit_cost=item.unit_cost,
+                    material_type="raw_material",
+                    transaction_date=datetime.now(timezone.utc).date(),
+                    reference_type="mis_return",
+                    reference_id=item.id,
+                    notes=f"Return against MIS {mis.issue_number}",
+                ),
+                user_id=user_id,
+            )
+            await self.db.flush()
+            item.return_inv_transaction_id = inv_txn.id
+
+        item.used_qty = used
+        item.returned_qty = returned
+        item.wastage_qty = wastage
+        if body.notes is not None:
+            item.return_notes = body.notes
+        await self.db.flush()
+        return item
+
     # ── Production Output (FG receive) ─────────────────────────────────────
 
     async def list_outputs(
@@ -1517,6 +1948,7 @@ class ProductionService:
             ReceiveParams(
                 company_id=company_id,
                 product_id=body.product_id,
+                variant_id=body.variant_id,
                 warehouse_id=body.warehouse_id,
                 quantity=body.quantity,
                 unit_id=body.unit_id,
@@ -1534,7 +1966,7 @@ class ProductionService:
         output = ProductionOutput(
             company_id=company_id, output_number=output_number,
             production_lot_id=body.production_lot_id, warehouse_id=body.warehouse_id,
-            output_date=body.output_date, product_id=body.product_id,
+            output_date=body.output_date, product_id=body.product_id, variant_id=body.variant_id,
             quantity=body.quantity, rejected_qty=body.rejected_qty, unit_id=body.unit_id,
             unit_cost=body.unit_cost, total_cost=total_cost,
             inv_transaction_id=inv_txn.id,

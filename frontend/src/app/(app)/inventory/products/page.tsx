@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Search, X } from "lucide-react";
+import { Pencil, Plus, Search, X, GitMerge, ChevronDown, ChevronUp } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { Can } from "@/lib/permissions";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -26,6 +27,7 @@ interface Product {
   gst_rate: string | null;
   cost_price: string | null;
   is_active: boolean;
+  merged_into_id: string | null;
 }
 
 interface MasterItem { id: string; name: string; }
@@ -50,7 +52,11 @@ const TYPE_FILTERS = [
   { label: "Raw Material", value: "raw_material" },
 ];
 
-function getColumns(onEdit: (id: string) => void): Column<Record<string, unknown>>[] { return [
+function getColumns(
+  onEdit: (id: string) => void,
+  onMerge: (id: string) => void,
+  mergeTargetNames: Record<string, string>,
+): Column<Record<string, unknown>>[] { return [
   { key: "code", header: "Code", sortable: true },
   { key: "name", header: "Name", sortable: true },
   {
@@ -83,19 +89,38 @@ function getColumns(onEdit: (id: string) => void): Column<Record<string, unknown
   {
     key: "is_active",
     header: "Status",
-    render: (row) => <StatusBadge status={row.is_active ? "active" : "inactive"} />,
+    render: (row) => {
+      const mergedIntoId = row.merged_into_id as string | null;
+      if (mergedIntoId) {
+        const targetName = mergeTargetNames[mergedIntoId];
+        return <StatusBadge status="inactive" label={targetName ? `Merged → ${targetName}` : "Merged"} />;
+      }
+      return <StatusBadge status={row.is_active ? "active" : "inactive"} />;
+    },
   },
   {
     key: "edit",
     header: "",
+    className: "w-16",
     render: (row) => (
-      <button
-        onClick={(e) => { e.stopPropagation(); onEdit(row.id as string); }}
-        className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground"
-        title="Edit product"
-      >
-        <Pencil className="h-3.5 w-3.5" />
-      </button>
+      <div className="flex items-center gap-1">
+        <Can perm="master_data.edit"><button
+          onClick={(e) => { e.stopPropagation(); onEdit(row.id as string); }}
+          className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground"
+          title="Edit product"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button></Can>
+        {!row.merged_into_id && (
+          <Can perm="master_data.merge"><button
+            onClick={(e) => { e.stopPropagation(); onMerge(row.id as string); }}
+            className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground"
+            title="Merge into another product"
+          >
+            <GitMerge className="h-3.5 w-3.5" />
+          </button></Can>
+        )}
+      </div>
     ),
   },
 ]; }
@@ -105,7 +130,7 @@ function getColumns(onEdit: (id: string) => void): Column<Record<string, unknown
 const EMPTY_FORM = {
   code: "", name: "", product_type: "finished_good" as ProductType,
   category_id: "", unit_id: "", hsn_id: "",
-  cost_price: "", mrp: "", dealer_price: "",
+  cost_price: "", mrp: "", dealer_price: "", wholesale_price: "",
   fabric_type: "", fabric_composition: "", gsm: "", construction: "",
   fit: "", season: "", gender: "", description: "",
 };
@@ -165,6 +190,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
     if (form.cost_price) payload.cost_price = Number(form.cost_price);
     if (form.mrp) payload.mrp = Number(form.mrp);
     if (form.dealer_price) payload.dealer_price = Number(form.dealer_price);
+    if (form.wholesale_price) payload.wholesale_price = Number(form.wholesale_price);
     if (form.description) payload.description = form.description;
     if (form.fabric_type) payload.fabric_type = form.fabric_type;
     if (form.fabric_composition) payload.fabric_composition = form.fabric_composition;
@@ -270,11 +296,12 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
           {/* Pricing */}
           <div>
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pricing</p>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { key: "cost_price" as const, label: "Cost Price" },
                 { key: "mrp" as const, label: "MRP" },
                 { key: "dealer_price" as const, label: "Dealer Price" },
+                { key: "wholesale_price" as const, label: "Wholesale Price" },
               ].map(({ key, label }) => (
                 <div key={key} className="space-y-1">
                   <label className="text-xs font-medium">{label}</label>
@@ -285,6 +312,9 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                 </div>
               ))}
             </div>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              Wholesale Price is the default price used when creating Sales Orders/Quotations, unless a customer-specific or list price applies.
+            </p>
           </div>
 
           {/* Fabric fields */}
@@ -378,7 +408,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
 interface ProductDetail {
   id: string; code: string; name: string; product_type: ProductType;
   category_id: string | null; unit_id: string | null; hsn_id: string | null;
-  mrp: string | null; dealer_price: string | null; cost_price: string | null;
+  mrp: string | null; dealer_price: string | null; cost_price: string | null; wholesale_price: string | null;
   description: string | null; fabric_type: string | null; fabric_composition: string | null;
   gsm: string | null; construction: string | null; fit: string | null; season: string | null;
   gender: string | null; is_active: boolean;
@@ -414,6 +444,7 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
       code: product.code, name: product.name, product_type: product.product_type,
       category_id: product.category_id ?? "", unit_id: product.unit_id ?? "", hsn_id: product.hsn_id ?? "",
       cost_price: product.cost_price ?? "", mrp: product.mrp ?? "", dealer_price: product.dealer_price ?? "",
+      wholesale_price: product.wholesale_price ?? "",
       fabric_type: product.fabric_type ?? "", fabric_composition: product.fabric_composition ?? "",
       gsm: product.gsm ?? "", construction: product.construction ?? "",
       fit: product.fit ?? "", season: product.season ?? "", gender: product.gender ?? "",
@@ -456,6 +487,7 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
       hsn_id: form.hsn_id || null,
       mrp: form.mrp ? Number(form.mrp) : null,
       dealer_price: form.dealer_price ? Number(form.dealer_price) : null,
+      wholesale_price: form.wholesale_price ? Number(form.wholesale_price) : null,
       cost_price: form.cost_price ? Number(form.cost_price) : null,
       description: form.description || null,
       fabric_type: form.fabric_type || null,
@@ -580,11 +612,12 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
           {/* Pricing */}
           <div>
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pricing</p>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { key: "cost_price" as const, label: "Cost Price" },
                 { key: "mrp" as const, label: "MRP" },
                 { key: "dealer_price" as const, label: "Dealer Price" },
+                { key: "wholesale_price" as const, label: "Wholesale Price" },
               ].map(({ key, label }) => (
                 <div key={key} className="space-y-1">
                   <label className="text-xs font-medium">{label}</label>
@@ -595,6 +628,9 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
                 </div>
               ))}
             </div>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              Wholesale Price is the default price used when creating Sales Orders/Quotations, unless a customer-specific or list price applies.
+            </p>
           </div>
 
           {/* Fabric fields */}
@@ -684,6 +720,140 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
   );
 }
 
+// ── Merge Product Modal ───────────────────────────────────────────────────────
+
+function MergeProductModal({ source, allProducts, onClose }: {
+  source: Product; allProducts: Product[]; onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [targetId, setTargetId] = useState("");
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState("");
+
+  const targetOptions = allProducts
+    .filter((p) => p.id !== source.id && p.is_active && !p.merged_into_id)
+    .map((p) => ({ value: p.id, label: p.name, meta: p.code }));
+
+  const mut = useMutation({
+    mutationFn: () => api.post(`/products/${source.id}/merge`, { target_product_id: targetId, notes: notes || null }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["product-merge-logs"] });
+      onClose();
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(typeof msg === "string" ? msg : "Merge failed.");
+    },
+  });
+
+  return (
+    <ModalPortal>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
+      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-md mx-auto">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <h2 className="font-semibold text-base">Merge Product</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-sm">
+            Merging <span className="font-semibold">{source.name}</span> ({source.code}) into another product.
+          </p>
+          <div className="rounded-xl border px-3 py-2.5 text-xs" style={{ background: "#1D0DB00D", borderColor: "#1D0DB04D", color: "#1D0DB0" }}>
+            This moves all of {source.name}&rsquo;s history (stock, orders, quotations, purchases) to the target
+            and deactivates {source.name}. This cannot be easily undone.
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Merge into *</label>
+            <SearchableSelect
+              value={targetId}
+              onChange={setTargetId}
+              placeholder="Select target product…"
+              accent={INDIGO}
+              options={targetOptions}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Notes</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+              className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+              placeholder="Why these products are being merged" />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose} className="px-4 py-1.5 rounded border border-input text-sm hover:bg-muted">Cancel</button>
+            <button
+              onClick={() => { setError(""); mut.mutate(); }}
+              disabled={!targetId || mut.isPending}
+              className="px-4 py-1.5 rounded bg-violet-500 hover:bg-violet-600 text-white text-sm font-semibold disabled:opacity-50"
+            >
+              {mut.isPending ? "Merging…" : "Merge"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    </ModalPortal>
+  );
+}
+
+// ── Merge History Panel ───────────────────────────────────────────────────────
+
+interface MergeLog {
+  id: string;
+  source_name: string;
+  source_code: string;
+  target_name: string;
+  target_code: string;
+  merged_by_name: string | null;
+  merged_at: string;
+  notes: string | null;
+}
+
+function MergeHistoryPanel() {
+  const [open, setOpen] = useState(false);
+  const { data } = useQuery({
+    queryKey: ["product-merge-logs"],
+    queryFn: async () => (await api.get("/products/merge-logs?page_size=50")).data.data as MergeLog[],
+    enabled: open,
+  });
+
+  return (
+    <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-6 py-4 text-left"
+      >
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Merge History</p>
+        {open ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+      </button>
+      {open && (
+        <div className="border-t border-border divide-y divide-border">
+          {!data || data.length === 0 ? (
+            <p className="px-6 py-6 text-sm text-muted-foreground text-center">No merges recorded yet.</p>
+          ) : (
+            data.map((log) => (
+              <div key={log.id} className="px-6 py-3 text-sm flex items-center justify-between gap-4">
+                <div>
+                  <span className="font-medium">{log.source_name}</span>
+                  <span className="text-muted-foreground"> ({log.source_code}) &rarr; </span>
+                  <span className="font-medium">{log.target_name}</span>
+                  <span className="text-muted-foreground"> ({log.target_code})</span>
+                  {log.notes && <p className="text-xs text-muted-foreground mt-0.5">{log.notes}</p>}
+                </div>
+                <div className="text-right text-xs text-muted-foreground whitespace-nowrap">
+                  <div>{log.merged_by_name ?? "—"}</div>
+                  <div>{new Date(log.merged_at).toLocaleString()}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ProductsPage() {
@@ -692,6 +862,7 @@ export default function ProductsPage() {
   const [searchInput, setSearchInput] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [mergingProductId, setMergingProductId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["products", typeFilter, search],
@@ -704,10 +875,16 @@ export default function ProductsPage() {
     },
   });
 
+  const mergeTargetNames = Object.fromEntries((data ?? []).map((p) => [p.id, p.name]));
+  const mergingProduct = (data ?? []).find((p) => p.id === mergingProductId) ?? null;
+
   return (
     <div className="p-8 space-y-8">
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} />}
       {editingProductId && <EditProductModal productId={editingProductId} onClose={() => setEditingProductId(null)} />}
+      {mergingProduct && (
+        <MergeProductModal source={mergingProduct} allProducts={data ?? []} onClose={() => setMergingProductId(null)} />
+      )}
 
       {/* Page header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -720,13 +897,13 @@ export default function ProductsPage() {
             Yarn, fabric, trim and finished goods product master.
           </p>
         </div>
-        <button
+        <Can perm="master_data.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: LAVENDER }}
         >
           <Plus className="h-4 w-4" /> Add Product
-        </button>
+        </button></Can>
       </div>
 
       {/* Filters row */}
@@ -787,7 +964,7 @@ export default function ProductsPage() {
         </div>
         <div className="p-0">
           <DataTable
-            columns={getColumns((id) => setEditingProductId(id))}
+            columns={getColumns((id) => setEditingProductId(id), (id) => setMergingProductId(id), mergeTargetNames)}
             data={(data ?? []) as unknown as Record<string, unknown>[]}
             loading={isLoading}
             emptyMessage="No products found. Click '+ Add Product' to create one."
@@ -797,6 +974,8 @@ export default function ProductsPage() {
           />
         </div>
       </div>
+
+      <MergeHistoryPanel />
     </div>
   );
 }

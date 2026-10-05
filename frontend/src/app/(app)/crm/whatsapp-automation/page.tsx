@@ -10,6 +10,7 @@ import {
   WhatsappAutomationRuleModal,
   AutomationRuleEntry,
 } from "@/components/crm/whatsapp-automation-rule-modal";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 
@@ -82,32 +83,32 @@ export default function WhatsappAutomationPage() {
     {
       key: "is_active", header: "Active",
       render: (r) => (
-        <button
+        <Can perm="crm.edit"><button
           onClick={() => toggleActiveMutation.mutate({ id: r.id, is_active: !r.is_active })}
           className={`px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors ${
             r.is_active ? "bg-blue-50 text-blue-600" : "bg-muted text-muted-foreground"
           }`}
         >
           {r.is_active ? "Active" : "Disabled"}
-        </button>
+        </button></Can>
       ),
     },
     {
       key: "id", header: "", className: "w-16",
       render: (r) => (
         <div className="flex items-center gap-1">
-          <button
+          <Can perm="crm.edit"><button
             onClick={() => { setEditing(r); setShowForm(true); }}
             className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
           >
             <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
+          </button></Can>
+          <Can perm="crm.delete"><button
             onClick={() => setConfirmDeleteId(r.id)}
             className="p-1.5 rounded-lg hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
           >
             <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          </button></Can>
         </div>
       ),
     },
@@ -140,13 +141,13 @@ export default function WhatsappAutomationPage() {
           </p>
         </div>
         {tab === "rules" && (
-          <button
+          <Can perm="crm.create"><button
             onClick={() => { setEditing(undefined); setShowForm(true); }}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
             style={{ background: INDIGO }}
           >
             <Plus className="h-4 w-4" /> New Rule
-          </button>
+          </button></Can>
         )}
       </div>
 

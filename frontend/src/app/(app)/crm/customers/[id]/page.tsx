@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -351,13 +352,13 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
           {contacts.map((c, i) => (
             <div key={i} className="rounded-xl border border-border bg-background p-4 space-y-3 relative">
               <div className="absolute top-3 right-3 flex gap-2">
-                <button type="button" onClick={() => setContacts((cs) => cs.map((x, idx) => ({ ...x, is_primary: idx === i })))}
+                <Can perm="sales.edit"><button type="button" onClick={() => setContacts((cs) => cs.map((x, idx) => ({ ...x, is_primary: idx === i })))}
                   className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 ${c.is_primary ? "text-white border-transparent" : "border-input text-muted-foreground"}`}
                   style={c.is_primary ? { background: INDIGO } : {}}>
                   <Star className="h-3 w-3" /> Primary
-                </button>
-                <button type="button" onClick={() => setContacts((cs) => cs.filter((_, idx) => idx !== i))}
-                  className="text-destructive"><Trash2 className="h-4 w-4" /></button>
+                </button></Can>
+                <Can perm="sales.edit"><button type="button" onClick={() => setContacts((cs) => cs.filter((_, idx) => idx !== i))}
+                  className="text-destructive"><Trash2 className="h-4 w-4" /></button></Can>
               </div>
               <div className="grid grid-cols-2 gap-3 pr-28">
                 <Field label="Name"><input className={inputCls} value={c.name} onChange={setContact(i, "name")} /></Field>
@@ -367,10 +368,10 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
               </div>
             </div>
           ))}
-          <button type="button" onClick={() => setContacts((cs) => [...cs, { name: "", designation: "", phone: "", email: "", is_primary: false }])}
+          <Can perm="sales.edit"><button type="button" onClick={() => setContacts((cs) => [...cs, { name: "", designation: "", phone: "", email: "", is_primary: false }])}
             className="flex items-center gap-1.5 text-sm text-primary hover:underline">
             <Plus className="h-4 w-4" /> Add Contact Person
-          </button>
+          </button></Can>
         </div>
 
         <div className="bg-card border border-border rounded-2xl p-5 space-y-4">
@@ -381,14 +382,14 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
                 onChange={(e) => setDetails((ds) => ds.map((x, idx) => idx === i ? { ...x, label: e.target.value } : x))} placeholder="Label" />
               <input className={`${inputCls} flex-1`} value={d.value}
                 onChange={(e) => setDetails((ds) => ds.map((x, idx) => idx === i ? { ...x, value: e.target.value } : x))} placeholder="Value" />
-              <button type="button" onClick={() => setDetails((ds) => ds.filter((_, idx) => idx !== i))}
-                className="text-destructive flex-shrink-0"><Trash2 className="h-4 w-4" /></button>
+              <Can perm="sales.edit"><button type="button" onClick={() => setDetails((ds) => ds.filter((_, idx) => idx !== i))}
+                className="text-destructive flex-shrink-0"><Trash2 className="h-4 w-4" /></button></Can>
             </div>
           ))}
-          <button type="button" onClick={() => setDetails((ds) => [...ds, { label: "", value: "", sort_order: ds.length }])}
+          <Can perm="sales.edit"><button type="button" onClick={() => setDetails((ds) => [...ds, { label: "", value: "", sort_order: ds.length }])}
             className="flex items-center gap-1.5 text-sm text-primary hover:underline">
             <Plus className="h-4 w-4" /> Add Row
-          </button>
+          </button></Can>
         </div>
       </div>
     ),
@@ -455,10 +456,10 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
           <Field label="Rating">
             <div className="flex gap-1 mt-1">
               {[1, 2, 3, 4, 5].map((n) => (
-                <button key={n} type="button" onClick={() => setForm((f) => ({ ...f, customer_rating: n }))}
+                <Can perm="sales.edit"><button key={n} type="button" onClick={() => setForm((f) => ({ ...f, customer_rating: n }))}
                   className={`p-1 rounded ${form.customer_rating >= n ? "text-violet-400" : "text-muted-foreground/30"}`}>
                   <Star className="h-6 w-6 fill-current" />
-                </button>
+                </button></Can>
               ))}
             </div>
           </Field>
@@ -499,11 +500,11 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
           {error && <p className="text-xs text-destructive max-w-xs text-right">{error}</p>}
           <button type="button" onClick={() => router.push("/crm/customers")}
             className="px-4 py-1.5 rounded-md border border-input text-sm hover:bg-muted">Cancel</button>
-          <button type="button" onClick={() => handleSubmit()} disabled={mut.isPending}
+          <Can perm="sales.edit"><button type="button" onClick={() => handleSubmit()} disabled={mut.isPending}
             className="px-4 py-1.5 rounded-xl text-sm font-semibold text-white disabled:opacity-60 flex items-center gap-1.5 transition-all hover:opacity-90 active:scale-95"
             style={{ background: INDIGO }}>
             {mut.isPending ? "Saving…" : <><ChevronRight className="h-4 w-4" /> Save Changes</>}
-          </button>
+          </button></Can>
         </div>
       </div>
 

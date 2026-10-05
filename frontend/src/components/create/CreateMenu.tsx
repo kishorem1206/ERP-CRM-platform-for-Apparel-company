@@ -6,6 +6,7 @@ import { NewFabricRunModal } from "./NewFabricRunModal";
 import { AddYarnModal } from "./AddYarnModal";
 import { AddFabricModal } from "./AddFabricModal";
 import { AddTrimsModal } from "./AddTrimsModal";
+import { usePermissions } from "@/lib/permissions";
 
 type ModalKey = "lot" | "fabric_run" | "yarn" | "fabric" | "trim" | null;
 
@@ -13,19 +14,22 @@ const SECTIONS = [
   {
     label: "Production",
     items: [
-      { key: "lot" as ModalKey,        icon: Layers,    label: "New Lot",         desc: "Start a production lot linked to a style" },
-      { key: "fabric_run" as ModalKey, icon: Scissors,  label: "New Fabric Run",  desc: "Track a knitting or weaving run" },
+      { key: "lot" as ModalKey,        icon: Layers,    label: "New Lot",         desc: "Start a production lot linked to a style", permission: "production.create" },
+      { key: "fabric_run" as ModalKey, icon: Scissors,  label: "New Fabric Run",  desc: "Track a knitting or weaving run", permission: "materials.create" },
     ],
   },
   {
     label: "Stock",
     items: [
-      { key: "yarn" as ModalKey,   icon: Wind,     label: "Add Yarn",    desc: "Receive a yarn lot into inventory" },
-      { key: "fabric" as ModalKey, icon: Package2, label: "Add Fabric",  desc: "Receive a fabric lot" },
-      { key: "trim" as ModalKey,   icon: Package2, label: "Add Trims",   desc: "Receive buttons, labels, or other trims" },
+      { key: "yarn" as ModalKey,   icon: Wind,     label: "Add Yarn",    desc: "Receive a yarn lot into inventory", permission: "materials.create" },
+      { key: "fabric" as ModalKey, icon: Package2, label: "Add Fabric",  desc: "Receive a fabric lot", permission: "materials.create" },
+      { key: "trim" as ModalKey,   icon: Package2, label: "Add Trims",   desc: "Receive buttons, labels, or other trims", permission: "materials.create" },
     ],
   },
 ];
+
+/** Any one of these lets the user open Quick Create at all. */
+export const QUICK_CREATE_PERMISSIONS = ["production.create", "materials.create"];
 
 interface Props {
   open: boolean;
@@ -34,6 +38,7 @@ interface Props {
 
 export function CreateMenu({ open, onClose }: Props) {
   const [active, setActive] = useState<ModalKey>(null);
+  const { can } = usePermissions();
 
   useEffect(() => {
     if (!open) return;
@@ -68,12 +73,15 @@ export function CreateMenu({ open, onClose }: Props) {
               </button>
             </div>
             <div className="p-2">
-              {SECTIONS.map((section) => (
+              {SECTIONS.map((section) => {
+                const items = section.items.filter((item) => can(item.permission));
+                if (items.length === 0) return null;
+                return (
                 <div key={section.label} className="mb-1">
                   <p className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                     {section.label}
                   </p>
-                  {section.items.map(({ key, icon: Icon, label, desc }) => (
+                  {items.map(({ key, icon: Icon, label, desc }) => (
                     <button
                       key={key}
                       onClick={() => pick(key)}
@@ -89,7 +97,8 @@ export function CreateMenu({ open, onClose }: Props) {
                     </button>
                   ))}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </>

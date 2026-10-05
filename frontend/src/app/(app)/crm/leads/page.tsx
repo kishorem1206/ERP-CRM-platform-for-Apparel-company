@@ -11,9 +11,14 @@ import api from "@/lib/api";
 import { getCurrentUserId } from "@/lib/auth";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { Can } from "@/lib/permissions";
+import { SalesPipelineJourney, JourneyStage } from "@/components/crm/sales-pipeline-journey";
+import { formatIndianCompact, formatIndianFull } from "@/lib/format";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
+const GREEN = "#10B981";
+const RED = "#EF4444";
 
 const STATUS_HEX: Record<string, string> = {
   open: "#0049A7", won: "#0F78FF", lost: "#1D0DB0",
@@ -58,6 +63,7 @@ function StageBadge({ name }: { name: string }) {
 interface PipelineStage {
   id: string;
   name: string;
+  color: string | null;
   sort_order: number;
   is_won: boolean;
   is_lost: boolean;
@@ -67,6 +73,7 @@ interface PipelineStage {
 interface Pipeline {
   id: string;
   name: string;
+  is_default: boolean;
   stages: PipelineStage[];
 }
 
@@ -90,6 +97,8 @@ interface Lead {
   follow_up_status: string;
   status: string;
   tags: string[];
+  score: number | null;
+  priority: string | null;
 }
 
 interface KanbanLead {
@@ -100,12 +109,68 @@ interface KanbanLead {
   org_name: string | null;
   assigned_to_name: string | null;
   tags: string[];
+  score: number | null;
+  priority: string | null;
+}
+
+const PRIORITY_COLORS: Record<string, string> = { high: "#EF4444", medium: "#F59E0B", low: "#64748B" };
+
+function PriorityBadge({ priority }: { priority: string | null }) {
+  if (priority !== "high" && priority !== "medium") return null;
+  const color = PRIORITY_COLORS[priority];
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase flex-shrink-0"
+      style={{ background: `${color}18`, color }}
+      title={`${priority} priority lead`}
+    >
+      {priority === "high" ? "🔥" : "⚠️"} {priority}
+    </span>
+  );
 }
 
 interface KanbanStage {
   stage_id: string;
   stage_name: string;
+  stage_color: string | null;
+  sort_order: number;
+  is_won: boolean;
+  is_lost: boolean;
+  column_value: number;
   leads: KanbanLead[];
+}
+
+interface DrillFilter {
+  kpi: string;
+  created_from: string | null;
+  created_to: string | null;
+  utc_offset_minutes: string;
+  pipeline_id: string | null;
+  assigned_to: string | null;
+  source_id: string | null;
+  stage_id: string | null;
+  stage_name: string | null;
+  priority: string | null;
+}
+
+const QUALITY_OPTIONS = [
+  { value: "", label: "All lead quality" },
+  { value: "high", label: "High quality" },
+  { value: "medium", label: "Medium quality" },
+  { value: "low", label: "Low quality" },
+  { value: "unscored", label: "Not scored" },
+];
+
+const DRILL_LABELS: Record<string, string> = {
+  new: "New leads",
+  qualified: "Qualified leads",
+  won: "Won deals",
+  open: "Open qualified opportunities",
+  aged: "Open qualified, older than 30 days",
+};
+
+function fmtDrillDate(iso: string) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 }
 
 interface ImportForm {
@@ -643,9 +708,11 @@ function BulkActionBar({
 // ── Kanban Card ───────────────────────────────────────────────────────────────
 function KanbanCard({
   lead,
+  accent,
   onDragStart,
 }: {
   lead: KanbanLead;
+  accent: string;
   onDragStart: (e: React.DragEvent, leadId: string) => void;
 }) {
   const router = useRouter();
@@ -654,23 +721,24 @@ function KanbanCard({
       draggable
       onDragStart={(e) => onDragStart(e, lead.id)}
       onClick={() => router.push(`/crm/leads/${lead.id}`)}
-      className="bg-card border border-border rounded-xl p-3 cursor-pointer hover:shadow-md hover:border-primary/30 transition-all duration-150 select-none"
+      className="rounded-xl bg-card border border-border/70 border-l-[3px] p-3 cursor-pointer shadow-sm hover:shadow-md hover:-translate-y-px transition-all duration-150 select-none"
+      style={{ borderLeftColor: accent }}
     >
-      <p className="text-sm font-medium leading-snug mb-1.5 line-clamp-2">{lead.title}</p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-[13px] font-semibold leading-snug line-clamp-2">{lead.title}</p>
+      </div>
       {lead.lead_value && lead.lead_value > 0 && (
-        <p className="text-xs font-semibold mb-1" style={{ color: INDIGO }}>
-          ₹{lead.lead_value.toLocaleString("en-IN")}
+        <p className="mt-1.5 text-sm font-bold tabular-nums" style={{ color: INDIGO }}>
+          {formatIndianFull(lead.lead_value)}
         </p>
       )}
-      {lead.person_name && (
-        <p className="text-xs text-muted-foreground truncate">{lead.person_name}</p>
+      {(lead.person_name || lead.org_name) && (
+        <p className="mt-1 text-xs text-muted-foreground truncate">{lead.person_name ?? lead.org_name}</p>
       )}
-      {lead.org_name && (
-        <p className="text-xs text-muted-foreground truncate">{lead.org_name}</p>
-      )}
-      {lead.tags && lead.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-2">
-          {lead.tags.map((tag) => {
+      {(lead.priority === "high" || lead.priority === "medium" || (lead.tags && lead.tags.length > 0)) && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          <PriorityBadge priority={lead.priority} />
+          {lead.tags?.map((tag) => {
             const c = tagColor(tag);
             return (
               <span
@@ -690,6 +758,7 @@ function KanbanCard({
 }
 
 // ── Kanban Column ─────────────────────────────────────────────────────────────
+
 function KanbanColumn({
   stage,
   onDrop,
@@ -704,34 +773,44 @@ function KanbanColumn({
   setDragOverStageId: (id: string | null) => void;
 }) {
   const isOver = dragOverStageId === stage.stage_id;
+  const accent = stage.is_won ? GREEN : stage.is_lost ? RED : stage.stage_color || INDIGO;
 
   return (
     <div
-      className="flex-shrink-0 w-72 flex flex-col"
+      className="flex-1 min-w-[150px] flex flex-col"
       onDragOver={(e) => { e.preventDefault(); setDragOverStageId(stage.stage_id); }}
       onDragLeave={() => setDragOverStageId(null)}
       onDrop={() => { onDrop(stage.stage_id); setDragOverStageId(null); }}
     >
-      <div className="flex items-center justify-between mb-3 px-1">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          {stage.stage_name}
-        </p>
-        <span
-          className="px-2 py-0.5 rounded"
-          style={{ background: `${INDIGO}14`, color: INDIGO, fontSize: 11, fontWeight: 700 }}
-        >
-          {stage.leads.length}
-        </span>
+      <div className="rounded-2xl bg-card border border-border/70 shadow-sm overflow-hidden mb-2">
+        <div className="h-1" style={{ background: accent }} />
+        <div className="px-3 pt-2.5 pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-foreground/80 truncate">
+              {stage.stage_name}
+            </p>
+            <span
+              className="min-w-[22px] text-center rounded-md px-1.5 py-0.5 text-[11px] font-bold tabular-nums"
+              style={{ background: `${accent}1f`, color: accent }}
+            >
+              {stage.leads.length}
+            </span>
+          </div>
+          <p className="mt-1 text-lg font-bold tabular-nums tracking-tight">
+            {formatIndianCompact(stage.column_value)}
+          </p>
+        </div>
       </div>
       <div
-        className={`flex-1 min-h-[200px] rounded-xl transition-all duration-150 p-2 space-y-2 ${
-          isOver
-            ? "bg-primary/5 border-2 border-dashed border-primary/40"
-            : "bg-muted/20 border-2 border-transparent"
+        className={`flex-1 min-h-[220px] rounded-2xl p-2 space-y-2 transition-all duration-150 ${
+          isOver ? "bg-primary/5 border-2 border-dashed border-primary/40" : "bg-muted/30 border-2 border-transparent"
         }`}
       >
+        {stage.leads.length === 0 && (
+          <p className="text-center text-xs text-muted-foreground py-8">No leads</p>
+        )}
         {stage.leads.map((lead) => (
-          <KanbanCard key={lead.id} lead={lead} onDragStart={onDragStart} />
+          <KanbanCard key={lead.id} lead={lead} accent={accent} onDragStart={onDragStart} />
         ))}
       </div>
     </div>
@@ -747,6 +826,10 @@ export default function LeadsPage() {
   const [search, setSearch] = useState("");
   const [assignedToFilter, setAssignedToFilter] = useState("");
   const [followUpDue, setFollowUpDue] = useState(false);
+  const [stageFilter, setStageFilter] = useState("");
+  const [selectedPipelineId, setSelectedPipelineId] = useState("");
+  const [drill, setDrill] = useState<DrillFilter | null>(null);
+  const [qualityFilter, setQualityFilter] = useState("");
   const [page, setPage] = useState(1);
   const currentUserId = getCurrentUserId();
   const [showImport, setShowImport] = useState(false);
@@ -756,27 +839,61 @@ export default function LeadsPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const kpi = q.get("kpi");
+    if (kpi) {
+      setDrill({
+        kpi,
+        created_from: q.get("created_from"),
+        created_to: q.get("created_to"),
+        utc_offset_minutes: q.get("utc_offset_minutes") ?? "0",
+        pipeline_id: q.get("pipeline_id"),
+        assigned_to: q.get("assigned_to"),
+        source_id: q.get("source_id"),
+        stage_id: q.get("stage_id"),
+        stage_name: q.get("stage_name"),
+        priority: null,
+      });
+      setQualityFilter(q.get("priority") ?? "");
+    }
+  }, []);
+
   // ── Data fetches ────────────────────────────────────────────────────────────
   const { data: leadsData, isLoading: leadsLoading } = useQuery({
-    queryKey: ["crm-leads", page, search, assignedToFilter, followUpDue],
+    queryKey: ["crm-leads", page, search, assignedToFilter, followUpDue, stageFilter, qualityFilter, drill],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page), page_size: "50" });
       if (search) params.set("search", search);
       if (assignedToFilter) params.set("assigned_to", assignedToFilter);
       if (followUpDue) params.set("follow_up_due", "true");
+      if (stageFilter) params.set("stage_id", stageFilter);
+      if (qualityFilter) params.set("priority", qualityFilter);
+      if (drill) {
+        params.set("kpi", drill.kpi);
+        if (drill.created_from && drill.created_to) {
+          params.set("created_from", drill.created_from);
+          params.set("created_to", drill.created_to);
+          params.set("utc_offset_minutes", drill.utc_offset_minutes);
+        }
+        if (drill.stage_id) params.set("stage_id", drill.stage_id);
+        if (drill.pipeline_id) params.set("pipeline_id", drill.pipeline_id);
+        if (drill.source_id) params.set("source_id", drill.source_id);
+        if (!assignedToFilter && drill.assigned_to) params.set("assigned_to", drill.assigned_to);
+      }
       const res = await api.get(`/crm/leads?${params}`);
       return res.data;
     },
     enabled: view === "list",
   });
 
-  const { data: kanbanData, isLoading: kanbanLoading } = useQuery({
-    queryKey: ["crm-leads-kanban"],
+  const { data: kanbanData, isLoading: kanbanLoading, isError: kanbanIsError, refetch: refetchKanban } = useQuery({
+    queryKey: ["crm-leads-kanban", selectedPipelineId],
     queryFn: async () => {
-      const res = await api.get("/crm/leads/kanban");
+      const params = selectedPipelineId ? `?pipeline_id=${selectedPipelineId}` : "";
+      const res = await api.get(`/crm/leads/kanban${params}`);
       return res.data;
     },
-    enabled: view === "kanban",
   });
 
   const { data: pipelinesData } = useQuery({
@@ -835,7 +952,7 @@ export default function LeadsPage() {
 
   function handleDrop(targetStageId: string) {
     if (!dragLeadId) return;
-    const stages: KanbanStage[] = kanbanData?.data?.stages ?? [];
+    const stages: KanbanStage[] = kanbanData?.data ?? [];
     const sourceStage = stages.find((s) => s.leads.some((l) => l.id === dragLeadId));
     if (!sourceStage || sourceStage.stage_id === targetStageId) return;
     const pipelines: Pipeline[] = pipelinesData?.data ?? [];
@@ -853,9 +970,23 @@ export default function LeadsPage() {
   // ── Derived data ─────────────────────────────────────────────────────────────
   const leads: Lead[] = leadsData?.data ?? [];
   const total: number = leadsData?.meta?.total ?? 0;
-  const kanbanStages: KanbanStage[] = kanbanData?.data?.stages ?? [];
+  const kanbanStages: KanbanStage[] = kanbanData?.data ?? [];
   const pipelines: Pipeline[] = pipelinesData?.data ?? [];
   const users: UserOption[] = usersData?.data ?? [];
+
+  // Same default the kanban endpoint uses when no pipeline is chosen.
+  const activePipeline =
+    pipelines.find((p) => p.id === selectedPipelineId) ?? pipelines.find((p) => p.is_default) ?? pipelines[0];
+  // Built from the same kanban payload the board renders, so the journey and the board always agree.
+  const journeyStages: JourneyStage[] = kanbanStages.map((k) => ({
+    id: k.stage_id,
+    name: k.stage_name,
+    color: k.stage_color,
+    isWon: k.is_won,
+    isLost: k.is_lost,
+    count: k.leads.length,
+    value: k.column_value,
+  }));
 
   const allStages = pipelines.flatMap((p) =>
     p.stages.map((s) => ({ value: s.id, label: s.name, meta: p.name }))
@@ -923,25 +1054,51 @@ export default function LeadsPage() {
               <Kanban className="h-4 w-4" />
             </button>
           </div>
-          <button
+          <Can perm="crm.create"><button
             onClick={() => setShowImport(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-input hover:bg-muted transition-colors"
           >
             <Upload className="h-4 w-4" /> Import
-          </button>
-          <button
+          </button></Can>
+          <Can perm="crm.create"><button
             onClick={() => router.push("/crm/leads/new")}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
             style={{ background: INDIGO }}
           >
             <Plus className="h-4 w-4" /> New Lead
-          </button>
+          </button></Can>
         </div>
       </div>
 
       {/* ── LIST VIEW ────────────────────────────────────────────────────────── */}
       {view === "list" && (
         <>
+          {drill && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
+              <p>
+                <span className="font-semibold">{DRILL_LABELS[drill.kpi] ?? drill.kpi}</span>
+                {drill.stage_name && <span className="font-semibold"> in {drill.stage_name}</span>}
+                {drill.created_from && drill.created_to && (
+                  <span className="text-muted-foreground">
+                    {" "}· created {fmtDrillDate(drill.created_from)} – {fmtDrillDate(drill.created_to)}
+                  </span>
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setDrill(null);
+                  setQualityFilter("");
+                  setPage(1);
+                  window.history.replaceState(null, "", "/crm/leads");
+                }}
+                className="text-xs font-semibold text-primary hover:underline"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-3 items-center">
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -971,6 +1128,20 @@ export default function LeadsPage() {
                   { value: "", label: "All employees" },
                   ...users.map((u) => ({ value: u.id, label: u.name, meta: u.email })),
                 ]}
+              />
+            </div>
+
+            <div className="w-44">
+              <SearchableSelect
+                value={qualityFilter}
+                onChange={(v) => {
+                  setQualityFilter(v);
+                  setPage(1);
+                  setSelectedIds(new Set());
+                }}
+                placeholder="Lead quality"
+                accent={INDIGO}
+                options={QUALITY_OPTIONS}
               />
             </div>
 
@@ -1009,11 +1180,24 @@ export default function LeadsPage() {
             </button>
           </div>
 
+          <SalesPipelineJourney
+            pipelineName={activePipeline?.name ?? ""}
+            stages={journeyStages}
+            stageFilter={stageFilter}
+            onSelect={(id) => { setStageFilter(id); setPage(1); setSelectedIds(new Set()); }}
+            isLoading={kanbanLoading}
+            isError={kanbanIsError}
+            onRetry={() => refetchKanban()}
+            pipelines={pipelines.map((p) => ({ id: p.id, name: p.name }))}
+            selectedPipelineId={activePipeline?.id ?? ""}
+            onSelectPipeline={(id) => setSelectedPipelineId(id)}
+          />
+
           <div className="bg-card border border-border rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-border">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-                  ALL LEADS
+                  {qualityFilter ? `${QUALITY_OPTIONS.find((o) => o.value === qualityFilter)?.label.replace(" quality", "").toUpperCase() ?? ""} QUALITY LEADS` : "ALL LEADS"}
                 </p>
                 <p className="text-sm font-medium mt-0.5">
                   {total} record{total !== 1 ? "s" : ""}
@@ -1104,7 +1288,10 @@ export default function LeadsPage() {
                               />
                             </td>
                             <td className="px-4 py-2.5 font-medium whitespace-nowrap">
-                              {lead.title}
+                              <div className="flex items-center gap-2">
+                                {lead.title}
+                                <PriorityBadge priority={lead.priority} />
+                              </div>
                             </td>
                             <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">
                               {lead.person_name || "—"}
@@ -1144,20 +1331,20 @@ export default function LeadsPage() {
                             </td>
                             <td className="px-4 py-2.5 whitespace-nowrap">
                               <div className="flex items-center gap-0.5">
-                                <button
+                                <Can perm="crm.edit"><button
                                   onClick={(e) => { e.stopPropagation(); router.push(`/crm/leads/${lead.id}`); }}
                                   className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground"
                                   title="Edit lead"
                                 >
                                   <Pencil className="h-3.5 w-3.5" />
-                                </button>
-                                <button
+                                </button></Can>
+                                <Can perm="crm.delete"><button
                                   onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(lead.id); }}
                                   className="p-1 rounded transition-colors hover:bg-violet-50 text-muted-foreground hover:text-violet-500"
                                   title="Delete lead"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
-                                </button>
+                                </button></Can>
                               </div>
                             </td>
                           </tr>
@@ -1204,7 +1391,7 @@ export default function LeadsPage() {
               No pipeline stages configured yet.
             </div>
           ) : (
-            <div className="flex gap-4 overflow-x-auto pb-6" style={{ minHeight: "70vh" }}>
+            <div className="flex gap-3 overflow-x-auto pb-6">
               {kanbanStages.map((stage) => (
                 <KanbanColumn
                   key={stage.stage_id}
@@ -1222,14 +1409,14 @@ export default function LeadsPage() {
 
       {/* ── Floating Bulk Action Bar ──────────────────────────────────────────── */}
       {view === "list" && someSelected && (
-        <BulkActionBar
+        <Can perm="crm.edit"><BulkActionBar
           count={selectedIds.size}
           users={users}
           allStages={allStages}
           onAction={handleBulkAction}
           onClear={() => setSelectedIds(new Set())}
           isPending={bulkMutation.isPending}
-        />
+        /></Can>
       )}
 
       {/* ── Modals ────────────────────────────────────────────────────────────── */}

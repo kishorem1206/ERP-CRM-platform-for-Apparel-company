@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
@@ -6,6 +7,8 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -187,13 +190,11 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Invoice Date *</label>
-              <input required type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={invoiceDate} onChange={(v) => setInvoiceDate(v)} required />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Due Date</label>
-              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={dueDate} onChange={(v) => setDueDate(v)} />
             </div>
           </div>
           <div>
@@ -219,6 +220,7 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function InvoicesPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
@@ -247,13 +249,13 @@ export default function InvoicesPage() {
           <h1 className="text-2xl font-bold tracking-tight">Invoices</h1>
           <p className="text-sm text-muted-foreground mt-1">GST invoices — track payments and outstanding balances.</p>
         </div>
-        <button
+        <Can perm="sales.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Invoice
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}
@@ -286,6 +288,7 @@ export default function InvoicesPage() {
             columns={columns}
             data={invoices as unknown as Record<string, unknown>[]}
             loading={isLoading}
+            onRowClick={(row) => router.push(`/sales/invoices/${row.id as string}`)}
             emptyMessage="No invoices found"
           />
         </div>

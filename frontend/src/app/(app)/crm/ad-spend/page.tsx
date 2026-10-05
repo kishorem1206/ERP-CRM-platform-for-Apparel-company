@@ -2,12 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Upload, Calendar } from "lucide-react";
+import { Plus, Pencil, Trash2, Upload } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { AdSpendFormModal, AdSpendEntry } from "@/components/crm/ad-spend-form-modal";
 import { AdSpendImportModal } from "@/components/crm/ad-spend-import-modal";
+import { DateRangeFilter } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 
@@ -32,12 +34,6 @@ interface AcquisitionRow {
 const fmt = (v: unknown) => `₹${Number(v).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
 const fmtOrDash = (v: number | null) => (v === null ? "—" : fmt(v));
 
-const PRESETS: { label: string; value: number | "ytd" }[] = [
-  { label: "30D", value: 30 },
-  { label: "90D", value: 90 },
-  { label: "YTD", value: "ytd" },
-  { label: "All", value: 3650 },
-];
 
 export default function AdSpendPage() {
   const queryClient = useQueryClient();
@@ -50,14 +46,6 @@ export default function AdSpendPage() {
   const [from, setFrom] = useState(new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10));
   const [to, setTo] = useState(today);
 
-  const applyPreset = (days: number | "ytd") => {
-    const toStr = new Date().toISOString().slice(0, 10);
-    const fromStr = days === "ytd"
-      ? `${new Date().getFullYear()}-01-01`
-      : new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
-    setFrom(fromStr);
-    setTo(toStr);
-  };
 
   const { data, isLoading } = useQuery({
     queryKey: ["crm-ad-spend"],
@@ -130,18 +118,18 @@ export default function AdSpendPage() {
       key: "id", header: "", className: "w-16",
       render: (r) => (
         <div className="flex items-center gap-1">
-          <button
+          <Can perm="crm.edit"><button
             onClick={() => { setEditing(r); setShowForm(true); }}
             className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
           >
             <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
+          </button></Can>
+          <Can perm="crm.delete"><button
             onClick={() => setConfirmDeleteId(r.id)}
             className="p-1.5 rounded-lg hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
           >
             <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          </button></Can>
         </div>
       ),
     },
@@ -158,41 +146,26 @@ export default function AdSpendPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Can perm="crm.create"><button
             onClick={() => setShowImport(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-input hover:bg-muted transition-colors"
           >
             <Upload className="h-4 w-4" /> Import CSV
-          </button>
-          <button
+          </button></Can>
+          <Can perm="crm.create"><button
             onClick={() => { setEditing(undefined); setShowForm(true); }}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
             style={{ background: INDIGO }}
           >
             <Plus className="h-4 w-4" /> Log Spend
-          </button>
+          </button></Can>
         </div>
       </div>
 
       {/* Dashboard: date range + KPI roll-up */}
       <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl">
-          {PRESETS.map((p) => (
-            <button
-              key={p.label}
-              onClick={() => applyPreset(p.value)}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 text-muted-foreground hover:text-foreground"
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 bg-card border border-border rounded-xl pl-3 pr-1 py-1">
-          <Calendar className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="text-sm bg-transparent border-none outline-none w-[124px]" />
-          <span className="text-muted-foreground/50 text-xs">to</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="text-sm bg-transparent border-none outline-none w-[124px]" />
-        </div>
+        <DateRangeFilter from={from} to={to}
+          onChange={(f, t) => { setFrom(f); setTo(t); }} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

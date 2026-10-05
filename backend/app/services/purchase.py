@@ -372,6 +372,22 @@ class PurchaseService:
                 )
                 await self.db.flush()
 
+            # Excess Delivery (§6): the portion of this GRN's accepted_qty
+            # that pushes the PO item's cumulative received_qty past its
+            # ordered_qty - computed as a delta so a second over-delivery
+            # against an already-exceeded PO item doesn't double-count.
+            excess_qty = None
+            if item_data.po_item_id:
+                po_item_result = await self.db.execute(
+                    select(PurchaseOrderItem).where(PurchaseOrderItem.id == item_data.po_item_id)
+                )
+                po_item = po_item_result.scalar_one_or_none()
+                if po_item:
+                    old_cumulative = po_item.received_qty
+                    new_cumulative = old_cumulative + item_data.accepted_qty
+                    excess_qty = max(Decimal("0"), new_cumulative - po_item.ordered_qty) - max(Decimal("0"), old_cumulative - po_item.ordered_qty)
+                    po_item.received_qty = new_cumulative
+
             entry_item = PurchaseEntryItem(
                 purchase_entry_id=entry.id,
                 po_item_id=item_data.po_item_id,
@@ -386,19 +402,11 @@ class PurchaseService:
                 quality_status=item_data.quality_status,
                 notes=item_data.notes,
                 inv_transaction_id=inv_txn.id if inv_txn else None,
+                excess_qty=excess_qty,
             )
             self.db.add(entry_item)
             total_taxable += item_total
             total_amount += item_total
-
-            # Update PO item received_qty
-            if item_data.po_item_id:
-                po_item_result = await self.db.execute(
-                    select(PurchaseOrderItem).where(PurchaseOrderItem.id == item_data.po_item_id)
-                )
-                po_item = po_item_result.scalar_one_or_none()
-                if po_item:
-                    po_item.received_qty += item_data.accepted_qty
 
         entry.taxable_amount = total_taxable
         entry.total_amount = total_amount

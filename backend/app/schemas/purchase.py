@@ -199,6 +199,7 @@ class GRNItemOut(BaseModel):
     quality_status: str
     notes: str | None
     inv_transaction_id: UUID | None
+    excess_qty: Decimal | None = None
 
     model_config = {"from_attributes": True}
 

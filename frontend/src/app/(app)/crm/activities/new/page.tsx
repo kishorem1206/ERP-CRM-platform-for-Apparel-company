@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, Phone, Users, StickyNote, CheckSquare, Mail, Clock } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
 
 const INDIGO = "#0049A7";
 const inputCls =
@@ -219,20 +220,10 @@ export default function NewActivityPage() {
 
             <div className="grid grid-cols-2 gap-4">
               <Field label="Schedule From">
-                <input
-                  className={inputCls}
-                  type="datetime-local"
-                  value={form.schedule_from}
-                  onChange={(e) => set("schedule_from", e.target.value)}
-                />
+                <DatePicker value={form.schedule_from} onChange={(v) => set("schedule_from", v)} mode="datetime" />
               </Field>
               <Field label="Schedule To">
-                <input
-                  className={inputCls}
-                  type="datetime-local"
-                  value={form.schedule_to}
-                  onChange={(e) => set("schedule_to", e.target.value)}
-                />
+                <DatePicker value={form.schedule_to} onChange={(v) => set("schedule_to", v)} mode="datetime" />
               </Field>
             </div>
           </div>

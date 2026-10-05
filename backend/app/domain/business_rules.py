@@ -81,6 +81,27 @@ class BusinessRulesEngine:
             )
         return RuleResult(True)
 
+    def validate_po_quantity(
+        self, po_quantity: Decimal, order_quantity: Decimal, tolerance_pct_allowed: Decimal,
+    ) -> RuleResult:
+        """ERP Upgrade §5: a Sales Order referencing a customer PO must fall
+        within a configurable tolerance of the PO's stated quantity. The
+        tolerance itself is caller-supplied (same shape as
+        validate_material_issue's variance_pct_allowed) - never hard-coded
+        here."""
+        if po_quantity <= 0:
+            return RuleResult(True)  # nothing to validate against
+        variance_pct = abs(order_quantity - po_quantity) / po_quantity * 100
+        if variance_pct > tolerance_pct_allowed:
+            lo = po_quantity * (1 - tolerance_pct_allowed / 100)
+            hi = po_quantity * (1 + tolerance_pct_allowed / 100)
+            return RuleResult(
+                False,
+                f"Order quantity {order_quantity} is outside the ±{tolerance_pct_allowed}% "
+                f"PO tolerance (allowed {lo:.2f}–{hi:.2f}, PO quantity {po_quantity}).",
+            )
+        return RuleResult(True)
+
     def validate_invoice_creation(self, sales_order_status: str) -> RuleResult:
         if sales_order_status == "cancelled":
             return RuleResult(False, "Cannot invoice a cancelled sales order.")
@@ -136,6 +157,26 @@ class BusinessRulesEngine:
                     "Requires variance permission.",
                 )
         return RuleResult(True)
+
+    def validate_fabric_ready(
+        self,
+        has_fabric_config: bool,
+        fabric_source: str,
+        fabric_issued_qty: Decimal,
+        completed_fabric_processing: int,
+    ) -> RuleResult:
+        """Fabric-first production (spec §33): garment work must not begin
+        without the style's fabric configuration and fabric actually
+        available to the lot."""
+        if not has_fabric_config:
+            return RuleResult(False, "Style has no fabric configured")
+        if fabric_issued_qty > 0:
+            return RuleResult(True)
+        if fabric_source == "yarn" and completed_fabric_processing > 0:
+            return RuleResult(True)
+        if fabric_source == "yarn":
+            return RuleResult(False, "No fabric issued to this lot and no completed fabric processing yet")
+        return RuleResult(False, "No fabric issued to this lot yet")
 
     def validate_production_lot_reopen(self, status: str) -> RuleResult:
         if status == "completed":

@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, X } from "lucide-react";
@@ -7,6 +8,8 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const BLUE = "#0049A7";
 
@@ -137,13 +140,11 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Order Date *</label>
-              <input required type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={orderDate} onChange={(v) => setOrderDate(v)} required />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Expected Date</label>
-              <input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={expectedDate} onChange={(v) => setExpectedDate(v)} />
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -249,6 +250,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function PurchaseOrdersPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
@@ -277,13 +279,13 @@ export default function PurchaseOrdersPage() {
           <h1 className="text-2xl font-bold tracking-tight">Purchase Orders</h1>
           <p className="text-sm text-muted-foreground mt-1">Raise and track orders to your vendors.</p>
         </div>
-        <button
+        <Can perm="purchase.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 active:scale-95"
           style={{ background: BLUE }}
         >
           <Plus className="h-4 w-4" /> New PO
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}
@@ -315,6 +317,7 @@ export default function PurchaseOrdersPage() {
           columns={columns}
           data={orders as unknown as Record<string, unknown>[]}
           loading={isLoading}
+          onRowClick={(row) => router.push(`/purchase/orders/${row.id as string}`)}
           emptyMessage="No purchase orders found"
         />
       </div>

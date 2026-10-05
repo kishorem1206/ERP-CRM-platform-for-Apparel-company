@@ -13,7 +13,29 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Handle 401 and stale-permission 403 — try refresh, then redirect to login
+// Refresh tokens rotate on use, so concurrent refreshes would revoke each other.
+// All callers share one in-flight refresh.
+let refreshing: Promise<string> | null = null;
+
+function refreshAccessToken(): Promise<string> {
+  if (!refreshing) {
+    refreshing = axios
+      .post("/api/v1/auth/refresh", {}, { withCredentials: true })
+      .then(({ data }) => {
+        const token: string = data.data?.access_token ?? data.access_token;
+        localStorage.setItem("access_token", token);
+        return token;
+      })
+      .finally(() => {
+        refreshing = null;
+      });
+  }
+  return refreshing;
+}
+
+// 401 = session ended: refresh, or send to login.
+// "Permission required" 403 = the user lacks access: refresh once in case the
+// token is stale, but never log them out. The page shows the error instead.
 api.interceptors.response.use(
   (res) => res,
   async (error: AxiosError) => {
@@ -27,17 +49,17 @@ api.interceptors.response.use(
     const isStalePermission =
       status === 403 && errMsg.startsWith("Permission required:");
 
-    if ((status === 401 || isStalePermission) && !original._retry) {
+    if ((status === 401 || isStalePermission) && original && !original._retry) {
       original._retry = true;
       try {
-        const { data } = await axios.post("/api/v1/auth/refresh", {}, { withCredentials: true });
-        const token = data.data?.access_token ?? data.access_token;
-        localStorage.setItem("access_token", token);
+        const token = await refreshAccessToken();
         original.headers!.Authorization = `Bearer ${token}`;
         return api(original);
       } catch {
-        localStorage.removeItem("access_token");
-        window.location.href = "/login";
+        if (status === 401) {
+          localStorage.removeItem("access_token");
+          window.location.href = "/login";
+        }
       }
     }
     return Promise.reject(error);

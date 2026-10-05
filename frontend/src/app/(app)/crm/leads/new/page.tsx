@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, Flame, Thermometer, Snowflake } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
 
 const INDIGO = "#0049A7";
 const inputCls =
@@ -216,12 +217,7 @@ export default function NewLeadPage() {
                 />
               </Field>
               <Field label="Expected Close Date">
-                <input
-                  className={inputCls}
-                  type="date"
-                  value={form.expected_close_date}
-                  onChange={(e) => set("expected_close_date", e.target.value)}
-                />
+                <DatePicker value={form.expected_close_date} onChange={(v) => set("expected_close_date", v)} />
               </Field>
             </div>
 

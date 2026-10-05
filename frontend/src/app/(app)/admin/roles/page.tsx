@@ -6,6 +6,7 @@ import { Plus, ChevronRight, Trash2, X } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
+import { Can } from "@/lib/permissions";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -96,13 +97,13 @@ export default function RolesPage() {
             Edit permissions <ChevronRight className="h-3 w-3" />
           </Link>
           {!r.is_system && (
-            <button
+            <Can perm="admin.roles"><button
               onClick={() => deleteMut.mutate(r.id)}
               className="p-1 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-950/30 text-violet-500 transition-colors"
               title="Delete"
             >
               <Trash2 className="h-3.5 w-3.5" />
-            </button>
+            </button></Can>
           )}
         </div>
       ),
@@ -122,13 +123,13 @@ export default function RolesPage() {
             Define what each role can access.
           </p>
         </div>
-        <button
+        <Can perm="admin.roles"><button
           onClick={() => { setShowCreate(true); setError(""); }}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: LAVENDER }}
         >
           <Plus className="h-4 w-4" /> New Role
-        </button>
+        </button></Can>
       </div>
 
       {/* Table card */}

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -255,7 +256,7 @@ function LeadLinkPopover({
             <p className="text-sm text-muted-foreground text-center py-6">No leads found</p>
           ) : (
             leads.map((lead) => (
-              <button
+              <Can perm="crm.edit"><button
                 key={lead.id}
                 onClick={() => linkMutation.mutate(lead.id)}
                 disabled={linkMutation.isPending}
@@ -263,7 +264,7 @@ function LeadLinkPopover({
               >
                 <span className="truncate font-medium">{lead.title}</span>
                 <span className="text-[11px] text-muted-foreground shrink-0">{lead.status}</span>
-              </button>
+              </button></Can>
             ))
           )}
         </div>
@@ -627,14 +628,14 @@ export default function WhatsAppPage() {
               <div className="px-5 py-3 border-t border-border shrink-0">
                 <div className="flex items-end gap-2">
                   {/* Templates button */}
-                  <button
+                  <Can perm="crm.create"><button
                     onClick={() => setShowTemplates(true)}
                     title="Message Templates"
                     className="shrink-0 p-2 rounded-xl border border-input text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                     style={{ marginBottom: "1px" }}
                   >
                     <FileText className="h-4 w-4" />
-                  </button>
+                  </button></Can>
 
                   {/* Textarea */}
                   <textarea
@@ -649,7 +650,7 @@ export default function WhatsAppPage() {
                   />
 
                   {/* Send button */}
-                  <button
+                  <Can perm="crm.create"><button
                     onClick={handleSend}
                     disabled={!messageBody.trim() || sendMutation.isPending}
                     className="shrink-0 p-2.5 rounded-xl text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-40"
@@ -660,7 +661,7 @@ export default function WhatsAppPage() {
                     ) : (
                       <Send className="h-4 w-4" />
                     )}
-                  </button>
+                  </button></Can>
                 </div>
               </div>
             </>
@@ -732,13 +733,13 @@ export default function WhatsAppPage() {
                 </div>
               ) : (
                 /* Link to Lead button */
-                <button
+                <Can perm="crm.edit"><button
                   onClick={() => setShowLeadLink(true)}
                   className="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground hover:text-foreground hover:border-primary transition-colors"
                 >
                   <Plus className="h-4 w-4" />
                   Link to Lead
-                </button>
+                </button></Can>
               )}
             </div>
           </div>

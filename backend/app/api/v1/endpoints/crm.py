@@ -15,11 +15,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.deps import AuthUser, DBSession
+from app.models.company import Company
 from app.models.crm import (
     CrmActivity, CrmEmail, CrmEmailTemplate, CrmFollowUpType, CrmLead, CrmLeadAssignmentHistory, CrmLeadImport,
     CrmLeadSource, CrmLeadStageHistory, CrmLeadTag, CrmLeadType,
     CrmNote, CrmOrganization, CrmPerson, CrmPipeline, CrmPipelineStage, CrmProduct,
     CrmAdSpend, CrmLeadProduct, CrmQuote, CrmQuoteItem, CrmSmtpConfig, CrmTag, CrmTask,
+    CrmLeadScoringRule, CrmLeadServiceArea,
+    CrmLeadAssignmentRule, CrmLeadAssignmentPool,
+)
+from app.services.lead_intelligence import (
+    find_duplicate, find_repeat_contact, score_lead,
+)
+from app.services.lead_assignment import auto_assign_lead, response_target_for_priority
+from app.services.crm_kpi import (
+    OPEN_AGE_DAYS, CohortFilter, OpenPipelineFilter, compare, created_in_period, load_cohort,
+    lead_quality_breakdown, load_open_pipeline, previous_period, qualified_clause, summarize,
 )
 from app.models.master import Product, ProductVariant
 from app.models.sales import Customer
@@ -40,10 +51,17 @@ from app.schemas.crm import (
     OrganizationCreate, OrganizationListOut, OrganizationOut, OrganizationUpdate,
     Person360Out, LeadForPerson360,
     PersonCreate, PersonListOut, PersonOut, PersonUpdate,
-    PipelineOut,
+    PipelineOut, QualificationStageUpdate,
     ProductCreate, ProductOut, ProductUpdate,
     QuoteCreate, QuoteItemOut, QuoteListOut, QuoteOut, QuoteStatusUpdate, QuoteUpdate,
     SmtpConfigCreate, SmtpConfigOut,
+    ScoringRuleOut, ScoringRuleUpdate, ScoringThresholdsOut, ScoringThresholdsUpdate,
+    ServiceAreaCreate, ServiceAreaOut, ServiceAreaUpdate,
+    DuplicateCheckOut, RepeatContactOut,
+    AssignmentRuleCreate, AssignmentRuleUpdate, AssignmentRuleOut,
+    AssignmentPoolMemberIn, AssignmentPoolMemberOut,
+    ResponseTargetsOut, ResponseTargetsUpdate,
+    PredictiveScoringReadinessOut,
     StageHistoryOut,
     TagCreate, TagOut,
     AdSpendCreate, AdSpendOut, AdSpendUpdate,
@@ -100,6 +118,13 @@ def _person_email(person) -> str | None:
     return emails[0]["value"] if emails else None
 
 
+def _time_to_minutes(a: datetime | None, b: datetime | None) -> int | None:
+    """Minutes from a to b, or None if either is missing or b precedes a."""
+    if not a or not b or b < a:
+        return None
+    return int((b - a).total_seconds() // 60)
+
+
 def _lead_out(lead: CrmLead, name_map: dict[UUID, str] | None = None) -> LeadOut:
     name_map = name_map or {}
     return LeadOut(
@@ -134,6 +159,13 @@ def _lead_out(lead: CrmLead, name_map: dict[UUID, str] | None = None) -> LeadOut
         next_action=lead.next_action,
         created_by=lead.created_by, created_at=lead.created_at, updated_at=lead.updated_at,
         tags=[TagOut.model_validate(t) for t in (lead.tags or [])],
+        score=lead.score, priority=lead.priority, score_version=lead.score_version,
+        score_breakdown=lead.score_breakdown, scored_at=lead.scored_at,
+        duplicate_status=lead.duplicate_status, is_repeat_contact=lead.is_repeat_contact,
+        first_contacted_at=lead.first_contacted_at, response_target_at=lead.response_target_at,
+        time_to_assignment_minutes=_time_to_minutes(lead.created_at, lead.assigned_date),
+        time_to_first_response_minutes=_time_to_minutes(lead.created_at, lead.first_contacted_at),
+        sales_order_id=lead.sales_order_id,
     )
 
 
@@ -158,6 +190,10 @@ def _lead_list_out(lead: CrmLead, name_map: dict[UUID, str] | None = None) -> Le
         follow_up_type=lead.follow_up_type,
         follow_up_status=lead.follow_up_status,
         created_at=lead.created_at,
+        score=lead.score, priority=lead.priority,
+        duplicate_status=lead.duplicate_status, is_repeat_contact=lead.is_repeat_contact,
+        first_contacted_at=lead.first_contacted_at, response_target_at=lead.response_target_at,
+        sales_order_id=lead.sales_order_id,
     )
 
 
@@ -214,7 +250,7 @@ async def _sync_lead_followup_fields(db, lead_id: UUID) -> None:
 
 async def _assign_lead(
     db, lead: CrmLead, new_assignee_id: UUID | None, by_user_id: UUID, by_user_name: str | None,
-    note: str | None = None,
+    note: str | None = None, task_due_at: datetime | None = None,
 ) -> None:
     """Shared assignment logic for the dedicated assign endpoint and bulk-action
     assign — stamps assigned_by/assigned_date/assignment_status, writes an
@@ -263,8 +299,10 @@ async def _assign_lead(
             title=f"Make first contact: {lead.title}",
             lead_id=lead.id,
             assigned_to=new_assignee_id,
-            due_at=_now() + timedelta(hours=24),
-            priority="medium",
+            # Priority-aware when a response target is known (auto-assignment,
+            # spec Step 3) - otherwise the same 24h default as before.
+            due_at=task_due_at or (_now() + timedelta(hours=24)),
+            priority="high" if lead.priority == "high" else "medium",
             source="lead_assignment",
             created_by=by_user_id,
             created_at=_now(), updated_at=_now(),
@@ -611,6 +649,28 @@ async def list_pipelines(db: DBSession, user: AuthUser):
     return ApiResponse(success=True, data=[PipelineOut.model_validate(p) for p in result.scalars().all()])
 
 
+@router.put("/pipelines/{pipeline_id}/qualification-stage")
+async def set_qualification_stage(pipeline_id: UUID, body: QualificationStageUpdate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    result = await db.execute(
+        select(CrmPipeline)
+        .options(selectinload(CrmPipeline.stages))
+        .where(CrmPipeline.id == pipeline_id, CrmPipeline.company_id == user.company_id)
+    )
+    pipeline = result.scalar_one_or_none()
+    if pipeline is None:
+        raise HTTPException(404, "Pipeline not found")
+    if body.stage_id is not None and not any(s.id == body.stage_id for s in pipeline.stages):
+        raise HTTPException(400, "Stage does not belong to this pipeline")
+    pipeline.qualified_stage_id = body.stage_id
+    pipeline.updated_at = _now()
+    await db.commit()
+    refreshed = await db.execute(
+        select(CrmPipeline).options(selectinload(CrmPipeline.stages)).where(CrmPipeline.id == pipeline_id)
+    )
+    return ApiResponse(success=True, data=PipelineOut.model_validate(refreshed.scalar_one()))
+
+
 # ── Lead Sources / Types ──────────────────────────────────────────────────────
 
 @router.get("/lead-sources")
@@ -733,6 +793,22 @@ async def delete_tag(tag_id: UUID, db: DBSession, user: AuthUser):
 
 # ── Leads ─────────────────────────────────────────────────────────────────────
 
+@router.get("/leads/check-duplicate")
+async def check_lead_duplicate(
+    db: DBSession, user: AuthUser,
+    phone: str | None = None, email: str | None = None, organization_name: str | None = None,
+):
+    """Pre-save duplicate check (spec Step 12) - lets the New Lead form warn
+    before a lead is created, not just after."""
+    user.require("crm.view")
+    match = await find_duplicate(db, user.company_id, phone=phone, email=email, organization_name=organization_name)
+    return ApiResponse(success=True, data=DuplicateCheckOut(
+        status=match.status, matched_person_id=match.matched_person_id,
+        matched_organization_id=match.matched_organization_id,
+        matched_customer_id=match.matched_customer_id, reason=match.reason,
+    ))
+
+
 @router.get("/leads/kanban")
 async def leads_kanban(db: DBSession, user: AuthUser, pipeline_id: UUID | None = None):
     user.require("crm.view")
@@ -744,7 +820,9 @@ async def leads_kanban(db: DBSession, user: AuthUser, pipeline_id: UUID | None =
     if pipeline_id:
         pipeline_q = pipeline_q.where(CrmPipeline.id == pipeline_id)
     else:
-        pipeline_q = pipeline_q.where(CrmPipeline.is_default.is_(True))
+        pipeline_q = pipeline_q.where(
+            CrmPipeline.is_default.is_(True), CrmPipeline.stages.any()
+        ).order_by(CrmPipeline.created_at, CrmPipeline.id)
     pipeline_result = await db.execute(pipeline_q.limit(1))
     pipeline = pipeline_result.scalar_one_or_none()
     if not pipeline:
@@ -786,10 +864,37 @@ async def list_leads(
     db: DBSession, user: AuthUser,
     stage_id: UUID | None = None, status: str | None = None,
     assigned_to: UUID | None = None, follow_up_due: bool = False,
+    priority: str | None = None, search: str | None = None,
+    pipeline_id: UUID | None = None, source_id: UUID | None = None,
+    kpi: str | None = None, created_from: date | None = None, created_to: date | None = None,
+    utc_offset_minutes: int = 0,
     page: int = 1, page_size: int = 50,
 ):
     user.require("crm.view")
     filters = [CrmLead.company_id == user.company_id]
+    if created_from and created_to:
+        filters.extend(created_in_period(user.company_id, created_from, created_to, utc_offset_minutes))
+    if pipeline_id:
+        filters.append(CrmLead.pipeline_id == pipeline_id)
+    if source_id:
+        filters.append(CrmLead.source_id == source_id)
+    # Same definitions as GET /crm/reports/sales-kpis (services/crm_kpi.py).
+    if kpi == "qualified":
+        filters.append(qualified_clause())
+    elif kpi == "won":
+        filters.append(CrmLead.status == "won")
+    elif kpi in ("open", "aged"):
+        filters.extend([
+            CrmLead.status == "open",
+            CrmLead.stage_id.in_(select(CrmPipelineStage.id).where(
+                CrmPipelineStage.is_won.is_(False), CrmPipelineStage.is_lost.is_(False)
+            )),
+            qualified_clause(),
+        ])
+        if kpi == "aged":
+            filters.append(CrmLead.created_at < _now() - timedelta(days=OPEN_AGE_DAYS))
+    elif kpi not in (None, "", "new"):
+        raise HTTPException(400, "kpi must be new, qualified, won, open or aged")
     if stage_id:
         filters.append(CrmLead.stage_id == stage_id)
     if status:
@@ -799,6 +904,16 @@ async def list_leads(
     if follow_up_due:
         filters.append(CrmLead.follow_up_status == "scheduled")
         filters.append(CrmLead.next_follow_up_at <= _now())
+    if priority == "unscored":
+        filters.append(CrmLead.priority.is_(None))
+    elif priority:
+        filters.append(CrmLead.priority == priority)
+    if search:
+        # The frontend has sent this param since the search box was built;
+        # the backend never read it, so the box silently filtered nothing.
+        # Found during the Lead Intelligence audit, fixed here alongside
+        # the new priority filter it sits next to.
+        filters.append(CrmLead.title.ilike(f"%{search}%"))
 
     total_result = await db.execute(select(func.count(CrmLead.id)).where(*filters))
     total = total_result.scalar() or 0
@@ -835,6 +950,24 @@ async def create_lead(body: LeadCreate, db: DBSession, user: AuthUser):
         created_by=user.user_id, created_at=now, updated_at=now,
     )
     db.add(lead)
+    await db.flush()
+    await score_lead(db, lead)
+
+    # Smart assignment (Phase 2, spec Steps 1-3): only when nobody picked an
+    # assignee by hand. Auto-assignment reuses _assign_lead so notification,
+    # the first-contact task, and the WhatsApp trigger all happen exactly
+    # the same way a manual assignment would.
+    if not body.assigned_to:
+        company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+        candidate = await auto_assign_lead(db, lead)
+        if candidate:
+            target_at = response_target_for_priority(lead.priority, company) if company else None
+            lead.response_target_at = target_at
+            await _assign_lead(
+                db, lead, candidate, by_user_id=user.user_id, by_user_name=None,
+                note="Auto-assigned", task_due_at=target_at,
+            )
+
     await db.commit()
     lead = await _get_lead(lead.id, user.company_id, db)
     name_map = await _resolve_user_names(db, user.company_id, {lead.assigned_to})
@@ -859,6 +992,35 @@ async def update_lead(lead_id: UUID, body: LeadUpdate, db: DBSession, user: Auth
     await db.commit()
     lead = await _get_lead(lead_id, user.company_id, db)
     return ApiResponse(success=True, data=_lead_out(lead))
+
+
+@router.post("/leads/{lead_id}/rescore")
+async def rescore_lead(lead_id: UUID, db: DBSession, user: AuthUser):
+    """Manually recompute a lead's score - e.g. after editing its
+    description or linking a person/organization. Scoring does not re-run
+    automatically on every edit, so this is the explicit trigger."""
+    user.require("crm.edit")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    await score_lead(db, lead)
+    await db.commit()
+    lead = await _get_lead(lead_id, user.company_id, db)
+    return ApiResponse(success=True, data=_lead_out(lead), message="Lead re-scored")
+
+
+@router.get("/leads/{lead_id}/repeat-contact")
+async def get_lead_repeat_contact(lead_id: UUID, db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    lead = await _get_lead(lead_id, user.company_id, db)
+    repeat = await find_repeat_contact(
+        db, user.company_id, exclude_lead_id=lead.id, person_id=lead.person_id, organization_id=lead.organization_id,
+    )
+    if not repeat:
+        return ApiResponse(success=True, data=None)
+    return ApiResponse(success=True, data=RepeatContactOut(
+        previous_lead_id=repeat.previous_lead_id, previous_date=repeat.previous_date,
+        previous_source=repeat.previous_source, previous_status=repeat.previous_status,
+        previous_stage_name=repeat.previous_stage_name, previous_assigned_to_name=repeat.previous_assigned_to_name,
+    ))
 
 
 @router.delete("/leads/{lead_id}")
@@ -1190,6 +1352,11 @@ async def mark_activity_done(activity_id: UUID, db: DBSession, user: AuthUser, b
                 lead.contact_outcome = body.outcome
             if body.next_action is not None:
                 lead.next_action = body.next_action
+            if lead.first_contacted_at is None:
+                # Set once, never overwritten — distinct from last_contacted_at
+                # below, which updates on every contact. Response-time
+                # reporting needs the FIRST contact specifically.
+                lead.first_contacted_at = now
             lead.last_contacted_at = now
             lead.updated_at = now
 
@@ -1858,6 +2025,75 @@ async def duplicate_quote(quote_id: UUID, db: DBSession, user: AuthUser):
 
 # ── Dashboard ──────────────────────────────────────────────────────────────────
 
+@router.get("/reports/sales-kpis")
+async def sales_kpis(
+    db: DBSession, user: AuthUser,
+    date_from: date, date_to: date,
+    utc_offset_minutes: int = 0,
+    pipeline_id: UUID | None = None, assigned_to: UUID | None = None, source_id: UUID | None = None,
+):
+    user.require("crm.view")
+    if date_to < date_from:
+        raise HTTPException(400, "date_to must be on or after date_from")
+    prev_from, prev_to = previous_period(date_from, date_to)
+    shared = dict(
+        utc_offset_minutes=utc_offset_minutes, pipeline_id=pipeline_id,
+        assigned_to=assigned_to, source_id=source_id,
+    )
+    current_facts, unconfigured = await load_cohort(
+        db, user.company_id, CohortFilter(date_from=date_from, date_to=date_to, **shared)
+    )
+    previous_facts, _ = await load_cohort(
+        db, user.company_id, CohortFilter(date_from=prev_from, date_to=prev_to, **shared)
+    )
+    current = summarize(current_facts)
+    previous = summarize(previous_facts)
+    return ApiResponse(success=True, data={
+        "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
+        "previous_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
+        "current": current.to_dict(),
+        "previous": previous.to_dict(),
+        "comparisons": compare(current, previous),
+        "leads_in_pipelines_without_qualification_stage": unconfigured,
+    })
+
+
+@router.get("/reports/lead-quality")
+async def lead_quality(
+    db: DBSession, user: AuthUser,
+    date_from: date, date_to: date,
+    utc_offset_minutes: int = 0,
+    pipeline_id: UUID | None = None, assigned_to: UUID | None = None, source_id: UUID | None = None,
+):
+    user.require("crm.view")
+    if date_to < date_from:
+        raise HTTPException(400, "date_to must be on or after date_from")
+    tiers = await lead_quality_breakdown(db, user.company_id, CohortFilter(
+        date_from=date_from, date_to=date_to, utc_offset_minutes=utc_offset_minutes,
+        pipeline_id=pipeline_id, assigned_to=assigned_to, source_id=source_id,
+    ))
+    return ApiResponse(success=True, data={
+        "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
+        "tiers": tiers,
+        "total_leads": sum(t["leads"] for t in tiers),
+    })
+
+
+@router.get("/reports/open-pipeline")
+async def open_pipeline(
+    db: DBSession, user: AuthUser,
+    utc_offset_minutes: int = 0,
+    pipeline_id: UUID | None = None, assigned_to: UUID | None = None, source_id: UUID | None = None,
+):
+    user.require("crm.view")
+    data = await load_open_pipeline(
+        db, user.company_id,
+        OpenPipelineFilter(pipeline_id=pipeline_id, assigned_to=assigned_to, source_id=source_id),
+        _now(), utc_offset_minutes,
+    )
+    return ApiResponse(success=True, data=data)
+
+
 @router.get("/dashboard")
 async def crm_dashboard(db: DBSession, user: AuthUser):
     user.require("crm.view")
@@ -2145,6 +2381,27 @@ async def _get_smtp_config(company_id: UUID, db) -> CrmSmtpConfig | None:
     return result.scalar_one_or_none()
 
 
+def _smtp_transport_kwargs(cfg: CrmSmtpConfig, password: str) -> dict:
+    # Users often paste a URL ("https://smtp.gmail.com") into the host field;
+    # aiosmtplib needs a bare hostname.
+    host = cfg.host.strip()
+    for prefix in ("https://", "http://", "smtps://", "smtp://"):
+        if host.lower().startswith(prefix):
+            host = host[len(prefix):]
+    host = host.split("/")[0].strip()
+    # Port 465 is implicit TLS (use_tls); any other port uses STARTTLS (start_tls)
+    # when encryption is enabled, e.g. Gmail on 587.
+    implicit_tls = cfg.port == 465
+    return {
+        "hostname": host,
+        "port": cfg.port,
+        "username": cfg.username,
+        "password": password,
+        "use_tls": implicit_tls and cfg.use_tls,
+        "start_tls": (not implicit_tls) and cfg.use_tls,
+    }
+
+
 @router.get("/email/smtp-config")
 async def get_smtp_config(db: DBSession, user: AuthUser):
     user.require("crm.view")
@@ -2206,14 +2463,7 @@ async def test_smtp_config(db: DBSession, user: AuthUser):
         msg["From"] = f"{cfg.from_name} <{cfg.from_email}>" if cfg.from_name else cfg.from_email
         msg["To"] = cfg.from_email
 
-        await aiosmtplib.send(
-            msg,
-            hostname=cfg.host,
-            port=cfg.port,
-            username=cfg.username,
-            password=password,
-            use_tls=cfg.use_tls,
-        )
+        await aiosmtplib.send(msg, **_smtp_transport_kwargs(cfg, password))
         cfg.is_verified = True
         cfg.updated_at = _now()
         await db.commit()
@@ -2313,12 +2563,8 @@ async def send_email(body: EmailCreate, db: DBSession, user: AuthUser):
 
         await aiosmtplib.send(
             msg,
-            hostname=cfg.host,
-            port=cfg.port,
-            username=cfg.username,
-            password=password,
-            use_tls=cfg.use_tls,
             recipients=all_recipients,
+            **_smtp_transport_kwargs(cfg, password),
         )
 
         email_record.status = "sent"
@@ -2823,3 +3069,361 @@ async def report_monthly_trend(
         }
         for row in result
     ])
+
+
+# ── Lead Intelligence: scoring configuration (admin) ───────────────────────────
+
+@router.get("/scoring-rules")
+async def list_scoring_rules(db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    rules = (await db.execute(
+        select(CrmLeadScoringRule).where(CrmLeadScoringRule.company_id == user.company_id)
+        .order_by(CrmLeadScoringRule.category, CrmLeadScoringRule.code)
+    )).scalars().all()
+    return ApiResponse(success=True, data=[ScoringRuleOut.model_validate(r) for r in rules])
+
+
+@router.patch("/scoring-rules/{rule_id}")
+async def update_scoring_rule(rule_id: UUID, body: ScoringRuleUpdate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    rule = (await db.execute(
+        select(CrmLeadScoringRule).where(CrmLeadScoringRule.id == rule_id, CrmLeadScoringRule.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not rule:
+        raise HTTPException(404, "Scoring rule not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(rule, field, val)
+    rule.updated_at = _now()
+    await db.commit()
+    return ApiResponse(success=True, data=ScoringRuleOut.model_validate(rule), message="Scoring rule updated")
+
+
+@router.get("/scoring-thresholds")
+async def get_scoring_thresholds(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+    if not company:
+        raise HTTPException(404, "Company not found")
+    return ApiResponse(success=True, data=ScoringThresholdsOut(
+        lead_score_high_threshold=company.lead_score_high_threshold,
+        lead_score_medium_threshold=company.lead_score_medium_threshold,
+    ))
+
+
+@router.put("/scoring-thresholds")
+async def update_scoring_thresholds(body: ScoringThresholdsUpdate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+    if not company:
+        raise HTTPException(404, "Company not found")
+    data = body.model_dump(exclude_none=True)
+    high = data.get("lead_score_high_threshold", company.lead_score_high_threshold)
+    medium = data.get("lead_score_medium_threshold", company.lead_score_medium_threshold)
+    if medium >= high:
+        raise HTTPException(422, "Medium threshold must be lower than the high threshold")
+    for field, val in data.items():
+        setattr(company, field, val)
+    await db.commit()
+    return ApiResponse(success=True, data=ScoringThresholdsOut(
+        lead_score_high_threshold=company.lead_score_high_threshold,
+        lead_score_medium_threshold=company.lead_score_medium_threshold,
+    ), message="Thresholds updated")
+
+
+@router.get("/service-areas")
+async def list_service_areas(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    areas = (await db.execute(
+        select(CrmLeadServiceArea).where(CrmLeadServiceArea.company_id == user.company_id)
+        .order_by(CrmLeadServiceArea.tier, CrmLeadServiceArea.location_name)
+    )).scalars().all()
+    return ApiResponse(success=True, data=[ServiceAreaOut.model_validate(a) for a in areas])
+
+
+@router.post("/service-areas", status_code=201)
+async def create_service_area(body: ServiceAreaCreate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    if body.tier not in ("preferred", "secondary", "non_serviceable"):
+        raise HTTPException(422, "tier must be one of: preferred, secondary, non_serviceable")
+    area = CrmLeadServiceArea(
+        company_id=user.company_id, location_name=body.location_name, tier=body.tier, created_at=_now(),
+    )
+    db.add(area)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "This location is already configured") from None
+    return ApiResponse(success=True, data=ServiceAreaOut.model_validate(area), message="Service area added")
+
+
+@router.patch("/service-areas/{area_id}")
+async def update_service_area(area_id: UUID, body: ServiceAreaUpdate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    area = (await db.execute(
+        select(CrmLeadServiceArea).where(CrmLeadServiceArea.id == area_id, CrmLeadServiceArea.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not area:
+        raise HTTPException(404, "Service area not found")
+    data = body.model_dump(exclude_unset=True)
+    if "tier" in data and data["tier"] not in ("preferred", "secondary", "non_serviceable"):
+        raise HTTPException(422, "tier must be one of: preferred, secondary, non_serviceable")
+    for field, val in data.items():
+        setattr(area, field, val)
+    await db.commit()
+    return ApiResponse(success=True, data=ServiceAreaOut.model_validate(area), message="Service area updated")
+
+
+@router.delete("/service-areas/{area_id}")
+async def delete_service_area(area_id: UUID, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    area = (await db.execute(
+        select(CrmLeadServiceArea).where(CrmLeadServiceArea.id == area_id, CrmLeadServiceArea.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not area:
+        raise HTTPException(404, "Service area not found")
+    await db.delete(area)
+    await db.commit()
+    return ApiResponse(success=True, message="Service area deleted")
+
+
+# ── Lead Assignment configuration (admin) ───────────────────────────────────────
+
+@router.get("/assignment-rules")
+async def list_assignment_rules(db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    rules = (await db.execute(
+        select(CrmLeadAssignmentRule).where(CrmLeadAssignmentRule.company_id == user.company_id)
+        .order_by(CrmLeadAssignmentRule.sort_order)
+    )).scalars().all()
+    name_map = await _resolve_user_names(db, user.company_id, {r.assign_to for r in rules})
+    return ApiResponse(success=True, data=[
+        AssignmentRuleOut(
+            id=r.id, name=r.name, sort_order=r.sort_order, is_active=r.is_active,
+            source_id=r.source_id, min_score=r.min_score, location_tier=r.location_tier,
+            assign_to=r.assign_to, assign_to_name=name_map.get(r.assign_to),
+        ) for r in rules
+    ])
+
+
+@router.post("/assignment-rules", status_code=201)
+async def create_assignment_rule(body: AssignmentRuleCreate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    rule = CrmLeadAssignmentRule(
+        company_id=user.company_id, name=body.name, sort_order=body.sort_order, is_active=body.is_active,
+        source_id=body.source_id, min_score=body.min_score, location_tier=body.location_tier,
+        assign_to=body.assign_to, created_at=_now(), updated_at=_now(),
+    )
+    db.add(rule)
+    await db.commit()
+    return ApiResponse(success=True, data=AssignmentRuleOut.model_validate(rule), message="Assignment rule created")
+
+
+@router.patch("/assignment-rules/{rule_id}")
+async def update_assignment_rule(rule_id: UUID, body: AssignmentRuleUpdate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    rule = (await db.execute(
+        select(CrmLeadAssignmentRule).where(CrmLeadAssignmentRule.id == rule_id, CrmLeadAssignmentRule.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not rule:
+        raise HTTPException(404, "Assignment rule not found")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(rule, field, val)
+    rule.updated_at = _now()
+    await db.commit()
+    return ApiResponse(success=True, data=AssignmentRuleOut.model_validate(rule), message="Assignment rule updated")
+
+
+@router.delete("/assignment-rules/{rule_id}")
+async def delete_assignment_rule(rule_id: UUID, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    rule = (await db.execute(
+        select(CrmLeadAssignmentRule).where(CrmLeadAssignmentRule.id == rule_id, CrmLeadAssignmentRule.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not rule:
+        raise HTTPException(404, "Assignment rule not found")
+    await db.delete(rule)
+    await db.commit()
+    return ApiResponse(success=True, message="Assignment rule deleted")
+
+
+@router.get("/assignment-pool")
+async def list_assignment_pool(db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    members = (await db.execute(
+        select(CrmLeadAssignmentPool).where(CrmLeadAssignmentPool.company_id == user.company_id)
+        .order_by(CrmLeadAssignmentPool.sort_order)
+    )).scalars().all()
+    name_map = await _resolve_user_names(db, user.company_id, {m.user_id for m in members})
+    return ApiResponse(success=True, data=[
+        AssignmentPoolMemberOut(
+            id=m.id, user_id=m.user_id, user_name=name_map.get(m.user_id),
+            sort_order=m.sort_order, is_active=m.is_active,
+        ) for m in members
+    ])
+
+
+@router.post("/assignment-pool", status_code=201)
+async def add_assignment_pool_member(body: AssignmentPoolMemberIn, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    member = CrmLeadAssignmentPool(
+        company_id=user.company_id, user_id=body.user_id, sort_order=body.sort_order, created_at=_now(),
+    )
+    db.add(member)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "This employee is already in the round-robin pool") from None
+    return ApiResponse(success=True, data=AssignmentPoolMemberOut.model_validate(member), message="Added to assignment pool")
+
+
+@router.patch("/assignment-pool/{member_id}")
+async def update_assignment_pool_member(member_id: UUID, body: dict, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    member = (await db.execute(
+        select(CrmLeadAssignmentPool).where(CrmLeadAssignmentPool.id == member_id, CrmLeadAssignmentPool.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not member:
+        raise HTTPException(404, "Pool member not found")
+    if "is_active" in body:
+        member.is_active = bool(body["is_active"])
+    if "sort_order" in body:
+        member.sort_order = int(body["sort_order"])
+    await db.commit()
+    return ApiResponse(success=True, data=AssignmentPoolMemberOut.model_validate(member), message="Pool member updated")
+
+
+@router.delete("/assignment-pool/{member_id}")
+async def remove_assignment_pool_member(member_id: UUID, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    member = (await db.execute(
+        select(CrmLeadAssignmentPool).where(CrmLeadAssignmentPool.id == member_id, CrmLeadAssignmentPool.company_id == user.company_id)
+    )).scalar_one_or_none()
+    if not member:
+        raise HTTPException(404, "Pool member not found")
+    await db.delete(member)
+    await db.commit()
+    return ApiResponse(success=True, message="Removed from assignment pool")
+
+
+@router.get("/response-targets")
+async def get_response_targets(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+    if not company:
+        raise HTTPException(404, "Company not found")
+    return ApiResponse(success=True, data=ResponseTargetsOut.model_validate(company))
+
+
+@router.put("/response-targets")
+async def update_response_targets(body: ResponseTargetsUpdate, db: DBSession, user: AuthUser):
+    user.require("admin.settings")
+    company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+    if not company:
+        raise HTTPException(404, "Company not found")
+    for field, val in body.model_dump(exclude_none=True).items():
+        setattr(company, field, val)
+    await db.commit()
+    return ApiResponse(success=True, data=ResponseTargetsOut.model_validate(company), message="Response targets updated")
+
+
+@router.get("/reports/response-time")
+async def response_time_report(db: DBSession, user: AuthUser):
+    """Average/median time-to-assignment and time-to-first-response, by
+    employee and overall (spec Step 9). Only counts leads that actually
+    have the relevant timestamps - an unassigned or never-contacted lead
+    simply isn't included in that average, rather than being counted as 0."""
+    user.require("reports.view")
+    rows = (await db.execute(
+        select(CrmLead.assigned_to, CrmLead.created_at, CrmLead.assigned_date, CrmLead.first_contacted_at, CrmLead.priority)
+        .where(CrmLead.company_id == user.company_id)
+    )).all()
+
+    def minutes(a, b):
+        if not a or not b or b < a:
+            return None
+        return (b - a).total_seconds() / 60
+
+    assign_times = [m for m in (minutes(r.created_at, r.assigned_date) for r in rows) if m is not None]
+    response_times = [m for m in (minutes(r.created_at, r.first_contacted_at) for r in rows) if m is not None]
+    high_response_times = [
+        m for r in rows if r.priority == "high"
+        for m in [minutes(r.created_at, r.first_contacted_at)] if m is not None
+    ]
+
+    by_employee: dict[UUID, list[float]] = {}
+    for r in rows:
+        if r.assigned_to and r.first_contacted_at:
+            m = minutes(r.created_at, r.first_contacted_at)
+            if m is not None:
+                by_employee.setdefault(r.assigned_to, []).append(m)
+    name_map = await _resolve_user_names(db, user.company_id, set(by_employee.keys()))
+
+    def summarize(values: list[float]) -> dict:
+        if not values:
+            return {"count": 0, "avg_minutes": None, "median_minutes": None}
+        sorted_vals = sorted(values)
+        mid = len(sorted_vals) // 2
+        median = sorted_vals[mid] if len(sorted_vals) % 2 else (sorted_vals[mid - 1] + sorted_vals[mid]) / 2
+        return {"count": len(values), "avg_minutes": round(sum(values) / len(values), 1), "median_minutes": round(median, 1)}
+
+    return ApiResponse(success=True, data={
+        "time_to_assignment": summarize(assign_times),
+        "time_to_first_response": summarize(response_times),
+        "time_to_first_response_high_priority": summarize(high_response_times),
+        "by_employee": [
+            {"user_id": str(uid), "user_name": name_map.get(uid), **summarize(values)}
+            for uid, values in by_employee.items()
+        ],
+    })
+
+
+# ── Predictive Scoring: data-sufficiency gate (Phase 3, Step 1) ────────────────
+# No model, feature store, or training pipeline exists - the data audit
+# (docs/PREDICTIVE_SCORING_DATA_AUDIT.md) found the real company has 9
+# total leads, 1 won, 1 lost. This endpoint is the one piece of real
+# infrastructure that audit calls for: an honest, live check against
+# configurable thresholds, so the system can say "not ready" with real
+# numbers rather than ever fabricating a prediction. See spec Phase 30.
+
+@router.get("/predictive-scoring/readiness")
+async def predictive_scoring_readiness(db: DBSession, user: AuthUser):
+    user.require("crm.view")
+    company = (await db.execute(select(Company).where(Company.id == user.company_id))).scalar_one_or_none()
+    if not company:
+        raise HTTPException(404, "Company not found")
+
+    total = (await db.execute(
+        select(func.count(CrmLead.id)).where(CrmLead.company_id == user.company_id)
+    )).scalar() or 0
+    # "Converted" uses lead status today, not sales_order_id — the audit found
+    # sales_order_id is unset on every existing lead, so it can't be used as
+    # the conversion signal yet. Documented in the audit as a gap to close.
+    converted = (await db.execute(
+        select(func.count(CrmLead.id)).where(CrmLead.company_id == user.company_id, CrmLead.status == "won")
+    )).scalar() or 0
+    not_converted = (await db.execute(
+        select(func.count(CrmLead.id)).where(CrmLead.company_id == user.company_id, CrmLead.status == "lost")
+    )).scalar() or 0
+
+    ready = (
+        total >= company.predictive_scoring_min_leads
+        and converted >= company.predictive_scoring_min_outcomes_per_class
+        and not_converted >= company.predictive_scoring_min_outcomes_per_class
+    )
+    gaps = []
+    if total < company.predictive_scoring_min_leads:
+        gaps.append(f"{total} of {company.predictive_scoring_min_leads} leads needed overall")
+    if converted < company.predictive_scoring_min_outcomes_per_class:
+        gaps.append(f"{converted} of {company.predictive_scoring_min_outcomes_per_class} converted outcomes")
+    if not_converted < company.predictive_scoring_min_outcomes_per_class:
+        gaps.append(f"{not_converted} of {company.predictive_scoring_min_outcomes_per_class} non-converted outcomes")
+    reason = "Sufficient historical data." if ready else "Predictive scoring unavailable: insufficient historical data — " + "; ".join(gaps)
+
+    return ApiResponse(success=True, data=PredictiveScoringReadinessOut(
+        ready=ready, leads_total=total, leads_total_required=company.predictive_scoring_min_leads,
+        converted=converted, not_converted=not_converted,
+        outcomes_required_per_class=company.predictive_scoring_min_outcomes_per_class,
+        reason=reason, checked_at=_now(),
+    ))

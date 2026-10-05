@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, SmallInteger, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -242,6 +242,9 @@ class SalesOrder(Base):
     total_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     approved_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    customer_po_number: Mapped[Optional[str]] = mapped_column(String(100))
+    customer_po_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    po_tolerance_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
@@ -292,6 +295,11 @@ class Delivery(Base):
     vehicle_number: Mapped[Optional[str]] = mapped_column(String(30))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    carton_count: Mapped[Optional[int]] = mapped_column(Integer)
+    package_count: Mapped[Optional[int]] = mapped_column(Integer)
+    packing_marks: Mapped[Optional[str]] = mapped_column(Text)
+    gross_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    net_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))

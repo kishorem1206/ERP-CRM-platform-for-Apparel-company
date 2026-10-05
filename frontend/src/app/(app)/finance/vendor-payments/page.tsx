@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
@@ -63,6 +64,7 @@ const columns: Column<VendorPayment>[] = [
 ];
 
 export default function VendorPaymentsPage() {
+  const router = useRouter();
   const { data, isLoading } = useQuery({
     queryKey: ["finance-vendor-payments"],
     queryFn: async () => {
@@ -99,7 +101,7 @@ export default function VendorPaymentsPage() {
           </div>
         </div>
         <div className="p-0">
-          <DataTable columns={columns} data={data ?? []} loading={isLoading} />
+          <DataTable columns={columns} data={data ?? []} loading={isLoading} onRowClick={(row) => router.push(`/finance/vendor-payments/${row.id as string}`)} />
         </div>
       </div>
     </div>

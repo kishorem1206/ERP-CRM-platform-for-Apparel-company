@@ -7,6 +7,7 @@ import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { useCustomerOptions } from "@/components/reports/filter-sources";
+import { DatePicker } from "@/components/shared/date-picker";
 
 const INDIGO = "#0049A7";
 const inputCls =
@@ -176,11 +177,11 @@ export function PriceListItemModal({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Valid From</label>
-            <input className={inputCls} type="date" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} />
+            <DatePicker value={validFrom} onChange={(v) => setValidFrom(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Valid To</label>
-            <input className={inputCls} type="date" value={validTo} onChange={(e) => setValidTo(e.target.value)} />
+            <DatePicker value={validTo} onChange={(v) => setValidTo(v)} />
           </div>
         </div>
         <p className="text-[11px] text-muted-foreground">

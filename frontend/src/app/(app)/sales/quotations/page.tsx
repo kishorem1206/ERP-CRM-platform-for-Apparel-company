@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, X } from "lucide-react";
@@ -6,6 +7,8 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const LAVENDER = "#0F78FF";
@@ -54,6 +57,7 @@ interface QItem {
   unit_price: string;
   gst_rate: string;
   hsn_code: string;
+  price_source: string;
 }
 
 const STATUS_FILTERS = [
@@ -80,7 +84,7 @@ const columns: Column<Record<string, unknown>>[] = [
   },
 ];
 
-const emptyItem = (): QItem => ({ product_id: "", unit_id: "", quantity: "1", unit_price: "0", gst_rate: "0", hsn_code: "" });
+const emptyItem = (): QItem => ({ product_id: "", unit_id: "", quantity: "1", unit_price: "0", gst_rate: "0", hsn_code: "", price_source: "" });
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
 function AddQuotationModal({ onClose }: { onClose: () => void }) {
@@ -138,6 +142,36 @@ function AddQuotationModal({ onClose }: { onClose: () => void }) {
   const updateItem = (i: number, k: keyof QItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
 
+  // Selecting a product suggests its default price (customer-specific list ->
+  // generic list -> Wholesale Price -> MRP fallback) via the shared pricing
+  // resolver. Never forces the value — only fills it while still at the "0"
+  // default, so a price the user already edited is never clobbered.
+  const handleProductChange = (i: number, productId: string) => {
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, product_id: productId, price_source: "" } : it)));
+    if (!productId) return;
+    api
+      .get("/sales/price-lists/resolve", {
+        params: {
+          product_id: productId,
+          customer_id: customerId || undefined,
+          quantity: 1,
+          on_date: new Date().toISOString().slice(0, 10),
+        },
+      })
+      .then((res) => {
+        const result = res.data?.data;
+        if (!result || result.source === "not_found") return;
+        setItems((prev) =>
+          prev.map((it, idx) =>
+            idx === i && it.unit_price === "0"
+              ? { ...it, unit_price: String(result.unit_price), price_source: result.source }
+              : it
+          )
+        );
+      })
+      .catch(() => undefined);
+  };
+
   return (
     <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
@@ -169,13 +203,11 @@ function AddQuotationModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Date *</label>
-              <input required type="date" value={quotationDate} onChange={(e) => setQuotationDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={quotationDate} onChange={(v) => setQuotationDate(v)} required />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Valid Until</label>
-              <input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={validUntil} onChange={(v) => setValidUntil(v)} />
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -209,7 +241,7 @@ function AddQuotationModal({ onClose }: { onClose: () => void }) {
                       <td className="px-2 py-1">
                         <SearchableSelect
                           value={it.product_id}
-                          onChange={(v) => updateItem(i, "product_id", v)}
+                          onChange={(v) => handleProductChange(i, v)}
                           placeholder="Select…"
                           accent="#0F78FF"
                           options={[
@@ -243,8 +275,13 @@ function AddQuotationModal({ onClose }: { onClose: () => void }) {
                       </td>
                       <td className="px-2 py-1">
                         <input type="number" min="0" step="0.01" required value={it.unit_price}
-                          onChange={(e) => updateItem(i, "unit_price", e.target.value)}
+                          onChange={(e) => setItems((prev) => prev.map((row, idx) => (idx === i ? { ...row, unit_price: e.target.value, price_source: "" } : row)))}
                           className="w-24 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
+                        {it.price_source && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-nowrap">
+                            Suggested from {it.price_source.replace(/_/g, " ")}
+                          </p>
+                        )}
                       </td>
                       <td className="px-2 py-1">
                         <input type="number" min="0" max="28" step="0.1" value={it.gst_rate}
@@ -294,6 +331,7 @@ function AddQuotationModal({ onClose }: { onClose: () => void }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function QuotationsPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
@@ -322,13 +360,13 @@ export default function QuotationsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Quotations</h1>
           <p className="text-sm text-muted-foreground mt-1">Price quotes sent to buyers — track status and conversions.</p>
         </div>
-        <button
+        <Can perm="sales.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: LAVENDER }}
         >
           <Plus className="h-4 w-4" /> New Quotation
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}
@@ -361,6 +399,7 @@ export default function QuotationsPage() {
             columns={columns}
             data={quotations as unknown as Record<string, unknown>[]}
             loading={isLoading}
+            onRowClick={(row) => router.push(`/sales/quotations/${row.id as string}`)}
             emptyMessage="No quotations found"
           />
         </div>

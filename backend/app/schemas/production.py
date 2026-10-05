@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 # ── Style Master ──────────────────────────────────────────────────────────────
@@ -16,12 +16,44 @@ from pydantic import BaseModel, field_validator
 class StyleSizeIn(BaseModel):
     size_id: UUID
     sort_order: int = 0
+    quantity: Decimal | None = None
+    size_chart_id: UUID | None = None
 
 
 class StyleSizeOut(BaseModel):
     id: UUID
     size_id: UUID
     sort_order: int
+    quantity: Decimal | None = None
+    size_chart_id: UUID | None = None
+    model_config = {"from_attributes": True}
+
+
+# ── Size Chart Master ───────────────────────────────────────────────────────
+
+class SizeChartItemIn(BaseModel):
+    size_id: UUID
+    quantity: Decimal | None = None
+    sort_order: int = 0
+
+
+class SizeChartItemOut(BaseModel):
+    id: UUID
+    size_id: UUID
+    quantity: Decimal | None
+    sort_order: int
+    model_config = {"from_attributes": True}
+
+
+class SizeChartCreate(BaseModel):
+    name: str
+    items: list[SizeChartItemIn] = []
+
+
+class SizeChartOut(BaseModel):
+    id: UUID
+    name: str
+    items: list[SizeChartItemOut] = []
     model_config = {"from_attributes": True}
 
 
@@ -98,6 +130,7 @@ class StyleSubProcessOut(BaseModel):
 class StyleProcessIn(BaseModel):
     seq: int = 0
     process_name: str
+    process_master_id: UUID | None = None
     is_enabled: bool = True
     tolerance_pct: Decimal | None = None
     input_unit: str | None = None
@@ -114,6 +147,7 @@ class StyleProcessOut(BaseModel):
     id: UUID
     seq: int
     process_name: str
+    process_master_id: UUID | None = None
     is_enabled: bool
     tolerance_pct: Decimal | None
     input_unit: str | None
@@ -155,6 +189,17 @@ class StyleAdditionalCostOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class StyleTrimSizeIn(BaseModel):
+    size_id: UUID
+    quantity: Decimal
+
+
+class StyleTrimSizeOut(BaseModel):
+    size_id: UUID
+    quantity: Decimal
+    model_config = {"from_attributes": True}
+
+
 class StyleTrimIn(BaseModel):
     trim_name: str
     lot_id: UUID | None = None
@@ -164,6 +209,7 @@ class StyleTrimIn(BaseModel):
     process_seq: int | None = None
     excess_pct: Decimal | None = None
     notes: str | None = None
+    size_breakdown: list[StyleTrimSizeIn] = []   # §21 — only meaningful when category == "Sizable"
 
     @field_validator("category")
     @classmethod
@@ -183,6 +229,7 @@ class StyleTrimOut(BaseModel):
     process_seq: int | None = None
     excess_pct: Decimal | None
     notes: str | None
+    size_breakdown: list[StyleTrimSizeOut] = []
     model_config = {"from_attributes": True}
 
 
@@ -217,6 +264,7 @@ class StyleCreate(BaseModel):
     pieces_per_box: int | None = None
     fabric_source: str = "yarn"            # yarn / purchased
     target_price: Decimal | None = None
+    product_id: UUID | None = None   # link an existing Product; omit to auto-create one
     sizes: list[StyleSizeIn] = []
     colours: list[StyleColourIn] = []
     yarns: list[StyleYarnIn] = []
@@ -255,6 +303,7 @@ class StyleOut(BaseModel):
     target_price: Decimal | None = None
     version: int
     is_active: bool
+    product_id: UUID | None = None
     model_config = {"from_attributes": True}
 
 
@@ -272,6 +321,10 @@ class StyleDetailOut(BaseModel):
     target_price: Decimal | None = None
     version: int
     is_active: bool
+    product_id: UUID | None = None
+    product_code: str | None = None
+    hsn_id: UUID | None = None
+    gst_rate: Decimal | None = None
     sizes: list[StyleSizeOut] = []
     colours: list[StyleColourOut] = []
     yarns: list[StyleYarnOut] = []
@@ -414,6 +467,10 @@ class StageEntryCreate(BaseModel):
     pieces_in: int = 0
     pieces_out: int = 0
     rejected: int = 0
+    input_weight_kg: Decimal | None = None
+    output_weight_kg: Decimal | None = None
+    wastage_kg: Decimal | None = None
+    recoverable_kg: Decimal | None = None
     operator: str | None = None
     machine: str | None = None
     notes: str | None = None
@@ -425,6 +482,10 @@ class StageEntryOut(BaseModel):
     pieces_in: int
     pieces_out: int
     rejected: int
+    input_weight_kg: Decimal | None = None
+    output_weight_kg: Decimal | None = None
+    wastage_kg: Decimal | None = None
+    recoverable_kg: Decimal | None = None
     operator: str | None
     machine: str | None
     notes: str | None
@@ -441,13 +502,16 @@ class StageChallanCreate(BaseModel):
     expected_return_days: int | None = None
     notes: str | None = None
 
-    @field_validator("worker_id")
-    @classmethod
-    def validate_one_assignee(cls, v: UUID | None, info) -> UUID | None:
-        vendor_id = info.data.get("vendor_id")
-        if bool(vendor_id) == bool(v):
+    @model_validator(mode="after")
+    def validate_one_assignee(self) -> "StageChallanCreate":
+        # A plain @field_validator on worker_id would miss the case where
+        # BOTH fields are left at their None default (pydantic v2 skips
+        # field_validator for unprovided fields unless validate_default=
+        # True) - confirmed live: a challan with neither field was wrongly
+        # accepted. model_validator always runs regardless.
+        if bool(self.vendor_id) == bool(self.worker_id):
             raise ValueError("Exactly one of vendor_id or worker_id is required")
-        return v
+        return self
 
 
 class StageChallanReceive(BaseModel):
@@ -510,6 +574,15 @@ class StageOut(BaseModel):
     min_rate: Decimal | None = None
     max_rate: Decimal | None = None
     planned_rate: Decimal | None = None
+    input_weight_kg: Decimal | None = None
+    output_weight_kg: Decimal | None = None
+    wastage_kg: Decimal | None = None
+    recoverable_kg: Decimal | None = None
+    variance_kg: Decimal | None = None
+    permitted_tolerance_kg: Decimal | None = None
+    within_tolerance: bool | None = None
+    weight_per_piece: Decimal | None = None
+    effective_rate_per_kg: Decimal | None = None
     entries: list[StageEntryOut] = []
     challans: list[StageChallanOut] = []
     model_config = {"from_attributes": True}
@@ -531,6 +604,40 @@ class LotAdditionalCostOut(BaseModel):
 
 class LotAdditionalCostUpdate(BaseModel):
     actual_amount: Decimal | None = None
+    notes: str | None = None
+
+
+class LotTrimOut(BaseModel):
+    id: UUID
+    style_trim_id: UUID | None
+    trim_name: str
+    unit: str | None
+    category: str | None
+    planned_qty: Decimal | None
+    actual_qty: Decimal | None
+    notes: str | None
+    model_config = {"from_attributes": True}
+
+
+class LotTrimActualUpdate(BaseModel):
+    actual_qty: Decimal | None = None
+    notes: str | None = None
+
+
+class LotPackingMaterialOut(BaseModel):
+    id: UUID
+    style_packing_material_id: UUID | None
+    material_name: str
+    unit: str | None
+    consumption_stage: str | None
+    planned_qty: Decimal | None
+    actual_qty: Decimal | None
+    notes: str | None
+    model_config = {"from_attributes": True}
+
+
+class LotPackingActualUpdate(BaseModel):
+    actual_qty: Decimal | None = None
     notes: str | None = None
 
 
@@ -649,6 +756,10 @@ class ProductionLotOut(BaseModel):
     sizes: list[LotSizeOut] = []
     stages: list[StageOut] = []
     additional_costs: list[LotAdditionalCostOut] = []
+    trims: list[LotTrimOut] = []
+    packing_materials: list[LotPackingMaterialOut] = []
+    boxes_required: int | None = None
+    fabric_blockers: list[str] = []   # §33 fabric-first: why garment work can't start yet
     fabric_processing: list[FabricProcessingOut] = []
     cost_summary: LotCostSummaryOut
     model_config = {"from_attributes": True}
@@ -669,6 +780,8 @@ class MISItemOut(BaseModel):
     id: UUID
     product_id: UUID
     variant_id: UUID | None
+    product_name: str | None = None
+    unit_abbreviation: str | None = None
     planned_qty: Decimal | None
     issued_qty: Decimal
     unit_id: UUID
@@ -676,7 +789,19 @@ class MISItemOut(BaseModel):
     total_cost: Decimal
     inv_transaction_id: UUID | None
     excess_qty: Decimal | None = None   # computed: max(issued_qty - planned_qty, 0) — §47.4
+    used_qty: Decimal | None = None
+    returned_qty: Decimal | None = None
+    wastage_qty: Decimal | None = None
+    return_inv_transaction_id: UUID | None = None
+    return_notes: str | None = None
     model_config = {"from_attributes": True}
+
+
+class MISItemReturnUpdate(BaseModel):
+    used_qty: Decimal | None = None
+    returned_qty: Decimal | None = None
+    wastage_qty: Decimal | None = None
+    notes: str | None = None
 
 
 class MaterialIssueCreate(BaseModel):
@@ -709,6 +834,7 @@ class ProductionOutputCreate(BaseModel):
     warehouse_id: UUID
     output_date: date
     product_id: UUID
+    variant_id: UUID | None = None
     quantity: Decimal
     rejected_qty: Decimal | None = None
     unit_id: UUID
@@ -723,6 +849,7 @@ class ProductionOutputOut(BaseModel):
     warehouse_id: UUID
     output_date: date
     product_id: UUID
+    variant_id: UUID | None = None
     quantity: Decimal
     rejected_qty: Decimal | None
     unit_id: UUID

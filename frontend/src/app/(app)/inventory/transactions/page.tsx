@@ -15,14 +15,18 @@ type Transaction = Record<string, unknown> & {
   transaction_type: string;
   reference_type: string | null;
   product_id: string;
+  product_name: string | null;
+  sku: string | null;
   warehouse_id: string;
+  warehouse_name: string | null;
   quantity: string;
-  unit_cost: string;
-  total_cost: string;
+  unit_cost: string | null;
+  total_cost: string | null;
   direction: number;
   transaction_date: string;
   notes: string | null;
   material_type: string;
+  created_by_name: string | null;
 };
 
 const TYPE_TABS = [
@@ -52,8 +56,17 @@ const columns: Column<Transaction>[] = [
     },
   },
   { key: "reference_type", header: "Ref Type" },
-  { key: "product_id", header: "Product ID" },
-  { key: "warehouse_id", header: "Warehouse ID" },
+  {
+    key: "product_name",
+    header: "Product",
+    render: (row) => (
+      <span>
+        {row.product_name ?? "—"}
+        {row.sku && <span className="text-muted-foreground"> ({row.sku})</span>}
+      </span>
+    ),
+  },
+  { key: "warehouse_name", header: "Warehouse", render: (r) => r.warehouse_name ?? "—" },
   {
     key: "quantity",
     header: "Qty",
@@ -63,8 +76,12 @@ const columns: Column<Transaction>[] = [
       </span>
     ),
   },
-  { key: "unit_cost", header: "Unit Cost", render: (r) => `₹${Number(r.unit_cost).toFixed(2)}` },
-  { key: "total_cost", header: "Total", render: (r) => `₹${Number(r.total_cost).toFixed(2)}` },
+  // null means the backend withheld it (ERP Upgrade §11, admin-only) -
+  // never rendered as ₹NaN, which the raw Number(null) coercion used to
+  // produce even for an ordinarily-populated field.
+  { key: "unit_cost", header: "Unit Cost", render: (r) => (r.unit_cost == null ? "—" : `₹${Number(r.unit_cost).toFixed(2)}`) },
+  { key: "total_cost", header: "Total", render: (r) => (r.total_cost == null ? "—" : `₹${Number(r.total_cost).toFixed(2)}`) },
+  { key: "created_by_name", header: "Account", render: (r) => r.created_by_name ?? "—" },
   { key: "notes", header: "Notes" },
 ];
 

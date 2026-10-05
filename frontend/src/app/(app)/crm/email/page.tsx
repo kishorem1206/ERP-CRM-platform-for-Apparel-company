@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -286,14 +287,14 @@ export default function EmailInboxPage() {
             </div>
             <p className="text-sm text-muted-foreground mt-0.5">Email conversations with leads and contacts</p>
           </div>
-          <button
+          <Can perm="crm.create"><button
             onClick={() => setShowCompose(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
             style={{ background: INDIGO }}
           >
             <Plus className="h-4 w-4" />
             Compose
-          </button>
+          </button></Can>
         </div>
       </div>
 
@@ -423,14 +424,14 @@ export default function EmailInboxPage() {
                   Choose an email from the left panel
                 </p>
               </div>
-              <button
+              <Can perm="crm.create"><button
                 onClick={() => setShowCompose(true)}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
                 style={{ background: INDIGO }}
               >
                 <Plus className="h-4 w-4" />
                 Compose Email
-              </button>
+              </button></Can>
             </div>
           ) : (
             <>
@@ -443,14 +444,14 @@ export default function EmailInboxPage() {
                 </p>
                 <div className="flex-1" />
                 {selectedEmail.direction === "inbound" && (
-                  <button
+                  <Can perm="crm.create"><button
                     onClick={() => setShowCompose(true)}
                     className="flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors hover:bg-muted"
                     style={{ borderColor: `${INDIGO}40`, color: INDIGO }}
                   >
                     Reply
                     <ChevronRight className="h-3 w-3" />
-                  </button>
+                  </button></Can>
                 )}
               </div>
               <EmailDetail email={selectedEmail} />

@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
@@ -57,6 +58,7 @@ const columns: Column<DebitNote>[] = [
 ];
 
 export default function DebitNotesPage() {
+  const router = useRouter();
   const { data, isLoading } = useQuery({
     queryKey: ["finance-debit-notes"],
     queryFn: async () => {
@@ -93,7 +95,7 @@ export default function DebitNotesPage() {
           </div>
         </div>
         <div className="p-0">
-          <DataTable columns={columns} data={data ?? []} loading={isLoading} />
+          <DataTable columns={columns} data={data ?? []} loading={isLoading} onRowClick={(row) => router.push(`/finance/debit-notes/${row.id as string}`)} />
         </div>
       </div>
     </div>

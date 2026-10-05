@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { DatePicker } from "@/components/shared/date-picker";
 
 const INDIGO = "#0049A7";
 
@@ -114,7 +115,7 @@ export function CreateTaskModal({ onClose, leadId }: { onClose: () => void; lead
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Due</label>
-          <input className={inputCls} type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
+          <DatePicker value={dueAt} onChange={(v) => setDueAt(v)} mode="datetime" />
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Assign To</label>

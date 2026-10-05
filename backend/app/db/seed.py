@@ -27,7 +27,8 @@ PERMISSIONS = [
     "purchase_return.view", "purchase_return.create",
     "inventory.view", "inventory.receive", "inventory.issue",
     "inventory.transfer", "inventory.adjust", "inventory.opening_balance",
-    "production.view", "production.create", "production.start",
+    "inventory.value",
+    "production.view", "production.create", "production.start", "production.delete",
     "production.log", "production.complete", "production.cancel",
     "finance.view", "finance.receipt", "finance.payment", "finance.expense",
     "reports.sales", "reports.purchase", "reports.inventory",
@@ -39,19 +40,27 @@ PERMISSIONS = [
 async def seed():
     async with AsyncSessionLocal() as db:
         # ── Company ───────────────────────────────────────────────────────────
-        new_company_id = str(uuid.uuid4())
-        await db.execute(
-            text("""
-                INSERT INTO companies (id, name, currency, default_hsn, state_code)
-                VALUES (:id, :name, :currency, :hsn, :state_code)
-                ON CONFLICT DO NOTHING
-            """),
-            {"id": new_company_id, "name": "My Apparel Company",
-             "currency": "INR", "hsn": "6111", "state_code": 29},
-        )
-        # Read back actual company_id (idempotent re-runs)
-        result = await db.execute(text("SELECT id FROM companies LIMIT 1"))
-        company_id = str(result.scalar())
+        # Re-runs must not create another company (companies has no unique name
+        # constraint, so an unconditional INSERT piled up duplicates on every
+        # backend start), and must bind to the company that owns the admin user
+        # rather than an arbitrary LIMIT 1 row.
+        result = await db.execute(text("""
+            SELECT c.id FROM companies c
+            JOIN users u ON u.company_id = c.id AND u.email = 'admin@company.com'
+            ORDER BY c.created_at LIMIT 1
+        """))
+        company_id = result.scalar()
+        if company_id is None:
+            company_id = str(uuid.uuid4())
+            await db.execute(
+                text("""
+                    INSERT INTO companies (id, name, currency, default_hsn, state_code, created_at, updated_at)
+                    VALUES (:id, :name, :currency, :hsn, :state_code, now(), now())
+                """),
+                {"id": company_id, "name": "My Apparel Company",
+                 "currency": "INR", "hsn": "6111", "state_code": 29},
+            )
+        company_id = str(company_id)
 
         # ── Permissions ───────────────────────────────────────────────────────
         for code in PERMISSIONS:
@@ -133,6 +142,21 @@ async def seed():
                 """),
                 {"id": str(uuid.uuid4()), "company_id": company_id,
                  "name": name, "abbr": abbr, "utype": utype},
+            )
+
+        # ── Process Master ───────────────────────────────────────────────────
+        for i, proc_name in enumerate([
+            "Knitting", "Dyeing", "Compacting", "Printing", "Cutting", "Making",
+            "Fusing", "Stitching", "Trimming", "Checking", "Ironing", "Packing",
+        ]):
+            await db.execute(
+                text("""
+                    INSERT INTO process_masters (id, company_id, name, sort_order)
+                    VALUES (:id, :company_id, :name, :sort_order)
+                    ON CONFLICT (company_id, name) DO NOTHING
+                """),
+                {"id": str(uuid.uuid4()), "company_id": company_id,
+                 "name": proc_name, "sort_order": i},
             )
 
         # ── Warehouses ────────────────────────────────────────────────────────

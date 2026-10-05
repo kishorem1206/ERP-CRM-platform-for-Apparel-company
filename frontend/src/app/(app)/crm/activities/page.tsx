@@ -15,6 +15,8 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const inputCls =
   "w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
@@ -45,15 +47,6 @@ const ACTIVITY_COLORS: Record<string, string> = {
   Task: "#0F78FF", Email: "#0049A7", WhatsApp: "#8174F5",
 };
 const DEFAULT_ACTIVITY_COLOR = INDIGO;
-
-const TYPE_FILTERS = [
-  { label: "All", value: "" },
-  { label: "Call", value: "call" },
-  { label: "Meeting", value: "meeting" },
-  { label: "Note", value: "note" },
-  { label: "Task", value: "task" },
-  { label: "Email", value: "email" },
-];
 
 interface Activity {
   id: string;
@@ -208,21 +201,11 @@ function EditActivityModal({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Schedule From</label>
-            <input
-              className={inputCls}
-              type="datetime-local"
-              value={form.schedule_from}
-              onChange={(e) => set("schedule_from", e.target.value)}
-            />
+            <DatePicker value={form.schedule_from} onChange={(v) => set("schedule_from", v)} mode="datetime" />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Schedule To</label>
-            <input
-              className={inputCls}
-              type="datetime-local"
-              value={form.schedule_to}
-              onChange={(e) => set("schedule_to", e.target.value)}
-            />
+            <DatePicker value={form.schedule_to} onChange={(v) => set("schedule_to", v)} mode="datetime" />
           </div>
         </div>
         <div>
@@ -237,12 +220,12 @@ function EditActivityModal({
         </div>
       </div>
       <div className="flex items-center justify-between gap-3 p-6 border-t">
-        <button
+        <Can perm="crm.delete"><button
           onClick={() => setConfirmDelete(true)}
           className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-xl text-[#1D0DB0] hover:bg-[#1D0DB0]/10 transition-colors"
         >
           <Trash2 className="h-3.5 w-3.5" /> Delete
-        </button>
+        </button></Can>
         <div className="flex gap-3">
           <button
             onClick={onClose}
@@ -314,7 +297,7 @@ function ActivityDetailPanel({
   subtitle?: string;
   activities: Activity[];
   onClose: () => void;
-  onMarkDone: (id: string, done: boolean) => void;
+  onMarkDone: (id: string, done: boolean, title: string) => void;
   onEdit: (activity: Activity) => void;
   doneMutationPending: boolean;
   emptyMessage: string;
@@ -358,15 +341,15 @@ function ActivityDetailPanel({
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-medium leading-tight">{a.title}</p>
                     <div className="flex items-center gap-0.5 flex-shrink-0">
-                      <button
+                      <Can perm="crm.edit"><button
                         onClick={() => onEdit(a)}
                         className="p-0.5 rounded transition-colors hover:bg-muted text-muted-foreground"
                         title="Edit"
                       >
                         <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={() => onMarkDone(a.id, !a.is_done)}
+                      </button></Can>
+                      <Can perm="crm.edit"><button
+                        onClick={() => onMarkDone(a.id, !a.is_done, a.title)}
                         disabled={doneMutationPending}
                         className="p-0.5 rounded transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
                         title={a.is_done ? "Mark not done" : "Mark done"}
@@ -376,7 +359,7 @@ function ActivityDetailPanel({
                         ) : (
                           <Circle className="h-4 w-4 text-muted-foreground" />
                         )}
-                      </button>
+                      </button></Can>
                     </div>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -400,10 +383,11 @@ function ActivityDetailPanel({
 }
 
 function ActivityCalendar({
-  typeFilter, doneMutation, onEdit,
+  typeFilter, doneMutation, onRequestDone, onEdit,
 }: {
   typeFilter: string;
   doneMutation: ReturnType<typeof useMutation<unknown, unknown, { id: string; done: boolean }>>;
+  onRequestDone: (id: string, title: string) => void;
   onEdit: (activity: Activity) => void;
 }) {
   const [month, setMonth] = useState(() => startOfMonth(new Date()));
@@ -560,7 +544,7 @@ function ActivityCalendar({
           subtitle={format(selectedDay, "EEEE")}
           activities={byDay.get(format(selectedDay, "yyyy-MM-dd")) ?? []}
           onClose={() => setSelectedDay(null)}
-          onMarkDone={(id, done) => doneMutation.mutate({ id, done })}
+          onMarkDone={(id, done, title) => (done ? onRequestDone(id, title) : doneMutation.mutate({ id, done: false }))}
           onEdit={onEdit}
           doneMutationPending={doneMutation.isPending}
           emptyMessage="No activities scheduled on this day."
@@ -573,7 +557,7 @@ function ActivityCalendar({
           subtitle="No date set"
           activities={unscheduledActivities}
           onClose={() => setShowUnscheduled(false)}
-          onMarkDone={(id, done) => doneMutation.mutate({ id, done })}
+          onMarkDone={(id, done, title) => (done ? onRequestDone(id, title) : doneMutation.mutate({ id, done: false }))}
           onEdit={onEdit}
           doneMutationPending={doneMutation.isPending}
           emptyMessage="Nothing unscheduled."
@@ -590,6 +574,17 @@ export default function ActivitiesPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [view, setView] = useState<"list" | "calendar">("list");
   const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
+  // Marking an activity done needs a confirmation step (easy to tap by
+  // accident in a list); reverting it stays a single click, deliberately,
+  // so an accidental "done" is cheap to undo.
+  const [confirmDone, setConfirmDone] = useState<{ id: string; title: string } | null>(null);
+
+  const { data: followUpTypesData } = useQuery({
+    queryKey: ["crm-follow-up-types"],
+    queryFn: () => api.get("/crm/follow-up-types").then((r) => r.data),
+  });
+  const followUpTypes: { id: string; name: string }[] = followUpTypesData?.data ?? [];
+  const typeFilters = [{ label: "All", value: "" }, ...followUpTypes.map((ft) => ({ label: ft.name, value: ft.name }))];
 
   const { data, isLoading } = useQuery({
     queryKey: ["crm-activities-list", typeFilter],
@@ -609,10 +604,15 @@ export default function ActivitiesPage() {
       queryClient.invalidateQueries({ queryKey: ["crm-activities-list"] });
       queryClient.invalidateQueries({ queryKey: ["crm-activities-calendar"] });
       queryClient.invalidateQueries({ queryKey: ["crm-activities-unscheduled"] });
+      setConfirmDone(null);
     },
   });
 
-  const activities: Activity[] = data?.data ?? [];
+  // Open (not-done) activities first, completed ones sink to the bottom —
+  // each group keeps the order the API returned.
+  const activities: Activity[] = [...(data?.data ?? [])].sort(
+    (a: Activity, b: Activity) => Number(a.is_done) - Number(b.is_done)
+  );
 
   const columns: Column<Record<string, unknown>>[] = [
     {
@@ -648,10 +648,11 @@ export default function ActivitiesPage() {
       render: (row) => {
         const isDone = row.is_done as boolean;
         return (
-          <button
+          <Can perm="crm.edit"><button
             onClick={(e) => {
               e.stopPropagation();
-              doneMutation.mutate({ id: row.id as string, done: !isDone });
+              if (isDone) doneMutation.mutate({ id: row.id as string, done: false });
+              else setConfirmDone({ id: row.id as string, title: row.title as string });
             }}
             disabled={doneMutation.isPending}
             className="p-0.5 rounded transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
@@ -662,7 +663,7 @@ export default function ActivitiesPage() {
             ) : (
               <Circle className="h-4 w-4 text-muted-foreground" />
             )}
-          </button>
+          </button></Can>
         );
       },
     },
@@ -670,7 +671,7 @@ export default function ActivitiesPage() {
       key: "edit",
       header: "",
       render: (row) => (
-        <button
+        <Can perm="crm.edit"><button
           onClick={(e) => {
             e.stopPropagation();
             setEditingActivity(row as unknown as Activity);
@@ -679,7 +680,7 @@ export default function ActivitiesPage() {
           title="Edit activity"
         >
           <Pencil className="h-3.5 w-3.5" />
-        </button>
+        </button></Can>
       ),
     },
   ];
@@ -696,18 +697,18 @@ export default function ActivitiesPage() {
             Calls, meetings, notes, tasks, and emails across all leads.
           </p>
         </div>
-        <button
+        <Can perm="crm.create"><button
           onClick={() => router.push("/crm/activities/new")}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> Log Activity
-        </button>
+        </button></Can>
       </div>
 
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl w-fit flex-wrap">
-          {TYPE_FILTERS.map((t) => (
+          {typeFilters.map((t) => (
             <button
               key={t.value}
               onClick={() => setTypeFilter(t.value)}
@@ -763,11 +764,43 @@ export default function ActivitiesPage() {
           </div>
         </div>
       ) : (
-        <ActivityCalendar typeFilter={typeFilter} doneMutation={doneMutation} onEdit={setEditingActivity} />
+        <ActivityCalendar
+          typeFilter={typeFilter}
+          doneMutation={doneMutation}
+          onRequestDone={(id, title) => setConfirmDone({ id, title })}
+          onEdit={setEditingActivity}
+        />
       )}
 
       {editingActivity && (
         <EditActivityModal activity={editingActivity} onClose={() => setEditingActivity(null)} />
+      )}
+
+      {confirmDone && (
+        <ModalShell maxWidth="max-w-xs" onClose={() => setConfirmDone(null)}>
+          <div className="p-6">
+            <p className="text-sm font-medium mb-1">Mark &ldquo;{confirmDone.title}&rdquo; as done?</p>
+            <p className="text-xs text-muted-foreground mb-5">
+              You can undo this with one click afterwards — the tick stays reversible.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmDone(null)}
+                className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => doneMutation.mutate({ id: confirmDone.id, done: true })}
+                disabled={doneMutation.isPending}
+                className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-colors disabled:opacity-50 hover:opacity-90"
+                style={{ background: INDIGO }}
+              >
+                {doneMutation.isPending ? "Marking…" : "Mark Done"}
+              </button>
+            </div>
+          </div>
+        </ModalShell>
       )}
     </div>
   );

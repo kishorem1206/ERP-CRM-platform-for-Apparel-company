@@ -1,3 +1,4 @@
+import uuid
 import random
 import string
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,9 @@ def create_refresh_token(user_id: UUID) -> str:
     data = {
         "sub": str(user_id),
         "type": "refresh",
+        # jti makes each token unique, so two refreshes in the same second
+        # cannot produce identical tokens (which violate refresh_tokens.token_hash).
+        "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(
             days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS
         ),
@@ -130,5 +134,41 @@ async def consume_pending_2fa(session_id: str) -> str | None:
         if user_id:
             await r.delete(f"erp:2fa:{session_id}")
         return user_id
+    finally:
+        await r.aclose()
+
+
+PENDING_2FA_MAX_FAILURES = 5
+
+
+async def get_pending_2fa(session_id: str) -> str | None:
+    """Look up the user for a 2FA session without consuming it, so a wrong code can be retried."""
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        return await r.get(f"erp:2fa:{session_id}")
+    finally:
+        await r.aclose()
+
+
+async def record_failed_2fa(session_id: str) -> int:
+    """Count a wrong code against the session; returns the failure count so far."""
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        key = f"erp:2fa:{session_id}:fails"
+        count = await r.incr(key)
+        await r.expire(key, 300)
+        return count
+    finally:
+        await r.aclose()
+
+
+async def clear_pending_2fa(session_id: str) -> None:
+    """Remove a 2FA session after success, or after too many wrong codes."""
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        await r.delete(f"erp:2fa:{session_id}", f"erp:2fa:{session_id}:fails")
     finally:
         await r.aclose()

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
@@ -7,6 +7,8 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 
@@ -81,13 +83,36 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
   const [season, setSeason] = useState("");
   const [notes, setNotes] = useState("");
   const [piecesPerBox, setPiecesPerBox] = useState("");
-  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; planned_amount: string }[]>([]);
+  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; planned_amount: string; party_vendor_id: string }[]>([]);
+  const [lotSizes, setLotSizes] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   const { data: styles } = useQuery({
     queryKey: ["styles-list"],
     queryFn: async () => (await api.get("/production/styles")).data.data ?? [],
   });
+  const { data: agentVendors } = useQuery({
+    queryKey: ["vendors", "agent"],
+    queryFn: async () => (await api.get("/purchase/vendors", { params: { vendor_type: "agent", page_size: 200 } })).data.data as { id: string; name: string }[],
+  });
+  const { data: styleDetail } = useQuery({
+    queryKey: ["style-detail-for-lot", styleId],
+    queryFn: async () => (await api.get(`/production/styles/${styleId}`)).data.data as {
+      sizes: { size_id: string; quantity: number | null }[];
+    },
+    enabled: !!styleId,
+  });
+  const { data: sizesMaster } = useQuery({
+    queryKey: ["master-sizes"],
+    queryFn: async () => (await api.get("/master/sizes")).data.data as { id: string; name: string }[],
+  });
+
+  useEffect(() => {
+    if (!styleDetail) { setLotSizes({}); return; }
+    setLotSizes(Object.fromEntries(
+      styleDetail.sizes.filter((s) => s.quantity != null).map((s) => [s.size_id, String(s.quantity)])
+    ));
+  }, [styleDetail]);
   const { data: customers } = useQuery({
     queryKey: ["customers-list"],
     queryFn: async () => (await api.get("/sales/customers?page_size=200")).data.data ?? [],
@@ -110,9 +135,13 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         season: season || null,
         notes: notes || null,
         pieces_per_box: piecesPerBox ? parseInt(piecesPerBox) : undefined,
+        sizes: Object.entries(lotSizes).filter(([, v]) => v).map(([size_id, planned_qty]) => ({
+          size_id, planned_qty: parseInt(planned_qty) || 0,
+        })),
         additional_costs: costs.filter((c) => c.description.trim()).map((c) => ({
           cost_type: c.cost_type, description: c.description.trim(),
           planned_amount: c.planned_amount ? Number(c.planned_amount) : undefined,
+          party_vendor_id: c.cost_type === "agent_commission" && c.party_vendor_id ? c.party_vendor_id : undefined,
         })),
       }),
     onSuccess: () => {
@@ -194,8 +223,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Delivery Date</label>
-              <input type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <DatePicker value={deliveryDate} onChange={(v) => setDeliveryDate(v)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -227,14 +255,36 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
               className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="e.g. 12 — defaults from the Style" />
           </div>
+          {styleDetail && styleDetail.sizes.length > 0 && (
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Planned Qty per Size</label>
+              <p className="text-[11px] text-muted-foreground mt-0.5 mb-1.5">Pre-filled from the Style's size quantities — edit any value below.</p>
+              <div className="space-y-1.5">
+                {styleDetail.sizes.map((s) => (
+                  <div key={s.size_id} className="flex items-center gap-2">
+                    <span className="text-xs font-medium w-20 flex-shrink-0">
+                      {(sizesMaster ?? []).find((m) => m.id === s.size_id)?.name ?? "—"}
+                    </span>
+                    <input
+                      type="number" min="0"
+                      value={lotSizes[s.size_id] ?? ""}
+                      onChange={(e) => setLotSizes((prev) => ({ ...prev, [s.size_id]: e.target.value }))}
+                      className="w-28 rounded border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="Qty"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div>
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-muted-foreground">Additional Costs & Agent Commission (optional)</label>
-              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", planned_amount: "" }])}
+              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", planned_amount: "", party_vendor_id: "" }])}
                 className="text-xs font-semibold" style={{ color: INDIGO }}>+ Add</button>
             </div>
             {costs.map((c) => (
-              <div key={c.key} className="flex gap-2 mt-1.5">
+              <div key={c.key} className="flex gap-2 mt-1.5 flex-wrap">
                 <div className="w-40 flex-shrink-0">
                   <SearchableSelect
                     value={c.cost_type}
@@ -249,6 +299,17 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
                 <input type="number" step="0.01" value={c.planned_amount} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, planned_amount: e.target.value } : x))}
                   placeholder="₹ planned" className="w-24 rounded border border-input bg-background px-2 py-1.5 text-xs" />
                 <button type="button" onClick={() => setCosts((r) => r.filter((x) => x.key !== c.key))} className="text-muted-foreground px-1">×</button>
+                {c.cost_type === "agent_commission" && (
+                  <div className="w-full">
+                    <SearchableSelect
+                      value={c.party_vendor_id}
+                      onChange={(v) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, party_vendor_id: v } : x))}
+                      placeholder="Select Agent"
+                      accent={INDIGO}
+                      options={(agentVendors ?? []).map((v) => ({ value: v.id, label: v.name }))}
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -305,13 +366,13 @@ export default function ProductionLotsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Production Lots</h1>
           <p className="text-sm text-muted-foreground mt-1">Track every garment batch from planned to delivered.</p>
         </div>
-        <button
+        <Can perm="production.create"><button
           onClick={() => setShowAdd(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Lot
-        </button>
+        </button></Can>
       </div>
 
       {/* Filter tab strip */}

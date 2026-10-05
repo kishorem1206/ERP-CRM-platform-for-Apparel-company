@@ -5,6 +5,7 @@ import { UserPlus, X, Check, Ban, ShieldCheck } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
+import { Can } from "@/lib/permissions";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -223,22 +224,22 @@ export default function UsersPage() {
       render: (r) =>
         r.is_owner ? null : (
           <div className="flex items-center gap-1">
-            <button
+            <Can perm="admin.users"><button
               onClick={() => setAssignTarget(r)}
               title="Assign Roles"
               className="p-1.5 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-950/30 transition-colors"
               style={{ color: LAVENDER }}
             >
               <ShieldCheck className="h-4 w-4" />
-            </button>
-            <button
+            </button></Can>
+            <Can perm="admin.users"><button
               onClick={() => toggleActive(r)}
               disabled={toggling === r.id}
               title={r.is_active ? "Deactivate" : "Activate"}
               className={`p-1.5 rounded-lg transition-colors ${r.is_active ? "hover:bg-violet-50 dark:hover:bg-violet-950/30 text-violet-500" : "hover:bg-blue-50 dark:hover:bg-blue-950/30 text-blue-600"}`}
             >
               {r.is_active ? <Ban className="h-4 w-4" /> : <Check className="h-4 w-4" />}
-            </button>
+            </button></Can>
           </div>
         ),
     },
@@ -257,13 +258,13 @@ export default function UsersPage() {
             Manage team access and role assignments.
           </p>
         </div>
-        <button
+        <Can perm="admin.users"><button
           onClick={() => { setShowCreate(true); setError(""); }}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: BLUE }}
         >
           <UserPlus className="h-4 w-4" /> Invite User
-        </button>
+        </button></Can>
       </div>
 
       {success && (

@@ -2,6 +2,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
+import { AUTH_ME_QUERY_KEY } from "@/lib/permissions";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -18,6 +20,7 @@ type OtpData = z.infer<typeof otpSchema>;
 
 export default function LoginPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
@@ -45,6 +48,7 @@ export default function LoginPage() {
       const token = payload?.access_token;
       if (token) {
         localStorage.setItem("access_token", token);
+        queryClient.removeQueries({ queryKey: AUTH_ME_QUERY_KEY });
         router.push("/dashboard");
       }
     } catch (err: unknown) {
@@ -63,10 +67,16 @@ export default function LoginPage() {
       const token = res.data?.data?.access_token;
       if (token) {
         localStorage.setItem("access_token", token);
+        queryClient.removeQueries({ queryKey: AUTH_ME_QUERY_KEY });
         router.push("/dashboard");
       }
-    } catch {
-      setError("Invalid or expired 2FA code.");
+    } catch (err: unknown) {
+      // App error envelope: { success: false, error: "<str>" }
+      const detail = (err as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+      const message = typeof detail === "string" ? detail : "Invalid 2FA code. Please try again.";
+      setError(message);
+      // The 2FA session has ended (expired or too many wrong codes): restart from the password step.
+      if (/session|too many/i.test(message)) setSessionId(null);
     }
   }
 

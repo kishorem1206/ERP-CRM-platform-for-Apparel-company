@@ -9,6 +9,8 @@ import {
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 const inputCls =
@@ -57,6 +59,7 @@ interface Size { id: string; name: string }
 interface LotSize { id: string; size_id: string; planned_qty: number; cut_qty: number; sewn_qty: number; finished_qty: number }
 interface StageEntry {
   id: string; entry_date: string; pieces_in: number; pieces_out: number; rejected: number;
+  input_weight_kg: number | null; output_weight_kg: number | null; wastage_kg: number | null; recoverable_kg: number | null;
   operator: string | null; machine: string | null; notes: string | null;
 }
 interface StageChallan {
@@ -75,6 +78,9 @@ interface Stage {
   rate_per_pc: number | null; bill_amount: number | null; notes: string | null;
   tolerance_pct: number | null; input_unit: string | null; output_unit: string | null; conversion_rule: string | null;
   min_rate: number | null; max_rate: number | null; planned_rate: number | null;
+  input_weight_kg: number | null; output_weight_kg: number | null; wastage_kg: number | null; recoverable_kg: number | null;
+  variance_kg: number | null; permitted_tolerance_kg: number | null; within_tolerance: boolean | null;
+  weight_per_piece: number | null; effective_rate_per_kg: number | null;
   entries: StageEntry[]; challans: StageChallan[];
 }
 interface Worker { id: string; name: string; role_title: string | null }
@@ -82,6 +88,14 @@ interface LotAdditionalCost {
   id: string; cost_type: string; description: string;
   planned_amount: number | null; actual_amount: number | null;
   basis: string | null; party_vendor_id: string | null; notes: string | null;
+}
+interface LotTrim {
+  id: string; trim_name: string; category: string | null; unit: string | null;
+  planned_qty: number | null; actual_qty: number | null; notes: string | null;
+}
+interface LotPackingMaterial {
+  id: string; material_name: string; consumption_stage: string | null; unit: string | null;
+  planned_qty: number | null; actual_qty: number | null; notes: string | null;
 }
 interface FabricProcessing {
   id: string; process_type: string; vendor_id: string | null;
@@ -110,9 +124,16 @@ interface LotDetail {
   actual_selling_price: number | null; pieces_per_box: number | null; status: string;
   notes: string | null; final_output_unit: string | null; style_version: number | null;
   closed_at: string | null; sizes: LotSize[]; stages: Stage[]; additional_costs: LotAdditionalCost[];
+  trims: LotTrim[]; packing_materials: LotPackingMaterial[]; boxes_required: number | null;
+  fabric_blockers: string[];
   fabric_processing: FabricProcessing[]; cost_summary: LotCostSummary;
 }
-interface MISRow { id: string; issue_number: string; issue_date: string; status: string; items: { total_cost: number; excess_qty: number | null }[] }
+interface MISItem {
+  id: string; product_id: string; product_name: string | null; unit_abbreviation: string | null;
+  issued_qty: number; total_cost: number; excess_qty: number | null;
+  used_qty: number | null; returned_qty: number | null; wastage_qty: number | null; return_notes: string | null;
+}
+interface MISRow { id: string; issue_number: string; issue_date: string; status: string; items: MISItem[] }
 interface OutputRow { id: string; output_number: string; output_date: string; quantity: number; rejected_qty: number | null; unit_cost: number; total_cost: number }
 
 function Card({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: React.ReactNode; children: React.ReactNode }) {
@@ -171,7 +192,7 @@ function EditLotModal({ lot, onClose }: { lot: LotDetail; onClose: () => void })
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Delivery Date</label>
-            <input type="date" className={inputCls} value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} />
+            <DatePicker value={deliveryDate} onChange={(v) => setDeliveryDate(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Season</label>
@@ -359,11 +380,17 @@ function AddLotCostModal({ lotId, onClose }: { lotId: string; onClose: () => voi
   const [description, setDescription] = useState("");
   const [planned, setPlanned] = useState("");
   const [actual, setActual] = useState("");
+  const [partyVendorId, setPartyVendorId] = useState("");
+  const { data: agentVendors } = useQuery({
+    queryKey: ["vendors", "agent"],
+    queryFn: async () => (await api.get("/purchase/vendors", { params: { vendor_type: "agent", page_size: 200 } })).data.data as { id: string; name: string }[],
+  });
   const mut = useMutation({
     mutationFn: () => api.post(`/production/lots/${lotId}/additional-costs`, {
       cost_type: costType, description: description.trim(),
       planned_amount: planned ? Number(planned) : undefined,
       actual_amount: actual ? Number(actual) : undefined,
+      party_vendor_id: costType === "agent_commission" && partyVendorId ? partyVendorId : undefined,
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["production-lot", lotId] }); onClose(); },
   });
@@ -397,6 +424,18 @@ function AddLotCostModal({ lotId, onClose }: { lotId: string; onClose: () => voi
             <input type="number" step="0.01" className={inputCls} value={actual} onChange={(e) => setActual(e.target.value)} />
           </div>
         </div>
+        {costType === "agent_commission" && (
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Agent</label>
+            <SearchableSelect
+              value={partyVendorId}
+              onChange={setPartyVendorId}
+              placeholder="Select Agent"
+              accent={INDIGO}
+              options={(agentVendors ?? []).map((v) => ({ value: v.id, label: v.name }))}
+            />
+          </div>
+        )}
       </div>
       <div className="flex justify-end gap-3 p-6 border-t">
         <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">Cancel</button>
@@ -464,6 +503,154 @@ function RecordActualCostModal({ cost, lotId, onClose }: { cost: LotAdditionalCo
   );
 }
 
+function parseApiError(e: unknown, fallback: string): string {
+  const err = (e as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+  if (typeof err === "string") return err;
+  if (err && typeof (err as { message?: unknown }).message === "string") return (err as { message: string }).message;
+  return fallback;
+}
+
+// ── Record MIS Return Modal (Used / Returned / Wastage) ────────────────────────
+function RecordMISReturnModal({ item, lotId, onClose }: { item: MISItem; lotId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [usedQty, setUsedQty] = useState(item.used_qty != null ? String(item.used_qty) : "");
+  const [returnedQty, setReturnedQty] = useState(item.returned_qty != null ? String(item.returned_qty) : "");
+  const [wastageQty, setWastageQty] = useState(item.wastage_qty != null ? String(item.wastage_qty) : "");
+  const [notes, setNotes] = useState(item.return_notes ?? "");
+  const [error, setError] = useState("");
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api.patch(`/production/mis/items/${item.id}/return`, {
+        used_qty: usedQty ? Number(usedQty) : null,
+        returned_qty: returnedQty ? Number(returnedQty) : null,
+        wastage_qty: wastageQty ? Number(wastageQty) : null,
+        notes: notes || null,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
+      onClose();
+    },
+    onError: (e: unknown) => setError(parseApiError(e, "Failed to record return")),
+  });
+
+  const total = (Number(usedQty) || 0) + (Number(returnedQty) || 0) + (Number(wastageQty) || 0);
+
+  return (
+    <ModalShell maxWidth="max-w-sm" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">Record Return — {item.product_name ?? "Material"}</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        <p className="text-[11px] text-muted-foreground">
+          Issued {item.issued_qty} {item.unit_abbreviation ?? ""} — Used + Returned + Wastage must not exceed this.
+          Returned quantity flows back into real inventory.
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Used</label>
+            <input type="number" step="0.0001" className={inputCls} value={usedQty} onChange={(e) => setUsedQty(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Returned</label>
+            <input type="number" step="0.0001" className={inputCls} value={returnedQty} onChange={(e) => setReturnedQty(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Wastage</label>
+            <input type="number" step="0.0001" className={inputCls} value={wastageQty} onChange={(e) => setWastageQty(e.target.value)} />
+          </div>
+        </div>
+        <p className={`text-[11px] ${total > item.issued_qty ? "text-[#1D0DB0]" : "text-muted-foreground"}`}>
+          Total: {total} {item.unit_abbreviation ?? ""}
+        </p>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
+          <textarea className={`${inputCls} resize-none`} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => { setError(""); mut.mutate(); }}
+          disabled={mut.isPending}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {mut.isPending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ── Record Actual Qty Modal (Trims / Packing Materials) ───────────────────────
+function RecordActualQtyModal({
+  title, endpoint, item, lotId, onClose,
+}: {
+  title: string; endpoint: string;
+  item: { id: string; planned_qty: number | null; actual_qty: number | null; notes: string | null };
+  lotId: string; onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [actualQty, setActualQty] = useState(item.actual_qty != null ? String(item.actual_qty) : "");
+  const [notes, setNotes] = useState(item.notes ?? "");
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api.patch(endpoint, {
+        actual_qty: actualQty ? Number(actualQty) : null,
+        notes: notes || null,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
+      onClose();
+    },
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-sm" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">Record Actual — {title}</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Actual Qty</label>
+          <input type="number" step="0.0001" className={inputCls} value={actualQty} onChange={(e) => setActualQty(e.target.value)} />
+          {item.planned_qty != null && (
+            <p className="text-[11px] text-muted-foreground mt-1">Planned qty: {Number(item.planned_qty).toLocaleString("en-IN")}</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
+          <textarea className={`${inputCls} resize-none`} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => mut.mutate()}
+          disabled={mut.isPending}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {mut.isPending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 // ── Add Stage Entry Modal ─────────────────────────────────────────────────────
 function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string; onClose: () => void }) {
   const qc = useQueryClient();
@@ -472,8 +659,13 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
   const [piecesIn, setPiecesIn] = useState("0");
   const [piecesOut, setPiecesOut] = useState("0");
   const [rejected, setRejected] = useState("0");
+  const [inputWeightKg, setInputWeightKg] = useState("");
+  const [outputWeightKg, setOutputWeightKg] = useState("");
+  const [wastageKg, setWastageKg] = useState("");
+  const [recoverableKg, setRecoverableKg] = useState("");
   const [operator, setOperator] = useState("");
   const [machine, setMachine] = useState("");
+  const [error, setError] = useState("");
 
   const mut = useMutation({
     mutationFn: () =>
@@ -482,6 +674,10 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
         pieces_in: Number(piecesIn) || 0,
         pieces_out: Number(piecesOut) || 0,
         rejected: Number(rejected) || 0,
+        input_weight_kg: inputWeightKg ? Number(inputWeightKg) : undefined,
+        output_weight_kg: outputWeightKg ? Number(outputWeightKg) : undefined,
+        wastage_kg: wastageKg ? Number(wastageKg) : undefined,
+        recoverable_kg: recoverableKg ? Number(recoverableKg) : undefined,
         operator: operator || undefined,
         machine: machine || undefined,
       }),
@@ -489,6 +685,7 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
       onClose();
     },
+    onError: (e: unknown) => setError(parseApiError(e, "Failed to log entry")),
   });
 
   return (
@@ -502,7 +699,7 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
       <div className="p-6 space-y-4">
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Date</label>
-          <input type="date" className={inputCls} value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+          <DatePicker value={entryDate} onChange={(v) => setEntryDate(v)} />
         </div>
         <div className="grid grid-cols-3 gap-3">
           <div>
@@ -518,6 +715,16 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
             <input type="number" className={inputCls} value={rejected} onChange={(e) => setRejected(e.target.value)} />
           </div>
         </div>
+        <div>
+          <p className="text-xs font-medium text-muted-foreground mb-1.5">Weight Tracking (kg, optional)</p>
+          <div className="grid grid-cols-2 gap-3">
+            <input type="number" step="0.001" placeholder="Input weight" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
+            <input type="number" step="0.001" placeholder="Output weight" className={inputCls} value={outputWeightKg} onChange={(e) => setOutputWeightKg(e.target.value)} />
+            <input type="number" step="0.001" placeholder="Wastage" className={inputCls} value={wastageKg} onChange={(e) => setWastageKg(e.target.value)} />
+            <input type="number" step="0.001" placeholder="Recoverable / Resale" className={inputCls} value={recoverableKg} onChange={(e) => setRecoverableKg(e.target.value)} />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">Wastage + Recoverable can't exceed Input − Output.</p>
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Operator</label>
@@ -528,13 +735,14 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
             <input className={inputCls} value={machine} onChange={(e) => setMachine(e.target.value)} />
           </div>
         </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
       <div className="flex justify-end gap-3 p-6 border-t">
         <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
           Cancel
         </button>
         <button
-          onClick={() => mut.mutate()}
+          onClick={() => { setError(""); mut.mutate(); }}
           disabled={mut.isPending}
           className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
           style={{ background: INDIGO }}
@@ -615,10 +823,7 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
       onClose();
     },
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setErr(typeof msg === "string" ? msg : "Failed to send");
-    },
+    onError: (e: unknown) => setErr(parseApiError(e, "Failed to send")),
   });
 
   const assigneeId = assignmentType === "vendor" ? vendorId : workerId;
@@ -662,7 +867,7 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Out Date</label>
-            <input type="date" className={inputCls} value={outDate} onChange={(e) => setOutDate(e.target.value)} />
+            <DatePicker value={outDate} onChange={(v) => setOutDate(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Out Qty</label>
@@ -891,7 +1096,7 @@ function ReceiveChallanModal({ challan, lotId, onClose }: { challan: StageChalla
         <p className="text-xs text-muted-foreground">Sent OUT: {challan.out_qty} pcs on {challan.out_date}</p>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">In Date</label>
-          <input type="date" className={inputCls} value={inDate} onChange={(e) => setInDate(e.target.value)} />
+          <DatePicker value={inDate} onChange={(v) => setInDate(v)} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -998,7 +1203,7 @@ function StartFabricProcessingModal({ lotId, onClose }: { lotId: string; onClose
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">In Date</label>
-            <input type="date" className={inputCls} value={inDate} onChange={(e) => setInDate(e.target.value)} />
+            <DatePicker value={inDate} onChange={(v) => setInDate(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Input (kg)</label>
@@ -1067,7 +1272,7 @@ function CompleteFabricProcessingModal({ entry, lotId, onClose }: { entry: Fabri
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Out Date</label>
-            <input type="date" className={inputCls} value={outDate} onChange={(e) => setOutDate(e.target.value)} />
+            <DatePicker value={outDate} onChange={(v) => setOutDate(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Output (kg)</label>
@@ -1160,7 +1365,7 @@ function EditFabricProcessingModal({ entry, lotId, onClose }: { entry: FabricPro
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">In Date</label>
-            <input type="date" className={inputCls} value={inDate} onChange={(e) => setInDate(e.target.value)} />
+            <DatePicker value={inDate} onChange={(v) => setInDate(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Input (kg)</label>
@@ -1176,7 +1381,7 @@ function EditFabricProcessingModal({ entry, lotId, onClose }: { entry: FabricPro
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">Out Date</label>
-                <input type="date" className={inputCls} value={outDate} onChange={(e) => setOutDate(e.target.value)} />
+                <DatePicker value={outDate} onChange={(v) => setOutDate(v)} />
               </div>
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">Output (kg)</label>
@@ -1304,7 +1509,7 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Issue Date</label>
-            <input type="date" className={inputCls} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+            <DatePicker value={issueDate} onChange={(v) => setIssueDate(v)} />
           </div>
         </div>
 
@@ -1386,6 +1591,7 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
   const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
   const [productId, setProductId] = useState("");
+  const [variantId, setVariantId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [unitId, setUnitId] = useState("");
   const [outputDate, setOutputDate] = useState(today);
@@ -1395,8 +1601,12 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
 
   const products = useQuery({
     queryKey: ["products", "finished_good"],
-    queryFn: async () => (await api.get("/products", { params: { product_type: "finished_good", page_size: 200 } })).data.data as { id: string; name: string; code: string }[],
+    queryFn: async () => (await api.get("/products", { params: { product_type: "finished_good", page_size: 200 } })).data.data as {
+      id: string; name: string; code: string;
+      variants: { id: string; sku: string; size_name: string | null; colour_name: string | null }[];
+    }[],
   });
+  const variantOptions = (products.data ?? []).find((p) => p.id === productId)?.variants ?? [];
   const warehouses = useQuery({
     queryKey: ["master-warehouses"],
     queryFn: async () => (await api.get("/master/warehouses")).data.data as { id: string; name: string }[],
@@ -1413,6 +1623,7 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
         warehouse_id: warehouseId,
         output_date: outputDate,
         product_id: productId,
+        variant_id: variantId || undefined,
         quantity: Number(quantity) || 0,
         rejected_qty: rejectedQty ? Number(rejectedQty) : undefined,
         unit_id: unitId,
@@ -1438,12 +1649,24 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
           <label className="block text-xs font-medium text-muted-foreground mb-1">Product</label>
           <SearchableSelect
             value={productId}
-            onChange={setProductId}
+            onChange={(v) => { setProductId(v); setVariantId(""); }}
             placeholder="Select finished good"
             accent={INDIGO}
             options={(products.data ?? []).map((p) => ({ value: p.id, label: p.name, meta: p.code }))}
           />
         </div>
+        {variantOptions.length > 0 && (
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Variant / SKU (optional)</label>
+            <SearchableSelect
+              value={variantId}
+              onChange={setVariantId}
+              placeholder="Any variant"
+              accent={INDIGO}
+              options={variantOptions.map((v) => ({ value: v.id, label: v.sku, meta: [v.size_name, v.colour_name].filter(Boolean).join(" · ") || undefined }))}
+            />
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Warehouse</label>
@@ -1468,7 +1691,7 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Output Date</label>
-          <input type="date" className={inputCls} value={outputDate} onChange={(e) => setOutputDate(e.target.value)} />
+          <DatePicker value={outputDate} onChange={(v) => setOutputDate(v)} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -1503,6 +1726,20 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
       </div>
     </ModalShell>
   );
+}
+
+async function downloadDeliveryChallanPdf(challanId: string, challanNumber: string) {
+  const res = await api.get(`/production/stages/challans/${challanId}/delivery-challan.pdf`, {
+    responseType: "blob",
+  });
+  const blobUrl = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = `DeliveryChallan_${challanNumber.replace(/\//g, "-")}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 }
 
 // ── Job Work Challan Row ────────────────────────────────────────────────────────
@@ -1546,14 +1783,14 @@ function ChallanRow({ challan, lotId, assigneeName, onReceive }: { challan: Stag
               Bill Received
             </span>
           ) : (
-            <button
+            <Can perm="production.edit"><button
               onClick={() => billMut.mutate()}
               disabled={billMut.isPending}
               className="text-[11px] font-semibold hover:opacity-80 transition-opacity disabled:opacity-50"
               style={{ color: INDIGO }}
             >
               {billMut.isPending ? "Saving…" : "Mark Bill Received"}
-            </button>
+            </button></Can>
           )
         )}
         {(challan.status === "out" || challan.status === "partial") && (
@@ -1561,6 +1798,13 @@ function ChallanRow({ challan, lotId, assigneeName, onReceive }: { challan: Stag
             Receive
           </button>
         )}
+        <button
+          onClick={() => downloadDeliveryChallanPdf(challan.id, challan.challan_number)}
+          className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors"
+          title="Download Delivery Challan"
+        >
+          <Download className="h-3 w-3" />
+        </button>
       </div>
     </div>
   );
@@ -1596,11 +1840,30 @@ function StageCard({
             <p className="text-muted-foreground">Rate / Pc</p>
             <p className="font-medium mt-0.5">{stage.rate_per_pc != null ? INR(Number(stage.rate_per_pc)) : "—"}</p>
           </div>
-          <button onClick={onEditRate} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Edit rate">
+          <Can perm="production.edit"><button onClick={onEditRate} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Edit rate">
             <Pencil className="h-3 w-3" />
-          </button>
+          </button></Can>
         </div>
       </div>
+      {stage.input_weight_kg != null && (
+        <div className="px-4 py-3 grid grid-cols-5 gap-3 text-xs border-b border-border">
+          <div><p className="text-muted-foreground">Input Weight</p><p className="font-medium mt-0.5">{Number(stage.input_weight_kg)} kg</p></div>
+          <div><p className="text-muted-foreground">Output Weight</p><p className="font-medium mt-0.5">{stage.output_weight_kg != null ? `${Number(stage.output_weight_kg)} kg` : "—"}</p></div>
+          <div>
+            <p className="text-muted-foreground">Variance</p>
+            {stage.within_tolerance != null ? (
+              <span
+                className="inline-block mt-0.5 px-2 py-0.5 rounded text-[11px] font-bold"
+                style={stage.within_tolerance ? { background: "#0F78FF18", color: "#0F78FF" } : { background: "#1D0DB018", color: "#1D0DB0" }}
+              >
+                {Number(stage.variance_kg).toFixed(2)} kg · {stage.within_tolerance ? "Within Tolerance" : "Above Tolerance"}
+              </span>
+            ) : <p className="font-medium mt-0.5">—</p>}
+          </div>
+          <div><p className="text-muted-foreground">Weight / Piece</p><p className="font-medium mt-0.5">{stage.weight_per_piece != null ? `${Number(stage.weight_per_piece)} kg` : "—"}</p></div>
+          <div><p className="text-muted-foreground">Rate / Kg</p><p className="font-medium mt-0.5">{stage.effective_rate_per_kg != null ? INR(Number(stage.effective_rate_per_kg)) : "—"}</p></div>
+        </div>
+      )}
       <div className="px-4 py-3 grid grid-cols-5 gap-3 text-xs border-b border-border bg-muted/10">
         <div>
           <p className="text-muted-foreground">Planned Qty</p>
@@ -1631,17 +1894,17 @@ function StageCard({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Entries</p>
           <div className="flex items-center gap-3">
             {pendingChallan ? (
-              <button onClick={() => onReceiveChallan(pendingChallan)} className="flex items-center gap-1 text-[11px] font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+              <Can perm="production.edit"><button onClick={() => onReceiveChallan(pendingChallan)} className="flex items-center gap-1 text-[11px] font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
                 <Inbox className="h-3 w-3" /> Receive
-              </button>
+              </button></Can>
             ) : (
-              <button onClick={onSendToVendor} className="flex items-center gap-1 text-[11px] font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+              <Can perm="production.edit"><button onClick={onSendToVendor} className="flex items-center gap-1 text-[11px] font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
                 <Truck className="h-3 w-3" /> Send
-              </button>
+              </button></Can>
             )}
-            <button onClick={onAddEntry} className="flex items-center gap-1 text-[11px] font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+            <Can perm="production.edit"><button onClick={onAddEntry} className="flex items-center gap-1 text-[11px] font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
               <Plus className="h-3 w-3" /> Log Entry
-            </button>
+            </button></Can>
           </div>
         </div>
         {sortedEntries.length === 0 ? (
@@ -1690,6 +1953,9 @@ export default function LotDetailPage() {
   const [rateStage, setRateStage] = useState<Stage | null>(null);
   const [entryStage, setEntryStage] = useState<Stage | null>(null);
   const [actualCost, setActualCost] = useState<LotAdditionalCost | null>(null);
+  const [actualTrim, setActualTrim] = useState<LotTrim | null>(null);
+  const [actualPacking, setActualPacking] = useState<LotPackingMaterial | null>(null);
+  const [misReturnItem, setMisReturnItem] = useState<MISItem | null>(null);
   const [showAddCost, setShowAddCost] = useState(false);
   const [vendorStage, setVendorStage] = useState<Stage | null>(null);
   const [receiveChallan, setReceiveChallan] = useState<StageChallan | null>(null);
@@ -1867,38 +2133,38 @@ export default function LotDetailPage() {
               <Download className="h-4 w-4" /> {reportBusy === "download" ? "Generating…" : "Download Production Report"}
             </button>
             {nextStatus && lot.status !== "cancelled" && (
-              <button
+              <Can perm="production.edit"><button
                 onClick={() => statusMut.mutate(nextStatus)}
                 disabled={statusMut.isPending}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-50"
                 style={{ background: STATUS_HEX[nextStatus] }}
               >
                 {statusMut.isPending ? "Updating…" : <>Advance to {nextStatus.replace(/_/g, " ")} <ChevronRight className="h-4 w-4" /></>}
-              </button>
+              </button></Can>
             )}
             {(lot.status === "cancelled" || lot.status === "completed") && (
-              <button
+              <Can perm="production.edit"><button
                 onClick={() => reopenMut.mutate()}
                 disabled={reopenMut.isPending}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-50"
                 style={{ background: INDIGO }}
               >
                 <RotateCcw className="h-4 w-4" /> {reopenMut.isPending ? "Reopening…" : "Reopen"}
-              </button>
+              </button></Can>
             )}
-            <button
+            <Can perm="production.edit"><button
               onClick={() => setShowEdit(true)}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-input hover:bg-muted transition-colors"
             >
               <Pencil className="h-4 w-4" /> Edit
-            </button>
-            <button
+            </button></Can>
+            <Can perm="production.delete"><button
               onClick={() => { setDeleteErr(null); setConfirmDelete(true); }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors"
               style={{ color: "#1D0DB0", borderColor: "#1D0DB04D" }}
             >
               <Trash2 className="h-4 w-4" /> Delete
-            </button>
+            </button></Can>
           </div>
         </div>
       </div>
@@ -1939,9 +2205,9 @@ export default function LotDetailPage() {
           <div>
             <div className="flex items-center gap-1.5">
               <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Selling Price / Piece</p>
-              <button onClick={() => setShowEditPrice(true)} className="p-0.5 rounded hover:bg-muted text-muted-foreground transition-colors" title="Set selling price">
+              <Can perm="production.edit"><button onClick={() => setShowEditPrice(true)} className="p-0.5 rounded hover:bg-muted text-muted-foreground transition-colors" title="Set selling price">
                 <Pencil className="h-3 w-3" />
-              </button>
+              </button></Can>
             </div>
             {cs.actual_selling_price_per_piece != null ? (
               <>
@@ -2156,9 +2422,9 @@ export default function LotDetailPage() {
         title="Fabric Processing"
         subtitle="Dyeing / printing — precedes cutting; a weight gain or loss is expected, not an error"
         action={
-          <button onClick={() => setShowStartFabric(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+          <Can perm="production.edit"><button onClick={() => setShowStartFabric(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
             <Plus className="h-3.5 w-3.5" /> Start Processing
-          </button>
+          </button></Can>
         }
       >
         {lot.fabric_processing.length === 0 ? (
@@ -2191,13 +2457,13 @@ export default function LotDetailPage() {
                     {f.rate_per_kg != null && <span className="text-muted-foreground">{INR(Number(f.rate_per_kg))}/kg</span>}
                     {f.bill_amount != null && <span className="text-muted-foreground">{INR(Number(f.bill_amount))}</span>}
                     {f.status === "in_process" && (
-                      <button onClick={() => setCompleteFabricEntry(f)} className="font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+                      <Can perm="production.edit"><button onClick={() => setCompleteFabricEntry(f)} className="font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
                         Complete
-                      </button>
+                      </button></Can>
                     )}
-                    <button onClick={() => setEditFabricEntry(f)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Edit">
+                    <Can perm="production.edit"><button onClick={() => setEditFabricEntry(f)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Edit">
                       <Pencil className="h-3 w-3" />
-                    </button>
+                    </button></Can>
                   </div>
                 </div>
               );
@@ -2211,16 +2477,24 @@ export default function LotDetailPage() {
         subtitle="Snapshotted from the Style at creation — editing the Style will not change these"
         action={
           !["completed", "cancelled"].includes(lot.status) && (
-            <button
+            <Can perm="production.edit"><button
               onClick={() => setShowAddStage(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
               style={{ background: INDIGO }}
             >
               <Plus className="h-3.5 w-3.5" /> Add Stage
-            </button>
+            </button></Can>
           )
         }
       >
+        {lot.fabric_blockers.length > 0 && !["completed", "cancelled"].includes(lot.status) && (
+          <div className="mb-3 px-4 py-2.5 rounded-xl text-xs" style={{ background: "#8174F518", color: "#6D5FE0" }}>
+            <p className="font-semibold">Fabric not ready — garment work can't start yet (§33)</p>
+            <ul className="list-disc ml-4 mt-1">
+              {lot.fabric_blockers.map((b) => <li key={b}>{b}</li>)}
+            </ul>
+          </div>
+        )}
         {lot.stages.length === 0 ? (
           <Empty text="No stages on this lot." />
         ) : (
@@ -2247,9 +2521,9 @@ export default function LotDetailPage() {
         title="Additional Costs & Agent Commission"
         subtitle="Optional per-lot costs — record the actual amount as it's incurred"
         action={
-          <button onClick={() => setShowAddCost(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80" style={{ color: INDIGO }}>
+          <Can perm="production.edit"><button onClick={() => setShowAddCost(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80" style={{ color: INDIGO }}>
             <Plus className="h-3.5 w-3.5" /> Add Cost
-          </button>
+          </button></Can>
         }
       >
         {lot.additional_costs.length === 0 ? (
@@ -2271,15 +2545,84 @@ export default function LotDetailPage() {
                   <span className="font-medium">
                     Actual {a.actual_amount != null ? INR(Number(a.actual_amount)) : "—"}
                   </span>
-                  <button onClick={() => setActualCost(a)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Record actual">
+                  <Can perm="production.edit"><button onClick={() => setActualCost(a)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Record actual">
                     <Pencil className="h-3 w-3" />
-                  </button>
-                  <button
+                  </button></Can>
+                  <Can perm="production.edit"><button
                     onClick={async () => { await api.delete(`/production/lots/additional-costs/${a.id}`); qc.invalidateQueries({ queryKey: ["production-lot", lot.id] }); }}
                     className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Remove"
                   >
                     <Trash2 className="h-3 w-3" />
-                  </button>
+                  </button></Can>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Trims"
+        subtitle="Auto-fetched from the Style at LOT creation — size-wise consumption summed against this LOT's per-size plan (§21)"
+      >
+        {lot.trims.length === 0 ? (
+          <Empty text="No trims configured on the Style." />
+        ) : (
+          <div className="space-y-2">
+            {lot.trims.map((t) => (
+              <div key={t.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
+                <div className="flex items-center gap-2">
+                  {t.category && <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{t.category}</span>}
+                  <span className="font-medium">{t.trim_name}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-muted-foreground text-xs">
+                    Planned {t.planned_qty != null ? `${Number(t.planned_qty).toLocaleString("en-IN")} ${t.unit ?? ""}` : "—"}
+                  </span>
+                  <span className="font-medium">
+                    Actual {t.actual_qty != null ? `${Number(t.actual_qty).toLocaleString("en-IN")} ${t.unit ?? ""}` : "—"}
+                  </span>
+                  <Can perm="production.edit"><button onClick={() => setActualTrim(t)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Record actual">
+                    <Pencil className="h-3 w-3" />
+                  </button></Can>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Packing Materials"
+        subtitle="Auto-fetched from the Style at LOT creation (§22/§23)"
+        action={
+          lot.boxes_required != null && (
+            <span className="text-xs px-2.5 py-1 rounded bg-muted font-medium">
+              Boxes Required: {lot.boxes_required.toLocaleString("en-IN")}
+            </span>
+          )
+        }
+      >
+        {lot.packing_materials.length === 0 ? (
+          <Empty text="No packing materials configured on the Style." />
+        ) : (
+          <div className="space-y-2">
+            {lot.packing_materials.map((p) => (
+              <div key={p.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
+                <div className="flex items-center gap-2">
+                  {p.consumption_stage && <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{p.consumption_stage}</span>}
+                  <span className="font-medium">{p.material_name}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-muted-foreground text-xs">
+                    Planned {p.planned_qty != null ? `${Number(p.planned_qty).toLocaleString("en-IN")} ${p.unit ?? ""}` : "—"}
+                  </span>
+                  <span className="font-medium">
+                    Actual {p.actual_qty != null ? `${Number(p.actual_qty).toLocaleString("en-IN")} ${p.unit ?? ""}` : "—"}
+                  </span>
+                  <Can perm="production.edit"><button onClick={() => setActualPacking(p)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Record actual">
+                    <Pencil className="h-3 w-3" />
+                  </button></Can>
                 </div>
               </div>
             ))}
@@ -2292,29 +2635,51 @@ export default function LotDetailPage() {
         subtitle="Raw material issued from warehouse to this lot"
         action={
           !["completed", "cancelled"].includes(lot.status) && (
-            <button onClick={() => setShowIssueMaterial(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+            <Can perm="production.create"><button onClick={() => setShowIssueMaterial(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
               <Plus className="h-3.5 w-3.5" /> Issue Material
-            </button>
+            </button></Can>
           )
         }
       >
         {(misQuery.data ?? []).length === 0 ? (
           <Empty text="No material issued yet." />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {(misQuery.data ?? []).map((m) => {
               const hasExcess = m.items.some((it) => it.excess_qty != null && Number(it.excess_qty) > 0);
               return (
-                <div key={m.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
-                  <span className="font-medium">{m.issue_number}</span>
-                  <span className="text-muted-foreground">{m.issue_date}</span>
-                  <StatusBadge status={m.status} />
-                  {hasExcess && (
-                    <span className="px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: "#A096F718", color: "#A096F7" }}>
-                      Excess
-                    </span>
-                  )}
-                  <span className="font-medium">{INR(m.items.reduce((s, it) => s + Number(it.total_cost ?? 0), 0))}</span>
+                <div key={m.id} className="rounded-xl border border-border overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-muted/30 text-sm">
+                    <span className="font-medium">{m.issue_number}</span>
+                    <span className="text-muted-foreground">{m.issue_date}</span>
+                    <StatusBadge status={m.status} />
+                    {hasExcess && (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: "#A096F718", color: "#A096F7" }}>
+                        Excess
+                      </span>
+                    )}
+                    <span className="font-medium">{INR(m.items.reduce((s, it) => s + Number(it.total_cost ?? 0), 0))}</span>
+                  </div>
+                  <div className="divide-y divide-border">
+                    {m.items.map((it) => (
+                      <div key={it.id} className="flex items-center justify-between px-4 py-2 text-xs flex-wrap gap-2">
+                        <span className="font-medium">{it.product_name ?? "—"}</span>
+                        <span className="text-muted-foreground">
+                          Issued {it.issued_qty} {it.unit_abbreviation ?? ""}
+                          {it.used_qty != null && <> · Used {it.used_qty}</>}
+                          {it.returned_qty != null && <> · Returned {it.returned_qty}</>}
+                          {it.wastage_qty != null && <> · Wastage {it.wastage_qty}</>}
+                        </span>
+                        <Can perm="production.edit"><button
+                          onClick={() => setMisReturnItem(it)}
+                          className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors"
+                          title="Record Return"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button></Can>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -2326,9 +2691,9 @@ export default function LotDetailPage() {
         title="Production Outputs"
         subtitle="Finished goods received into the warehouse from this lot"
         action={
-          <button onClick={() => setShowRecordOutput(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+          <Can perm="production.create"><button onClick={() => setShowRecordOutput(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
             <Plus className="h-3.5 w-3.5" /> Record Output
-          </button>
+          </button></Can>
         }
       >
         {(outputsQuery.data ?? []).length === 0 ? (
@@ -2356,6 +2721,19 @@ export default function LotDetailPage() {
       {entryStage && <AddEntryModal stage={entryStage} lotId={lot.id} onClose={() => setEntryStage(null)} />}
       {showAddCost && <AddLotCostModal lotId={lot.id} onClose={() => setShowAddCost(false)} />}
       {actualCost && <RecordActualCostModal cost={actualCost} lotId={lot.id} onClose={() => setActualCost(null)} />}
+      {actualTrim && (
+        <RecordActualQtyModal
+          title={actualTrim.trim_name} endpoint={`/production/lots/trims/${actualTrim.id}`}
+          item={actualTrim} lotId={lot.id} onClose={() => setActualTrim(null)}
+        />
+      )}
+      {actualPacking && (
+        <RecordActualQtyModal
+          title={actualPacking.material_name} endpoint={`/production/lots/packing/${actualPacking.id}`}
+          item={actualPacking} lotId={lot.id} onClose={() => setActualPacking(null)}
+        />
+      )}
+      {misReturnItem && <RecordMISReturnModal item={misReturnItem} lotId={lot.id} onClose={() => setMisReturnItem(null)} />}
       {vendorStage && <SendToVendorModal stage={vendorStage} lotId={lot.id} onClose={() => setVendorStage(null)} />}
       {receiveChallan && <ReceiveChallanModal challan={receiveChallan} lotId={lot.id} onClose={() => setReceiveChallan(null)} />}
       {showAddStage && <AddStageModal lotId={lot.id} onClose={() => setShowAddStage(false)} />}

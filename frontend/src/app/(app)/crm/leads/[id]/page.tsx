@@ -7,11 +7,14 @@ import {
   ArrowLeft, X, Phone, Users, StickyNote, CheckSquare, Mail,
   Plus, CheckCircle2, Circle, ShoppingCart, Send, Loader2, Inbox,
   ChevronDown, FileText, Trash2, MessageCircle, Clock,
+  Flame, AlertTriangle, History, RefreshCw, Gauge,
 } from "lucide-react";
 import api from "@/lib/api";
 import { CreateTaskModal } from "@/components/crm/create-task-modal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -101,6 +104,22 @@ interface Lead {
   contact_outcome: string | null;
   next_action: string | null;
   lost_reason: string | null;
+  score: number | null;
+  priority: string | null;
+  score_version: number | null;
+  score_breakdown: { category: string; code: string; label: string; points: number }[] | null;
+  scored_at: string | null;
+  duplicate_status: string;
+  is_repeat_contact: boolean;
+}
+
+interface RepeatContact {
+  previous_lead_id: string;
+  previous_date: string;
+  previous_source: string | null;
+  previous_status: string;
+  previous_stage_name: string | null;
+  previous_assigned_to_name: string | null;
 }
 
 interface FollowUpType {
@@ -208,6 +227,131 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+
+// ── Lead Intelligence card ─────────────────────────────────────────────────
+const PRIORITY_COLORS: Record<string, string> = { high: "#EF4444", medium: "#F59E0B", low: "#64748B" };
+const DUPLICATE_LABELS: Record<string, string> = {
+  exact: "Exact duplicate contact", high_confidence: "Likely duplicate contact", possible: "Possible duplicate contact",
+};
+
+function LeadIntelligenceCard({ lead, repeatContact, leadId }: { lead: Lead; repeatContact: RepeatContact | null; leadId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const queryClient = useQueryClient();
+
+  const rescoreMutation = useMutation({
+    mutationFn: () => api.post(`/crm/leads/${leadId}/rescore`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["crm-lead", leadId] }),
+  });
+
+  if (lead.score === null || lead.score === undefined) {
+    return (
+      <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Not scored yet.</p>
+        <button
+          onClick={() => rescoreMutation.mutate()}
+          disabled={rescoreMutation.isPending}
+          className="flex items-center gap-1.5 text-xs font-semibold hover:underline disabled:opacity-50"
+          style={{ color: INDIGO }}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${rescoreMutation.isPending ? "animate-spin" : ""}`} /> Score now
+        </button>
+      </div>
+    );
+  }
+
+  const priorityColor = PRIORITY_COLORS[lead.priority ?? ""] ?? "#64748B";
+  const breakdown = lead.score_breakdown ?? [];
+
+  return (
+    <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+        <div className="flex items-center gap-2">
+          <Gauge className="h-4 w-4 text-muted-foreground" />
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Lead Intelligence</p>
+        </div>
+        <button
+          onClick={() => rescoreMutation.mutate()}
+          disabled={rescoreMutation.isPending}
+          title="Recompute score"
+          className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${rescoreMutation.isPending ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      <div className="p-5 space-y-4">
+        <div className="flex items-center gap-4">
+          <div className="text-3xl font-bold tabular-nums">{lead.score}<span className="text-sm text-muted-foreground font-normal"> / 100</span></div>
+          <span
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold uppercase"
+            style={{ background: `${priorityColor}18`, color: priorityColor }}
+          >
+            <Flame className="h-3 w-3" /> {lead.priority ?? "unscored"} priority
+          </span>
+        </div>
+
+        {lead.duplicate_status && lead.duplicate_status !== "none" && (
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-amber-50 border border-amber-200">
+            <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-800">{DUPLICATE_LABELS[lead.duplicate_status] ?? lead.duplicate_status}</p>
+          </div>
+        )}
+
+        {repeatContact && (
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-blue-50 border border-blue-200">
+            <History className="h-4 w-4 text-blue-600 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-blue-800">
+              <p className="font-semibold">Repeat contact — has enquired before</p>
+              <p className="mt-0.5">
+                {new Date(repeatContact.previous_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                {repeatContact.previous_source && ` · via ${repeatContact.previous_source}`}
+                {repeatContact.previous_stage_name && ` · reached "${repeatContact.previous_stage_name}"`}
+                {repeatContact.previous_assigned_to_name && ` · handled by ${repeatContact.previous_assigned_to_name}`}
+              </p>
+              <Link href={`/crm/leads/${repeatContact.previous_lead_id}`} className="underline font-semibold mt-1 inline-block">
+                View previous enquiry
+              </Link>
+            </div>
+          </div>
+        )}
+
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          Why this score? ({breakdown.length} signal{breakdown.length !== 1 ? "s" : ""})
+        </button>
+
+        {expanded && (
+          <div className="space-y-1.5 pt-1">
+            {breakdown.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No signals contributed to this score.</p>
+            ) : (
+              breakdown.map((row, i) => (
+                <div key={i} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">{row.label}</span>
+                  <span
+                    className="font-bold tabular-nums flex-shrink-0"
+                    style={{ color: row.points > 0 ? "#10B981" : row.points < 0 ? "#EF4444" : "hsl(var(--muted-foreground))" }}
+                  >
+                    {row.points > 0 ? "+" : ""}{row.points}
+                  </span>
+                </div>
+              ))
+            )}
+            {lead.scored_at && (
+              <p className="text-[11px] text-muted-foreground/70 pt-1">
+                Scored {new Date(lead.scored_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} · v{lead.score_version}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── ConvertLeadModal ──────────────────────────────────────────────────────────
 function ConvertLeadModal({
   leadId,
@@ -229,7 +373,7 @@ function ConvertLeadModal({
   const { data: customersData } = useQuery({
     queryKey: ["sales-customers"],
     queryFn: async () => {
-      const res = await api.get("/api/v1/sales/customers?search=");
+      const res = await api.get("/sales/customers?search=");
       return res.data;
     },
   });
@@ -311,12 +455,7 @@ function ConvertLeadModal({
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               Order Date <span className="text-destructive">*</span>
             </label>
-            <input
-              type="date"
-              className={inputCls}
-              value={form.order_date}
-              onChange={(e) => set("order_date", e.target.value)}
-            />
+            <DatePicker value={form.order_date} onChange={(v) => set("order_date", v)} />
           </div>
 
           {/* Expected Delivery */}
@@ -324,12 +463,7 @@ function ConvertLeadModal({
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               Expected Delivery <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
-            <input
-              type="date"
-              className={inputCls}
-              value={form.expected_delivery}
-              onChange={(e) => set("expected_delivery", e.target.value)}
-            />
+            <DatePicker value={form.expected_delivery} onChange={(v) => set("expected_delivery", v)} />
           </div>
 
           {/* Notes */}
@@ -748,21 +882,11 @@ function AddActivityModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Schedule From</label>
-              <input
-                className={inputCls}
-                type="datetime-local"
-                value={form.schedule_from}
-                onChange={(e) => set("schedule_from", e.target.value)}
-              />
+              <DatePicker value={form.schedule_from} onChange={(v) => set("schedule_from", v)} mode="datetime" />
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Schedule To</label>
-              <input
-                className={inputCls}
-                type="datetime-local"
-                value={form.schedule_to}
-                onChange={(e) => set("schedule_to", e.target.value)}
-              />
+              <DatePicker value={form.schedule_to} onChange={(v) => set("schedule_to", v)} mode="datetime" />
             </div>
           </div>
           <div>
@@ -954,7 +1078,7 @@ function ActivityItem({ activity, leadId }: { activity: Activity; leadId: string
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
           <p className="text-sm font-medium">{activity.title}</p>
-          <button
+          <Can perm="crm.edit"><button
             onClick={() => (activity.is_done ? reopenMutation.mutate() : setShowComplete(true))}
             disabled={reopenMutation.isPending}
             className="flex-shrink-0 p-0.5 rounded transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
@@ -965,7 +1089,7 @@ function ActivityItem({ activity, leadId }: { activity: Activity; leadId: string
             ) : (
               <Circle className="h-4 w-4 text-muted-foreground" />
             )}
-          </button>
+          </button></Can>
         </div>
         {activity.comment && (
           <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{activity.comment}</p>
@@ -1086,12 +1210,7 @@ function CompleteActivityModal({
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">When</label>
-              <input
-                className={inputCls}
-                type="datetime-local"
-                value={nextAt}
-                onChange={(e) => setNextAt(e.target.value)}
-              />
+              <DatePicker value={nextAt} onChange={(v) => setNextAt(v)} mode="datetime" />
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
@@ -1152,6 +1271,14 @@ export default function LeadDetailPage() {
     queryKey: ["crm-activities", id],
     queryFn: async () => {
       const res = await api.get(`/crm/activities?lead_id=${id}`);
+      return res.data;
+    },
+  });
+
+  const { data: repeatContactData } = useQuery({
+    queryKey: ["crm-lead-repeat-contact", id],
+    queryFn: async () => {
+      const res = await api.get(`/crm/leads/${id}/repeat-contact`);
       return res.data;
     },
   });
@@ -1303,7 +1430,7 @@ export default function LeadDetailPage() {
           <div className="flex items-center gap-2 flex-wrap">
             {lead.status === "open" && (
               <>
-                <button
+                <Can perm="crm.edit"><Can perm="sales.create"><button
                   onClick={() => {
                     setConvertMarkWon(true);
                     setShowConvert(true);
@@ -1312,18 +1439,18 @@ export default function LeadDetailPage() {
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   Mark Won
-                </button>
-                <button
+                </button></Can></Can>
+                <Can perm="crm.edit"><button
                   onClick={() => setShowMarkLost(true)}
                   className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-violet-500 hover:bg-violet-600 transition-colors"
                 >
                   <X className="h-4 w-4" />
                   Mark Lost
-                </button>
+                </button></Can>
               </>
             )}
             {lead.status === "won" && (
-              <button
+              <Can perm="crm.edit"><Can perm="sales.create"><button
                 onClick={() => {
                   setConvertMarkWon(false);
                   setShowConvert(true);
@@ -1333,18 +1460,20 @@ export default function LeadDetailPage() {
               >
                 <ShoppingCart className="h-4 w-4" />
                 Convert to Sales Order
-              </button>
+              </button></Can></Can>
             )}
-            <button
+            <Can perm="crm.delete"><button
               onClick={() => setConfirmDelete(true)}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-violet-500 border border-violet-200 hover:bg-violet-50 transition-colors"
             >
               <Trash2 className="h-4 w-4" />
               Delete
-            </button>
+            </button></Can>
           </div>
         </div>
       </div>
+
+      <LeadIntelligenceCard lead={lead} repeatContact={repeatContactData?.data ?? null} leadId={id} />
 
       {/* Two-column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
@@ -1447,13 +1576,13 @@ export default function LeadDetailPage() {
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs font-medium text-muted-foreground">Tasks</label>
-                <button
+                <Can perm="crm.create"><button
                   onClick={() => setShowAddTask(true)}
                   className="text-xs font-semibold hover:underline"
                   style={{ color: INDIGO }}
                 >
                   + Add Task
-                </button>
+                </button></Can>
               </div>
               {tasks.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No tasks for this lead yet.</p>
@@ -1469,7 +1598,7 @@ export default function LeadDetailPage() {
                           <p className="text-muted-foreground">{new Date(t.due_at).toLocaleDateString("en-IN")}</p>
                         )}
                       </div>
-                      <button
+                      <Can perm="crm.edit"><button
                         onClick={() => t.status !== "completed" && completeTaskMutation.mutate(t.id)}
                         disabled={t.status === "completed"}
                         className="flex-shrink-0 p-0.5 rounded hover:bg-muted transition-colors disabled:cursor-default"
@@ -1479,7 +1608,7 @@ export default function LeadDetailPage() {
                         ) : (
                           <Circle className="h-4 w-4 text-muted-foreground" />
                         )}
-                      </button>
+                      </button></Can>
                     </div>
                   ))}
                 </div>
@@ -1490,13 +1619,13 @@ export default function LeadDetailPage() {
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs font-medium text-muted-foreground">Interested Products</label>
-                <button
+                <Can perm="crm.create"><button
                   onClick={() => setShowAddProduct(true)}
                   className="text-xs font-semibold hover:underline"
                   style={{ color: INDIGO }}
                 >
                   + Add Product
-                </button>
+                </button></Can>
               </div>
               {leadProducts.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No products linked to this lead yet.</p>
@@ -1517,12 +1646,12 @@ export default function LeadDetailPage() {
                           </p>
                         )}
                       </div>
-                      <button
+                      <Can perm="crm.delete"><button
                         onClick={() => removeLeadProductMutation.mutate(lp.id)}
                         className="flex-shrink-0 p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-violet-500"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      </button></Can>
                     </div>
                   ))}
                 </div>
@@ -1556,12 +1685,12 @@ export default function LeadDetailPage() {
                   </button>
                 </form>
               ) : (
-                <button
+                <Can perm="crm.edit"><button
                   onClick={() => setEditingField("lead_value")}
                   className="text-sm text-left w-full px-3 py-2 rounded-xl border border-transparent hover:border-input hover:bg-muted/30 transition-all"
                 >
                   {lead.lead_value ? `₹${lead.lead_value.toLocaleString("en-IN")}` : <span className="text-muted-foreground">Click to set value…</span>}
-                </button>
+                </button></Can>
               )}
             </div>
 
@@ -1580,40 +1709,38 @@ export default function LeadDetailPage() {
             {/* Source */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Source</label>
-              <SearchableSelect
+              <Can perm="crm.edit"><SearchableSelect
                 options={sources.map((s) => ({ value: s.id, label: s.name }))}
                 value={lead.source_id ?? ""}
                 onChange={(v) => updateMutation.mutate({ source_id: v })}
                 placeholder="Select source…"
                 accent={INDIGO}
-              />
+              /></Can>
             </div>
 
             {/* Type */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Type</label>
-              <SearchableSelect
+              <Can perm="crm.edit"><SearchableSelect
                 options={types.map((t) => ({ value: t.id, label: t.name }))}
                 value={lead.type_id ?? ""}
                 onChange={(v) => updateMutation.mutate({ type_id: v })}
                 placeholder="Select type…"
                 accent={INDIGO}
-              />
+              /></Can>
             </div>
 
             {/* Expected Close Date */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Expected Close Date</label>
-              <input
-                type="date"
-                defaultValue={lead.expected_close_date ?? ""}
-                onBlur={(e) => {
-                  if (e.target.value !== (lead.expected_close_date ?? "")) {
-                    updateMutation.mutate({ expected_close_date: e.target.value || null });
+              <Can perm="crm.edit"><DatePicker
+                value={lead.expected_close_date ?? ""}
+                onChange={(v) => {
+                  if (v !== (lead.expected_close_date ?? "")) {
+                    updateMutation.mutate({ expected_close_date: v || null });
                   }
                 }}
-                className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
+              /></Can>
             </div>
 
             {/* Tags */}
@@ -1662,12 +1789,12 @@ export default function LeadDetailPage() {
                   </div>
                 </form>
               ) : (
-                <button
+                <Can perm="crm.edit"><button
                   onClick={() => setEditingField("notes")}
                   className="text-sm text-left w-full px-3 py-2 rounded-xl border border-transparent hover:border-input hover:bg-muted/30 transition-all whitespace-pre-wrap"
                 >
                   {lead.notes ? lead.notes : <span className="text-muted-foreground">Click to add notes…</span>}
-                </button>
+                </button></Can>
               )}
             </div>
 
@@ -1719,13 +1846,13 @@ export default function LeadDetailPage() {
                   <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                     Activity Timeline
                   </p>
-                  <button
+                  <Can perm="crm.create"><button
                     onClick={() => setShowAddActivity(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90"
                     style={{ background: INDIGO }}
                   >
                     <Plus className="h-3.5 w-3.5" /> Add
-                  </button>
+                  </button></Can>
                 </div>
                 {activities.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-8">
@@ -1748,13 +1875,13 @@ export default function LeadDetailPage() {
                   <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                     Email Thread
                   </p>
-                  <button
+                  <Can perm="crm.create"><button
                     onClick={() => setShowCompose(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90"
                     style={{ background: INDIGO }}
                   >
                     <Plus className="h-3.5 w-3.5" /> Compose
-                  </button>
+                  </button></Can>
                 </div>
                 {emails.length === 0 ? (
                   <div className="text-center py-10">

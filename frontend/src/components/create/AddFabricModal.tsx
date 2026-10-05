@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import { ModalShell, Field, Input, Textarea, SegControl, ModalActions, SearchableSelect } from "./ModalShell";
 import api from "@/lib/api";
+import { DatePicker } from "@/components/shared/date-picker";
 
 interface Comp { fibre_name: string; percentage: string }
 
@@ -169,7 +170,7 @@ export function AddFabricModal({ open, onClose }: Props) {
             <Input placeholder="INV-001" value={form.invoice_number} onChange={(e) => set("invoice_number", e.target.value)} />
           </Field>
           <Field label="Invoice Date">
-            <Input type="date" value={form.invoice_date} onChange={(e) => set("invoice_date", e.target.value)} />
+            <DatePicker value={form.invoice_date} onChange={(v) => set("invoice_date", v)} />
           </Field>
         </div>
 

@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { ModalShell } from "@/components/shared/modal-shell";
+import { DatePicker } from "@/components/shared/date-picker";
 
 const INDIGO = "#0049A7";
 
@@ -135,13 +136,13 @@ export function AdSpendFormModal({
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               Period Start <span className="text-destructive">*</span>
             </label>
-            <input className={inputCls} type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} />
+            <DatePicker value={periodStart} onChange={(v) => setPeriodStart(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               Period End <span className="text-destructive">*</span>
             </label>
-            <input className={inputCls} type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+            <DatePicker value={periodEnd} onChange={(v) => setPeriodEnd(v)} />
           </div>
         </div>
         <div>

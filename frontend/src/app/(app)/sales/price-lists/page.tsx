@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -6,6 +7,8 @@ import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, History } from "lucide
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { PriceListItemModal, PriceListItemEntry } from "@/components/sales/price-list-item-modal";
+import { DatePicker } from "@/components/shared/date-picker";
+import { Can } from "@/lib/permissions";
 
 const INDIGO = "#0049A7";
 const inputCls =
@@ -50,13 +53,13 @@ export default function PriceListsPage() {
             Catalogue and customer-specific pricing, assigned to customers and used in CRM quotes.
           </p>
         </div>
-        <button
+        <Can perm="master_data.create"><button
           onClick={() => { setEditing(undefined); setShowCreate(true); }}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
           <Plus className="h-4 w-4" /> New Price List
-        </button>
+        </button></Can>
       </div>
 
       <div className="space-y-4">
@@ -77,7 +80,7 @@ export default function PriceListsPage() {
                   {expanded === pl.id ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                   <div>
                     <div className="flex items-center gap-2">
-                      <p className="font-semibold">{pl.name}</p>
+                      <Link href={`/sales/price-lists/${pl.id}`} className="font-semibold hover:underline">{pl.name}</Link>
                       {pl.is_default && (
                         <span className="text-[11px] font-bold px-2 py-0.5 rounded" style={{ background: `${INDIGO}18`, color: INDIGO }}>
                           Default
@@ -91,18 +94,18 @@ export default function PriceListsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                  <button
+                  <Can perm="master_data.edit"><button
                     onClick={() => { setEditing(pl); setShowCreate(true); }}
                     className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                   >
                     <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                  <button
+                  </button></Can>
+                  <Can perm="master_data.delete"><button
                     onClick={() => setConfirmDeleteId(pl.id)}
                     className="p-1.5 rounded-lg hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  </button></Can>
                 </div>
               </button>
               {expanded === pl.id && <PriceListItems priceListId={pl.id} />}
@@ -162,13 +165,13 @@ function PriceListItems({ priceListId }: { priceListId: string }) {
     <div className="border-t border-border">
       <div className="flex items-center justify-between px-6 py-3 bg-muted/10">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Prices</p>
-        <button
+        <Can perm="master_data.create"><button
           onClick={() => { setEditingItem(undefined); setShowItemModal(true); }}
           className="flex items-center gap-1.5 text-xs font-semibold hover:underline"
           style={{ color: INDIGO }}
         >
           <Plus className="h-3.5 w-3.5" /> Add Price
-        </button>
+        </button></Can>
       </div>
       {isLoading ? (
         <p className="px-6 py-4 text-sm text-muted-foreground">Loading…</p>
@@ -199,18 +202,18 @@ function PriceListItems({ priceListId }: { priceListId: string }) {
                 >
                   <History className="h-3.5 w-3.5" />
                 </button>
-                <button
+                <Can perm="master_data.edit"><button
                   onClick={() => { setEditingItem(it); setShowItemModal(true); }}
                   className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                 >
                   <Pencil className="h-3.5 w-3.5" />
-                </button>
-                <button
+                </button></Can>
+                <Can perm="master_data.delete"><button
                   onClick={() => deleteItemMutation.mutate(it.id)}
                   className="p-1.5 rounded-lg hover:bg-violet-50 transition-colors text-muted-foreground hover:text-violet-500"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                </button></Can>
               </div>
             </div>
           ))}
@@ -315,11 +318,11 @@ function PriceListFormModal({ initial, onClose }: { initial?: PriceListSummary; 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Valid From</label>
-            <input className={inputCls} type="date" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} />
+            <DatePicker value={validFrom} onChange={(v) => setValidFrom(v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Valid To</label>
-            <input className={inputCls} type="date" value={validTo} onChange={(e) => setValidTo(e.target.value)} />
+            <DatePicker value={validTo} onChange={(v) => setValidTo(v)} />
           </div>
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}

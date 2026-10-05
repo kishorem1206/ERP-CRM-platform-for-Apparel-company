@@ -3,8 +3,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronDown, LogOut, Plus, Scissors } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
-import { CreateMenu } from "@/components/create/CreateMenu";
+import { AUTH_ME_QUERY_KEY, usePermissions } from "@/lib/permissions";
+import { CreateMenu, QUICK_CREATE_PERMISSIONS } from "@/components/create/CreateMenu";
 import { MODULE_NAV, findActiveModule, SavedFilterIcon } from "./module-nav-config";
 
 const SIDEBAR_BLUE = "#0049A7";
@@ -15,6 +17,11 @@ export function AppSidebar() {
   const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
   const activeModule = findActiveModule(pathname);
+  const queryClient = useQueryClient();
+  const { ready, can } = usePermissions();
+  // Modules the user cannot access are not shown at all.
+  const visibleModules = ready ? MODULE_NAV.filter((m) => can(m.permission)) : [];
+  const canQuickCreate = ready && can(QUICK_CREATE_PERMISSIONS);
 
   // Which module's sub-nav is expanded. Follows the active module as you
   // navigate, but the chevron can toggle it independently of navigation.
@@ -24,6 +31,7 @@ export function AppSidebar() {
   async function handleLogout() {
     try { await api.post("/auth/logout"); } catch { /* ignore */ }
     localStorage.removeItem("access_token");
+    queryClient.removeQueries({ queryKey: AUTH_ME_QUERY_KEY });
     router.push("/login");
   }
 
@@ -55,21 +63,23 @@ export function AppSidebar() {
         </div>
 
         {/* Create button */}
-        <div className="px-4 pb-3 shrink-0">
-          <button
-            onClick={() => setCreateOpen(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-white/15 hover:bg-white/25 px-3 py-2 text-sm font-semibold transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            Create
-          </button>
-        </div>
+        {canQuickCreate && (
+          <div className="px-4 pb-3 shrink-0">
+            <button
+              onClick={() => setCreateOpen(true)}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-white/15 hover:bg-white/25 px-3 py-2 text-sm font-semibold transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              Create
+            </button>
+          </div>
+        )}
 
         <div className="mx-4 h-px bg-white/12 shrink-0" />
 
         {/* Modules — collapsed rows, active module expands with its own sub-nav */}
         <nav className="flex-1 overflow-y-auto py-2">
-          {MODULE_NAV.map((mod) => {
+          {visibleModules.map((mod) => {
             const isActive = mod.key === activeModule.key;
             const isExpanded = mod.key === expandedKey && mod.items.length > 1;
             return (

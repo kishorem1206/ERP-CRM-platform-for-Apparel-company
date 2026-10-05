@@ -11,6 +11,7 @@ import { ModalShell } from "@/components/shared/modal-shell";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { QuoteFormModal, QuoteStatusBadge } from "../_components";
 import type { QuoteFull, QuoteLineItem } from "../_components";
+import { Can } from "@/lib/permissions";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INDIGO = "#0049A7";
@@ -226,37 +227,37 @@ export default function QuoteDetailPage() {
         <div className="flex items-center gap-2 flex-wrap">
           {/* Status actions */}
           {status === "draft" && (
-            <button
+            <Can perm="crm.edit"><button
               onClick={() => statusMutation.mutate("sent")}
               disabled={statusMutation.isPending}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-[#0049A7] hover:bg-[#003D80] transition-colors disabled:opacity-50"
             >
               <Send className="h-4 w-4" />
               {statusMutation.isPending ? "Updating…" : "Mark as Sent"}
-            </button>
+            </button></Can>
           )}
           {status === "sent" && (
             <>
-              <button
+              <Can perm="crm.edit"><button
                 onClick={() => statusMutation.mutate("accepted")}
                 disabled={statusMutation.isPending}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-[#0049A7] hover:bg-[#003D80] transition-colors disabled:opacity-50"
               >
                 <CheckCircle2 className="h-4 w-4" />
                 Mark Accepted
-              </button>
-              <button
+              </button></Can>
+              <Can perm="crm.edit"><button
                 onClick={() => statusMutation.mutate("declined")}
                 disabled={statusMutation.isPending}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-[#1D0DB0] hover:bg-[#170a8f] transition-colors disabled:opacity-50"
               >
                 <XCircle className="h-4 w-4" />
                 Mark Declined
-              </button>
+              </button></Can>
             </>
           )}
           {status === "accepted" && (
-            <button
+            <Can perm="crm.edit"><button
               onClick={() => statusMutation.mutate("accepted")}
               disabled={statusMutation.isPending}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-colors disabled:opacity-50"
@@ -264,21 +265,21 @@ export default function QuoteDetailPage() {
             >
               <ShoppingCart className="h-4 w-4" />
               Convert to Sales Order
-            </button>
+            </button></Can>
           )}
 
           {/* Always visible: Duplicate */}
-          <button
+          <Can perm="crm.create"><button
             onClick={() => duplicateMutation.mutate()}
             disabled={duplicateMutation.isPending}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-input hover:bg-muted transition-colors disabled:opacity-50"
           >
             <Copy className="h-4 w-4" />
             {duplicateMutation.isPending ? "Duplicating…" : "Duplicate"}
-          </button>
+          </button></Can>
 
           {/* Edit — disabled if terminal */}
-          <button
+          <Can perm="crm.edit"><button
             onClick={() => !isTerminal && setShowEdit(true)}
             disabled={isTerminal}
             title={isTerminal ? "Cannot edit an accepted or declined quote" : "Edit quote"}
@@ -286,15 +287,15 @@ export default function QuoteDetailPage() {
           >
             <Pencil className="h-4 w-4" />
             Edit
-          </button>
+          </button></Can>
 
-          <button
+          <Can perm="crm.delete"><button
             onClick={() => setConfirmDelete(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-[#1D0DB0] border border-[#1D0DB0]/30 hover:bg-[#1D0DB0]/10 transition-colors"
           >
             <Trash2 className="h-4 w-4" />
             Delete
-          </button>
+          </button></Can>
         </div>
       </div>
 

@@ -150,6 +150,10 @@ class InventoryTransaction(Base):
     direction: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    previous_balance: Mapped[Decimal | None] = mapped_column(Numeric(15, 4))
+    new_balance: Mapped[Decimal | None] = mapped_column(Numeric(15, 4))
+    adjustment_type: Mapped[str | None] = mapped_column(String(10))
+    transfer_group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

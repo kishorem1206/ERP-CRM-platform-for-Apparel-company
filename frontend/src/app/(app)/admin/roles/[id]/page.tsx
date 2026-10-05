@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import api from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 const INDIGO   = "#0049A7";
 const LAVENDER = "#0F78FF";
@@ -164,7 +165,7 @@ export default function RoleDetailPage({ params }: { params: { id: string } }) {
 
       {!role?.is_system && (
         <div className="flex justify-end pt-2">
-          <button
+          <Can perm="admin.roles"><button
             onClick={() => saveMut.mutate()}
             disabled={saveMut.isPending}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-50"
@@ -172,7 +173,7 @@ export default function RoleDetailPage({ params }: { params: { id: string } }) {
           >
             <Save className="h-4 w-4" />
             {saveMut.isPending ? "Saving…" : "Save Permissions"}
-          </button>
+          </button></Can>
         </div>
       )}
     </div>
