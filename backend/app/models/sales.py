@@ -290,6 +290,7 @@ class Delivery(Base):
     warehouse_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("warehouses.id"), nullable=False)
     delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False, default="sale")
     transporter: Mapped[Optional[str]] = mapped_column(String(200))
     lr_number: Mapped[Optional[str]] = mapped_column(String(100))
     vehicle_number: Mapped[Optional[str]] = mapped_column(String(30))
@@ -324,6 +325,8 @@ class DeliveryItem(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=Decimal("0"))
     inv_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_transactions.id"))
+    returnable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
 
     delivery: Mapped["Delivery"] = relationship(back_populates="items")
 
@@ -358,3 +361,53 @@ class Invoice(Base):
     sales_order: Mapped[Optional["SalesOrder"]] = relationship(back_populates="invoices")
     delivery: Mapped[Optional["Delivery"]] = relationship(back_populates="invoices")
     customer: Mapped["Customer"] = relationship()
+
+
+class SalesReturn(Base):
+    """A customer returning finished goods — distinct from the raw-material
+    MIS return (production→warehouse) that already existed. Optionally
+    references the originating Delivery (DC); each item optionally
+    references the specific DeliveryItem line it came from, which is what
+    lets the service layer prevent the same remainder being returned or
+    credited twice (sum of prior returns against that line vs its
+    delivered qty — the same delta-based guard already used for MIS
+    returns, just expressed as a running SUM instead of a single column)."""
+    __tablename__ = "sales_returns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    return_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    delivery_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("deliveries.id"))
+    customer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
+    return_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+
+    delivery: Mapped[Optional["Delivery"]] = relationship()
+    customer: Mapped["Customer"] = relationship()
+    items: Mapped[list["SalesReturnItem"]] = relationship(back_populates="sales_return", cascade="all, delete-orphan")
+
+
+class SalesReturnItem(Base):
+    __tablename__ = "sales_return_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sales_return_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sales_returns.id", ondelete="CASCADE"), nullable=False)
+    delivery_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("delivery_items.id"))
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id"))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(15, 4), nullable=False)
+    unit_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("units.id"), nullable=False)
+    # usable_stock/resale_stock post an inventory receipt; scrap/wastage are
+    # recorded for tracking only and never touch sellable inventory value.
+    disposition: Mapped[str] = mapped_column(String(20), nullable=False)
+    unit_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    inv_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_transactions.id"))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+
+    sales_return: Mapped["SalesReturn"] = relationship(back_populates="items")

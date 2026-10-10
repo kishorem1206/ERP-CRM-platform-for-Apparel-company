@@ -70,12 +70,16 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
 
   const { data: vendors } = useQuery({
     queryKey: ["vendors-list"],
-    queryFn: async () => (await api.get("/purchase/vendors?page_size=200")).data.data ?? [],
+    queryFn: async () => (await api.get("/purchase/vendors?page_size=200")).data.data as { id: string; name: string; supplies_product_types: string[] | null }[],
   });
   const { data: products } = useQuery({
     queryKey: ["products-list"],
-    queryFn: async () => (await api.get("/products?page_size=200")).data.data ?? [],
+    queryFn: async () => (await api.get("/products?page_size=200")).data.data as { id: string; name: string; product_type: string }[],
   });
+  const selectedVendor = (vendors ?? []).find((v) => v.id === vendorId);
+  const availableProducts = selectedVendor?.supplies_product_types?.length
+    ? (products ?? []).filter((p) => selectedVendor.supplies_product_types!.includes(p.product_type))
+    : (products ?? []);
   const { data: units } = useQuery({
     queryKey: ["units-list"],
     queryFn: async () => (await api.get("/master/units")).data.data ?? [],
@@ -180,7 +184,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                           onChange={(v) => updateItem(i, "product_id", v)}
                           placeholder="Select…"
                           accent={BLUE}
-                          options={(products ?? []).map((p: { id: string; name: string }) => ({
+                          options={availableProducts.map((p) => ({
                             value: p.id,
                             label: p.name,
                           }))}

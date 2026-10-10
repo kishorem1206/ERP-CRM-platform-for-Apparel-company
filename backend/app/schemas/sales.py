@@ -393,21 +393,33 @@ class DeliveryItemCreate(BaseModel):
     so_item_id: UUID
     product_id: UUID
     variant_id: UUID | None = None
+    lot_id: UUID | None = None
     quantity: Decimal
     unit_id: UUID
     unit_price: Decimal
+    returnable: bool = True
+    weight_kg: Decimal | None = None
 
 
 class DeliveryItemOut(BaseModel):
     id: UUID
     so_item_id: UUID
     product_id: UUID
+    product_name: str | None = None
     variant_id: UUID | None
+    sku: str | None = None
+    size_name: str | None = None
+    colour_name: str | None = None
+    lot_id: UUID | None = None
+    lot_number: str | None = None
     quantity: Decimal
     unit_id: UUID
     unit_price: Decimal
     total_amount: Decimal
     inv_transaction_id: UUID | None
+    returnable: bool
+    weight_kg: Decimal | None
+    returned_qty: Decimal = Decimal("0")
     model_config = {"from_attributes": True}
 
 
@@ -415,6 +427,7 @@ class DeliveryCreate(BaseModel):
     sales_order_id: UUID
     warehouse_id: UUID
     delivery_date: date
+    purpose: str = "sale"
     transporter: str | None = None
     lr_number: str | None = None
     vehicle_number: str | None = None
@@ -426,6 +439,14 @@ class DeliveryCreate(BaseModel):
     net_weight: Decimal | None = None
     items: list[DeliveryItemCreate]
 
+    @field_validator("purpose")
+    @classmethod
+    def _valid_purpose(cls, v: str) -> str:
+        allowed = {"sale", "sample", "job_work_return", "branch_transfer", "other"}
+        if v not in allowed:
+            raise ValueError(f"purpose must be one of {sorted(allowed)}")
+        return v
+
 
 class DeliveryOut(BaseModel):
     id: UUID
@@ -436,6 +457,7 @@ class DeliveryOut(BaseModel):
     warehouse_id: UUID
     delivery_date: date
     status: str
+    purpose: str
     transporter: str | None
     lr_number: str | None
     vehicle_number: str | None
@@ -447,7 +469,73 @@ class DeliveryOut(BaseModel):
     gross_weight: Decimal | None = None
     net_weight: Decimal | None = None
     items: list[DeliveryItemOut] = []
+    returns: list["SalesReturnOut"] = []
     model_config = {"from_attributes": True}
+
+
+# ── Sales Returns ─────────────────────────────────────────────────────────────
+
+class SalesReturnItemCreate(BaseModel):
+    delivery_item_id: UUID | None = None
+    product_id: UUID
+    variant_id: UUID | None = None
+    quantity: Decimal
+    unit_id: UUID
+    disposition: str
+    # Only needed when this line has no delivery_item_id to infer a
+    # warehouse from (a return not tied to a specific DC line).
+    warehouse_id: UUID | None = None
+    notes: str | None = None
+
+    @field_validator("disposition")
+    @classmethod
+    def _valid_disposition(cls, v: str) -> str:
+        allowed = {"usable_stock", "resale_stock", "scrap", "wastage"}
+        if v not in allowed:
+            raise ValueError(f"disposition must be one of {sorted(allowed)}")
+        return v
+
+
+class SalesReturnItemOut(BaseModel):
+    id: UUID
+    delivery_item_id: UUID | None
+    product_id: UUID
+    product_name: str | None = None
+    variant_id: UUID | None
+    quantity: Decimal
+    unit_id: UUID
+    disposition: str
+    unit_cost: Decimal | None
+    total_cost: Decimal | None
+    inv_transaction_id: UUID | None
+    notes: str | None
+    model_config = {"from_attributes": True}
+
+
+class SalesReturnCreate(BaseModel):
+    delivery_id: UUID | None = None
+    customer_id: UUID
+    return_date: date
+    reason: str | None = None
+    notes: str | None = None
+    items: list[SalesReturnItemCreate]
+
+
+class SalesReturnOut(BaseModel):
+    id: UUID
+    return_number: str
+    delivery_id: UUID | None
+    customer_id: UUID
+    customer_name: str | None = None
+    return_date: date
+    reason: str | None
+    status: str
+    notes: str | None
+    items: list[SalesReturnItemOut] = []
+    model_config = {"from_attributes": True}
+
+
+DeliveryOut.model_rebuild()
 
 
 # ── Invoice ───────────────────────────────────────────────────────────────────

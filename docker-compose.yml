@@ -54,8 +54,7 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/2
+      - CRON_SECRET=${CRON_SECRET:-local-dev-cron-secret}
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,47 +68,24 @@ services:
     command: >
       sh -c "python -m app.db.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5"
 
-  # ── Celery Worker ─────────────────────────────────────────────────────────────
-  celery_worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+  # ── Scheduled jobs ────────────────────────────────────────────────────────────
+  # Stand-in for the production Cloudflare Worker Cron Trigger: calls the
+  # backend's cron tick every 10 minutes; the backend decides which jobs are due.
+  cron:
+    image: curlimages/curl:8.10.1
     restart: unless-stopped
-    env_file: .env
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/2
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./backend:/app
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
-
-  # ── Celery Beat Scheduler ─────────────────────────────────────────────────────
-  celery_beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    env_file: .env
+      - backend
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/2
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./backend:/app
-    command: celery -A app.workers.celery_app beat --loglevel=info
+      - CRON_SECRET=${CRON_SECRET:-local-dev-cron-secret}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 30
+        while true; do
+          curl -s -X POST -H "X-Cron-Secret: $$CRON_SECRET" http://backend:8000/api/v1/internal/cron/tick -o /dev/null -w "cron tick: %{http_code}\n"
+          sleep 600
+        done
 
   # ── Next.js Frontend ──────────────────────────────────────────────────────────
   frontend:

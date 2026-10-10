@@ -1,32 +1,18 @@
-import asyncio
+"""Scheduled and queued background jobs.
+
+These used to be Celery tasks (worker + beat). They now run inside the web
+process: POST /api/v1/internal/cron/tick (app/api/v1/endpoints/cron.py) runs
+whichever jobs in SCHEDULE are due, and is called on a timer by an external
+scheduler (a Cloudflare Worker Cron Trigger in production, the `cron` service
+in docker-compose locally). Each job body is unchanged from the Celery
+version; only the sync wrapper around it is gone.
+"""
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-from app.workers.celery_app import celery_app
 
-
-def _run(coro):
-    """Run an async coroutine from a sync Celery task.
-
-    Disposes the shared async engine's connection pool on this loop before
-    closing it - otherwise a connection checked into the pool under this
-    loop gets handed to the next task's brand-new event loop and asyncpg
-    raises "attached to a different loop" (pre-existing bug, surfaced by
-    this worker process running many tasks over its lifetime; fixed here
-    since every task funnels through this helper)."""
-    from app.db.session import engine
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.run_until_complete(engine.dispose())
-        loop.close()
-
-
-@celery_app.task(name="app.workers.tasks.refresh_inventory_balance")
-def refresh_inventory_balance():
+async def refresh_inventory_balance():
     from app.db.session import AsyncSessionLocal
 
     async def _refresh():
@@ -38,11 +24,10 @@ def refresh_inventory_balance():
             except Exception:
                 pass  # view may not exist in all environments
 
-    _run(_refresh())
+    await _refresh()
 
 
-@celery_app.task(name="app.workers.tasks.expire_refresh_tokens")
-def expire_refresh_tokens():
+async def expire_refresh_tokens():
     from app.db.session import AsyncSessionLocal
 
     async def _expire():
@@ -53,11 +38,10 @@ def expire_refresh_tokens():
             )
             await db.commit()
 
-    _run(_expire())
+    await _expire()
 
 
-@celery_app.task(name="app.workers.tasks.check_low_stock")
-def check_low_stock():
+async def check_low_stock():
     """Find products with zero or negative stock and create notifications."""
     from app.db.session import AsyncSessionLocal
     from app.services.notification import create_notification, publish_notification
@@ -96,11 +80,10 @@ def check_low_stock():
                     "id": str(notif.id),
                 })
 
-    _run(_check())
+    await _check()
 
 
-@celery_app.task(name="app.workers.tasks.check_overdue_payments")
-def check_overdue_payments():
+async def check_overdue_payments():
     """Find invoices past due date and create notifications."""
     from app.db.session import AsyncSessionLocal
     from app.services.notification import create_notification, publish_notification
@@ -110,7 +93,7 @@ def check_overdue_payments():
             result = await db.execute(text("""
                 SELECT
                     inv.company_id,
-                    c.name AS customer_name,
+                    c.legal_name AS customer_name,
                     inv.invoice_number,
                     inv.due_date,
                     inv.balance_amount
@@ -118,7 +101,7 @@ def check_overdue_payments():
                 JOIN customers c ON c.id = inv.customer_id
                 WHERE inv.due_date < CURRENT_DATE
                   AND inv.balance_amount > 0
-                  AND inv.payment_status IN ('unpaid', 'partial', 'overdue')
+                  AND inv.status IN ('unpaid', 'partial', 'overdue')
                 ORDER BY inv.due_date ASC
             """))
             rows = result.mappings().all()
@@ -154,11 +137,10 @@ def check_overdue_payments():
                     "id": str(notif.id),
                 })
 
-    _run(_check())
+    await _check()
 
 
-@celery_app.task(name="app.workers.tasks.check_production_delays")
-def check_production_delays():
+async def check_production_delays():
     """Find production lots past delivery date that are not completed."""
     from app.db.session import AsyncSessionLocal
     from app.services.notification import create_notification, publish_notification
@@ -169,7 +151,7 @@ def check_production_delays():
                 SELECT
                     pl.company_id,
                     pl.lot_number,
-                    s.style_name,
+                    s.name AS style_name,
                     pl.delivery_date,
                     pl.status
                 FROM production_lots pl
@@ -209,11 +191,10 @@ def check_production_delays():
                     "id": str(notif.id),
                 })
 
-    _run(_check())
+    await _check()
 
 
-@celery_app.task(name="app.workers.tasks.check_job_work_challans")
-def check_job_work_challans():
+async def check_job_work_challans():
     """Find job-work challans that haven't returned within their expected window,
     and received challans whose vendor bill still hasn't come in — see
     Garments_ERP_Style_Master_Specification.md §47.11 / §47.12.
@@ -304,16 +285,10 @@ def check_job_work_challans():
                     "type": "job_work_bill_pending", "title": notif.title, "body": notif.body, "id": str(notif.id),
                 })
 
-    _run(_check())
+    await _check()
 
 
-@celery_app.task(name="app.workers.tasks.generate_report")
-def generate_report(report_type: str, params: dict, user_id: str):
-    pass
-
-
-@celery_app.task(name="app.workers.tasks.mark_rotten_leads")
-def mark_rotten_leads():
+async def mark_rotten_leads():
     """Flag leads that have sat in a non-terminal stage past pipeline.rotten_days."""
     import logging
     from app.db.session import AsyncSessionLocal
@@ -341,11 +316,10 @@ def mark_rotten_leads():
             else:
                 log.debug("mark_rotten_leads: no rotten leads found")
 
-    _run(_mark())
+    await _mark()
 
 
-@celery_app.task(name="app.workers.tasks.flag_missed_followups")
-def flag_missed_followups():
+async def flag_missed_followups():
     """Find leads whose scheduled follow-up has passed and create a task +
     notification for the assignee. Does not touch crm_leads.follow_up_status
     — that field's only writer is _sync_lead_followup_fields in the API
@@ -421,11 +395,10 @@ def flag_missed_followups():
                 await fire_event(db, row["company_id"], "follow_up_due", context, lead=lead_obj)
             await db.commit()
 
-    _run(_flag())
+    await _flag()
 
 
-@celery_app.task(name="app.workers.tasks.escalate_uncontacted_high_priority_leads")
-def escalate_uncontacted_high_priority_leads():
+async def escalate_uncontacted_high_priority_leads():
     """Phase 2 Step 8: a HIGH-priority lead that nobody has made first
     contact with yet gets escalated in two stages — first a reminder to
     the assigned employee (after companies.escalation_employee_hours past
@@ -510,11 +483,10 @@ def escalate_uncontacted_high_priority_leads():
                 )
             await db.commit()
 
-    _run(_escalate())
+    await _escalate()
 
 
-@celery_app.task(name="app.workers.tasks.send_whatsapp_automation")
-def send_whatsapp_automation(log_id: str, template_id: str | None, phone: str, rendered_body: str):
+async def send_whatsapp_automation(log_id: str, template_id: str | None, phone: str, rendered_body: str):
     """Sends one queued WhatsappAutomationLog row via the real Meta API.
     Runs out-of-band (Celery) so the CRM action that fired the rule never
     blocks on, or fails because of, the WhatsApp integration. Never raises
@@ -588,6 +560,49 @@ def send_whatsapp_automation(log_id: str, template_id: str | None, phone: str, r
 
             await db.commit()
 
-    _run(_send())
+    await _send()
 
 
+
+
+async def send_due_whatsapp_automations() -> int:
+    """Send every queued automation message whose rule delay has elapsed.
+
+    Replaces Celery's apply_async(countdown=...): a message is just a
+    `queued` row until its delay passes. Each row is claimed atomically
+    (queued -> sending) before it is sent, so a cron tick and an immediate
+    kick from fire_event() can never both send the same message."""
+    from app.db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(text("""
+            UPDATE whatsapp_automation_logs l SET status = 'sending'
+            FROM whatsapp_automation_rules r
+            WHERE l.rule_id = r.id
+              AND l.status = 'queued'
+              AND l.created_at + make_interval(mins => r.delay_minutes) <= now()
+            RETURNING l.id, r.template_id, l.recipient_phone, l.rendered_body
+        """))).all()
+        await db.commit()
+
+    for log_id, template_id, phone, body in rows:
+        await send_whatsapp_automation(str(log_id), str(template_id) if template_id else None, phone, body or "")
+    return len(rows)
+
+
+# name -> (minimum seconds between runs, job). Intervals match the old
+# Celery beat schedule. The cron tick runs whatever is due, so the external
+# trigger only has to fire at least as often as the shortest interval it
+# should honour; anything slower just runs on the next tick after it's due.
+SCHEDULE: dict[str, tuple[int, object]] = {
+    "send_due_whatsapp_automations": (0, send_due_whatsapp_automations),
+    "refresh_inventory_balance": (5 * 60, refresh_inventory_balance),
+    "escalate_uncontacted_high_priority_leads": (30 * 60, escalate_uncontacted_high_priority_leads),
+    "expire_refresh_tokens": (60 * 60, expire_refresh_tokens),
+    "flag_missed_followups": (60 * 60, flag_missed_followups),
+    "check_low_stock": (6 * 60 * 60, check_low_stock),
+    "mark_rotten_leads": (6 * 60 * 60, mark_rotten_leads),
+    "check_overdue_payments": (24 * 60 * 60, check_overdue_payments),
+    "check_production_delays": (24 * 60 * 60, check_production_delays),
+    "check_job_work_challans": (24 * 60 * 60, check_job_work_challans),
+}

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from weasyprint import HTML
 
 from app.models.company import Company
-from app.models.master import Product
+from app.models.master import Product, ProductVariant
 from app.models.production import InternalWorker, ProductionLot
 from app.models.purchase import Vendor
 from app.models.sales import Customer
@@ -112,11 +112,36 @@ async def build_lot_report_data(
         item.product_id for mis in lot.material_issues for item in mis.items
     }
     product_by_id: dict[UUID, str] = {}
+    product_code_by_id: dict[UUID, str] = {}
     if product_ids:
         for p in (await db.execute(select(Product).where(Product.id.in_(product_ids)))).scalars().all():
             product_by_id[p.id] = p.name
+            product_code_by_id[p.id] = p.code
 
-    output_products = sorted({product_by_id.get(o.product_id, "—") for o in lot.outputs})
+    variant_ids = {o.variant_id for o in lot.outputs if o.variant_id} | {
+        item.variant_id for mis in lot.material_issues for item in mis.items if item.variant_id
+    }
+    variant_sku_by_id: dict[UUID, str] = {}
+    if variant_ids:
+        for v in (await db.execute(select(ProductVariant).where(ProductVariant.id.in_(variant_ids)))).scalars().all():
+            variant_sku_by_id[v.id] = v.sku
+
+    def _sku(product_id: UUID | None, variant_id: UUID | None) -> str | None:
+        """The real SKU for a report line — a specific variant's SKU when one was
+        recorded, else the product's own code. Matches how the rest of the app
+        defines SKU (ProductVariant.sku), never invented here."""
+        if variant_id and variant_id in variant_sku_by_id:
+            return variant_sku_by_id[variant_id]
+        if product_id and product_id in product_code_by_id:
+            return product_code_by_id[product_id]
+        return None
+
+    def _name_with_sku(product_id: UUID | None, variant_id: UUID | None) -> str:
+        name = product_by_id.get(product_id, "—")
+        sku = _sku(product_id, variant_id)
+        return f"{name} ({sku})" if sku else name
+
+    output_products = sorted({_name_with_sku(o.product_id, o.variant_id) for o in lot.outputs})
 
     # ── Stage flow, assignment, and rejection tables (lot order) ──────────
     stage_rows: list[dict] = []
@@ -175,6 +200,7 @@ async def build_lot_report_data(
     material_rows = [
         {
             "product_name": product_by_id.get(item.product_id, "—"),
+            "sku": _sku(item.product_id, item.variant_id),
             "issue_number": mis.issue_number,
             "issued_qty": item.issued_qty, "unit_cost": item.unit_cost, "total_cost": item.total_cost,
         }

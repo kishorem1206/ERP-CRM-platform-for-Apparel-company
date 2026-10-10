@@ -147,66 +147,83 @@ class ReportsService:
 
     # ── Stock Ageing ──────────────────────────────────────────────────────────
 
-    async def stock_ageing(self, company_id: UUID) -> list[dict]:
+    async def stock_ageing(self, company_id: UUID, as_of: date | None = None) -> list[dict]:
+        """Age is computed per (product, warehouse, lot) when a transaction
+        carries a lot_id, instead of only ever using the single
+        earliest-ever receipt date for the whole product+warehouse — two
+        batches of the same product sitting in the same warehouse now age
+        independently. Transactions with no lot_id (most pre-Phase-10 data)
+        fall back to the old product+warehouse grouping unchanged.
+        `corrected_date` (Phase 10 manual correction) is preferred over the
+        raw `transaction_date` wherever it's been set; `as_of` lets the
+        caller report age as of a date other than today."""
+        as_of = as_of or date.today()
         result = await self.db.execute(
             text("""
                 WITH stock_balance AS (
                     SELECT
                         it.product_id,
                         it.warehouse_id,
+                        it.lot_id,
                         it.unit_id,
                         SUM(it.quantity * it.direction) AS balance
                     FROM inventory_transactions it
                     WHERE it.company_id = :cid
-                    GROUP BY it.product_id, it.warehouse_id, it.unit_id
+                    GROUP BY it.product_id, it.warehouse_id, it.lot_id, it.unit_id
                     HAVING SUM(it.quantity * it.direction) > 0
                 ),
                 earliest_receipt AS (
                     SELECT
                         product_id,
                         warehouse_id,
-                        MIN(transaction_date) AS first_date
+                        lot_id,
+                        MIN(COALESCE(corrected_date, transaction_date)) AS first_date
                     FROM inventory_transactions
                     WHERE company_id = :cid AND direction = 1
-                    GROUP BY product_id, warehouse_id
+                    GROUP BY product_id, warehouse_id, lot_id
                 ),
                 avg_cost AS (
                     SELECT
                         product_id,
                         warehouse_id,
+                        lot_id,
                         SUM(quantity * unit_cost) / NULLIF(SUM(quantity), 0) AS wavg_cost
                     FROM inventory_transactions
                     WHERE company_id = :cid AND direction = 1
-                    GROUP BY product_id, warehouse_id
+                    GROUP BY product_id, warehouse_id, lot_id
                 )
                 SELECT
                     p.name              AS product_name,
                     p.product_type,
                     w.name              AS warehouse_name,
                     u.abbreviation      AS unit_symbol,
+                    il.lot_number       AS lot_number,
                     sb.balance,
                     ROUND(sb.balance * COALESCE(ac.wavg_cost, 0), 2) AS stock_value,
                     er.first_date       AS oldest_receipt_date,
-                    (CURRENT_DATE - er.first_date) AS age_days,
+                    (CAST(:as_of AS DATE) - er.first_date) AS age_days,
                     CASE
-                        WHEN (CURRENT_DATE - er.first_date) <= 30  THEN '0-30 days'
-                        WHEN (CURRENT_DATE - er.first_date) <= 60  THEN '31-60 days'
-                        WHEN (CURRENT_DATE - er.first_date) <= 90  THEN '61-90 days'
+                        WHEN (CAST(:as_of AS DATE) - er.first_date) <= 30  THEN '0-30 days'
+                        WHEN (CAST(:as_of AS DATE) - er.first_date) <= 60  THEN '31-60 days'
+                        WHEN (CAST(:as_of AS DATE) - er.first_date) <= 90  THEN '61-90 days'
                         ELSE '90+ days'
                     END                 AS age_bucket
                 FROM stock_balance sb
                 JOIN products   p ON p.id = sb.product_id
                 JOIN warehouses w ON w.id = sb.warehouse_id
                 JOIN units      u ON u.id = sb.unit_id
+                LEFT JOIN inventory_lots il ON il.id = sb.lot_id
                 LEFT JOIN earliest_receipt er
                     ON er.product_id   = sb.product_id
                     AND er.warehouse_id = sb.warehouse_id
+                    AND (er.lot_id = sb.lot_id OR (er.lot_id IS NULL AND sb.lot_id IS NULL))
                 LEFT JOIN avg_cost ac
                     ON ac.product_id   = sb.product_id
                     AND ac.warehouse_id = sb.warehouse_id
+                    AND (ac.lot_id = sb.lot_id OR (ac.lot_id IS NULL AND sb.lot_id IS NULL))
                 ORDER BY age_days DESC NULLS LAST
             """),
-            {"cid": str(company_id)},
+            {"cid": str(company_id), "as_of": as_of},
         )
         return [dict(r._mapping) for r in result]
 

@@ -4,10 +4,7 @@ import {
   Layers,
   BarChart2,
   Package,
-  ArrowDownToLine,
-  ArrowUpFromLine,
   ArrowLeftRight,
-  SlidersHorizontal,
   Warehouse,
   ChevronRight,
 } from "lucide-react";
@@ -36,32 +33,11 @@ const MATERIALS = [
 
 const OPERATIONS = [
   {
-    href: "/inventory/stock-in",
-    icon: ArrowDownToLine,
-    title: "Stock In",
-    description: "Manual stock receipt / opening stock",
-    accent: TEAL,
-  },
-  {
-    href: "/inventory/stock-out",
-    icon: ArrowUpFromLine,
-    title: "Stock Out",
-    description: "Manual stock issue",
-    accent: BLUE,
-  },
-  {
-    href: "/inventory/transfer",
+    href: "/inventory/stock-movement",
     icon: ArrowLeftRight,
-    title: "Stock Transfer",
-    description: "Move stock between warehouses",
+    title: "Stock Movement",
+    description: "In, out, transfer, or adjust — one form, pick the type",
     accent: TEAL,
-  },
-  {
-    href: "/inventory/adjust",
-    icon: SlidersHorizontal,
-    title: "Adjustment",
-    description: "Corrections, write-offs, recount",
-    accent: BLUE,
   },
   {
     href: "/inventory/products",

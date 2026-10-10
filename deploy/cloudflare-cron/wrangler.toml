@@ -1,0 +1,19 @@
+# Cloudflare Worker that triggers Apparel ERP's scheduled jobs (it replaces
+# Celery beat). Deploy:   npx wrangler login && npx wrangler deploy
+# Then set the secret:    npx wrangler secret put CRON_SECRET   (same value as on Render)
+name = "apparel-erp-cron"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+[vars]
+# Your Render URL (or custom domain), no trailing slash.
+APP_URL = "https://apparel-erp.onrender.com"
+
+[triggers]
+# Cron times are UTC. India is UTC+5:30.
+#   */10 3-15  → every 10 min, ~08:30–21:30 IST: keeps the free Render service
+#                awake through the working day (no cold starts for users).
+#   0 0-2,16-23 → hourly overnight: jobs keep running; the service is allowed
+#                to sleep in between, which keeps monthly usage well under
+#                Render's 750 free instance hours.
+crons = ["*/10 3-15 * * *", "0 0-2,16-23 * * *"]

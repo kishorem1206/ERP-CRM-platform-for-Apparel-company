@@ -112,6 +112,7 @@ class PurchaseService:
             pan=body.pan,
             vendor_type=body.vendor_type,
             payment_terms=body.payment_terms,
+            supplies_product_types=body.supplies_product_types or None,
             created_by=user_id,
             created_at=now,
             updated_at=now,

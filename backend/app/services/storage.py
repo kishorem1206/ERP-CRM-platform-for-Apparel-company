@@ -2,7 +2,8 @@
 Pluggable file storage backend.
 
 STORAGE_BACKEND=local  → saves files under STORAGE_LOCAL_PATH (mounted volume)
-STORAGE_BACKEND=s3     → uploads to AWS_S3_BUCKET / AWS_REGION
+STORAGE_BACKEND=s3     → uploads to AWS_S3_BUCKET; with S3_ENDPOINT_URL set, to
+                         any S3-compatible store instead (e.g. Cloudflare R2)
 """
 import io
 import mimetypes
@@ -15,12 +16,25 @@ from app.core.config import settings
 
 def _s3_client():
     import boto3
+    from botocore.config import Config
+
     return boto3.client(
         "s3",
-        region_name=settings.AWS_REGION,
+        endpoint_url=settings.S3_ENDPOINT_URL or None,
+        region_name="auto" if settings.S3_ENDPOINT_URL else settings.AWS_REGION,
         aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        config=Config(signature_version="s3v4"),
     )
+
+
+def _object_url_prefix() -> str:
+    """Prefix of the stored file_url for an object key. Only ever turned back
+    into a key (presigned URLs are what clients actually fetch), so for
+    S3-compatible stores a path-style endpoint/bucket prefix is enough."""
+    if settings.S3_ENDPOINT_URL:
+        return f"{settings.S3_ENDPOINT_URL.rstrip('/')}/{settings.AWS_S3_BUCKET}/"
+    return f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/"
 
 
 def upload_file(
@@ -49,7 +63,7 @@ def upload_file(
             key,
             ExtraArgs={"ContentType": mime_type},
         )
-        url = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/{key}"
+        url = f"{_object_url_prefix()}{key}"
     else:
         local_path = Path(settings.STORAGE_LOCAL_PATH) / key
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +76,7 @@ def upload_file(
 def delete_file(file_url: str) -> None:
     if settings.STORAGE_BACKEND == "s3":
         # Extract S3 key from URL
-        prefix = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/"
+        prefix = _object_url_prefix()
         if file_url.startswith(prefix):
             key = file_url[len(prefix):]
             _s3_client().delete_object(Bucket=settings.AWS_S3_BUCKET, Key=key)
@@ -75,7 +89,7 @@ def delete_file(file_url: str) -> None:
 def get_presigned_url(file_url: str, expiry: int = 3600) -> str:
     """Return a temporary URL. Local: returns the URL unchanged (served by nginx)."""
     if settings.STORAGE_BACKEND == "s3":
-        prefix = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/"
+        prefix = _object_url_prefix()
         if file_url.startswith(prefix):
             key = file_url[len(prefix):]
             return _s3_client().generate_presigned_url(

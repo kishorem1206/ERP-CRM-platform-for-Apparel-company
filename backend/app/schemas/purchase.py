@@ -38,6 +38,7 @@ class VendorOut(BaseModel):
     vendor_type: str
     payment_terms: int
     is_active: bool
+    supplies_product_types: list[str] | None = None
     contacts: list[VendorContactOut] = []
     bank_details: list[VendorBankDetailOut] = []
 
@@ -66,6 +67,7 @@ class VendorCreate(BaseModel):
     pan: str | None = None
     vendor_type: str = "supplier"
     payment_terms: int = 30
+    supplies_product_types: list[str] | None = None
     contacts: list[VendorContactCreate] = []
     bank_details: list[VendorBankDetailCreate] = []
 
@@ -85,6 +87,7 @@ class VendorUpdate(BaseModel):
     vendor_type: str | None = None
     payment_terms: int | None = None
     is_active: bool | None = None
+    supplies_product_types: list[str] | None = None
 
 
 # ── Purchase Order ───────────────────────────────────────────────────────────

@@ -22,7 +22,6 @@ pyotp==2.9.0
 
 # Cache / Queue
 redis==5.0.8
-celery==5.4.0
 
 # AI / Agents  (OpenAI-compatible SDK; works with gpt-oss:120b and any compat provider)
 openai>=1.40.0

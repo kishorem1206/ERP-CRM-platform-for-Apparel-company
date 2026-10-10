@@ -15,11 +15,10 @@ const fmt = (v: unknown) => `₹${Number(v).toLocaleString("en-IN", { minimumFra
 const fmtOrDash = (v: unknown) => (v === null || v === undefined ? "—" : fmt(v));
 
 const STATUS_OPTIONS = [
-  { value: "draft", label: "Draft" },
-  { value: "approved", label: "Approved" },
-  { value: "in_production", label: "In Production" },
+  { value: "cutting", label: "Cutting" },
+  { value: "checking", label: "Checking" },
+  { value: "packing", label: "Packing" },
   { value: "completed", label: "Completed" },
-  { value: "ready_to_dispatch", label: "Ready to Dispatch" },
   { value: "cancelled", label: "Cancelled" },
 ];
 

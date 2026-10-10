@@ -9,21 +9,17 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 
 const INDIGO = "#0049A7";
-const BLUE   = "#0049A7";
 const TEAL   = "#8174F5";
 const GREEN  = "#0F78FF";
 const AMBER  = "#A096F7";
 const RED    = "#1D0DB0";
 
 const STATUS_HEX: Record<string, string> = {
-  draft:         "#CBD5E1",
-  planned:       BLUE,
-  approved:      "#0F78FF",
-  in_production: TEAL,
-  qc:            AMBER,
-  packing:       "#A096F7",
-  completed:     GREEN,
-  cancelled:     RED,
+  cutting:   TEAL,
+  checking:  AMBER,
+  packing:   "#A096F7",
+  completed: GREEN,
+  cancelled: RED,
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -110,7 +106,7 @@ export default function ProductionEfficiencyPage() {
 
   const rows      = data ?? [];
   const completed = rows.filter((r) => r.status === "completed");
-  const inProd    = rows.filter((r) => r.status === "in_production");
+  const inProd    = rows.filter((r) => r.status === "cutting");
   const avgEff    = completed.length
     ? Math.round(completed.reduce((s, r) => s + Number(r.efficiency_pct), 0) / completed.length)
     : 0;
@@ -146,7 +142,7 @@ export default function ProductionEfficiencyPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label: "TOTAL LOTS",      value: rows.length,       color: undefined },
-          { label: "IN PRODUCTION",   value: inProd.length,     color: "#0049A7" },
+          { label: "CUTTING",         value: inProd.length,     color: "#0049A7" },
           { label: "COMPLETED",       value: completed.length,  color: "#0049A7" },
           { label: "AVG EFFICIENCY",  value: avgEff ? `${avgEff}%` : "—",
             color: avgEff >= 90 ? "#0049A7" : "#1D0DB0" },

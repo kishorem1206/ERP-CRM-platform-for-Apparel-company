@@ -53,6 +53,8 @@ interface Lot {
   id: string;
   lot_number: string;
   material_type: string;
+  product_id: string | null;
+  product_name: string | null;
   yarn_count: string | null;
   ply: string | null;
   mill: string | null;
@@ -157,6 +159,13 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight font-mono">{lot.lot_number}</h1>
             <TypeDot type={lot.material_type} />
+            {lot.product_name ? (
+              <span className="text-xs font-medium px-2 py-0.5 rounded bg-muted text-foreground">
+                Product: {lot.product_name}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">Not linked to a catalog product</span>
+            )}
           </div>
           {lot.blend_composition && (
             <p className="text-sm text-muted-foreground mt-1">{lot.blend_composition}</p>

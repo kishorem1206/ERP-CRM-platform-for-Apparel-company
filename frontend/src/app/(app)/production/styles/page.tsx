@@ -41,7 +41,7 @@ export default function StylesPage() {
       ),
     },
     { key: "garment_type", header: "Garment Type", render: (row) => row.garment_type || "—" },
-    { key: "gender", header: "Gender", render: (row) => row.gender || "—" },
+    { key: "gender", header: "Product Category", render: (row) => row.gender || "—" },
     { key: "season", header: "Season", render: (row) => row.season || "—" },
     { key: "final_output_unit", header: "Final Output", render: (row) => row.final_output_unit || "—" },
     {

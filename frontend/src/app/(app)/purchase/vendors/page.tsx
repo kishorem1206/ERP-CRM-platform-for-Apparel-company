@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { Can } from "@/lib/permissions";
+import { SuppliesPicker } from "./_supplies-picker";
 
 const LAVENDER = "#0F78FF";
 
@@ -74,6 +75,7 @@ const EMPTY = {
   pan: "",
   vendor_type: "supplier",
   payment_terms: "30",
+  supplies: [] as string[],
 };
 
 function parseApiError(e: unknown, fallback: string): string {
@@ -107,6 +109,7 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
         payment_terms: parseInt(body.payment_terms) || 30,
         gstin: body.gstin || null,
         pan: body.pan || null,
+        supplies_product_types: body.supplies.length ? body.supplies : null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["vendors"] });
@@ -199,6 +202,7 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
             <input type="number" min="0" value={form.payment_terms} onChange={set("payment_terms")}
               className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
           </div>
+          <SuppliesPicker value={form.supplies} onChange={(v) => setForm((f) => ({ ...f, supplies: v }))} />
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose}

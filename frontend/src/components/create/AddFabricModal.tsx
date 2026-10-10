@@ -39,6 +39,7 @@ export function AddFabricModal({ open, onClose }: Props) {
     // Inventory booking
     warehouse_id: "",
     product_id: "",
+    brand_id: "",
     unit_id: "",
     quantity: "",
   });
@@ -80,6 +81,12 @@ export function AddFabricModal({ open, onClose }: Props) {
     enabled: open,
   });
 
+  const brands = useQuery({
+    queryKey: ["master-brands"],
+    queryFn: async () => (await api.get("/master/brands")).data.data as { id: string; name: string }[],
+    enabled: open,
+  });
+
   function set(k: string, v: unknown) { setForm((f) => ({ ...f, [k]: v })); setErr(null); }
   function toggleFinish(f: string) {
     setForm((prev) => ({
@@ -99,6 +106,11 @@ export function AddFabricModal({ open, onClose }: Props) {
   );
 
   const construction = form.constructionType === "Knit" ? `${form.knit_type}` : "Woven";
+
+  const totalValue = useMemo(() => {
+    const qty = Number(form.quantity), cost = Number(form.unit_cost);
+    return qty && cost ? (qty * cost).toFixed(2) : "";
+  }, [form.quantity, form.unit_cost]);
 
   const mut = useMutation({
     mutationFn: async () => {
@@ -123,6 +135,7 @@ export function AddFabricModal({ open, onClose }: Props) {
         // Inventory booking
         warehouse_id: form.warehouse_id || undefined,
         product_id: form.product_id || undefined,
+        brand_id: form.brand_id || undefined,
         unit_id: form.unit_id || undefined,
         quantity: form.quantity ? Number(form.quantity) : undefined,
       });
@@ -173,6 +186,39 @@ export function AddFabricModal({ open, onClose }: Props) {
             <DatePicker value={form.invoice_date} onChange={(v) => set("invoice_date", v)} />
           </Field>
         </div>
+
+        <div className="h-px bg-border" />
+
+        {/* Catalog product — links this lot's category to the Products catalog so
+            Yarn/Fabric/Trim stays consistent everywhere, including Production. */}
+        <Field
+          label="Product (optional)"
+          hint="Links this lot to a product in your catalog, so its category stays consistent with Production and the rest of the app — instead of being typed separately here."
+        >
+          <SearchableSelect
+            value={form.product_id}
+            onChange={(v) => set("product_id", v)}
+            placeholder="— Not linked to a catalog product —"
+            accent="#0049A7"
+            options={(products.data ?? []).map((p) => ({
+              value: p.id,
+              label: p.name,
+            }))}
+          />
+        </Field>
+
+        <Field label="Brand (optional)">
+          <SearchableSelect
+            value={form.brand_id}
+            onChange={(v) => set("brand_id", v)}
+            placeholder="— Not specified —"
+            accent="#0049A7"
+            options={[
+              { value: "", label: "— Not specified —" },
+              ...(brands.data ?? []).map((b) => ({ value: b.id, label: b.name })),
+            ]}
+          />
+        </Field>
 
         <div className="h-px bg-border" />
 
@@ -297,9 +343,35 @@ export function AddFabricModal({ open, onClose }: Props) {
 
         <div className="h-px bg-border" />
 
-        <Field label="Rate / Meter (₹)">
-          <Input type="number" step="0.01" placeholder="0.00" value={form.unit_cost} onChange={(e) => set("unit_cost", e.target.value)} />
-        </Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Quantity">
+            <Input
+              type="number"
+              step="0.001"
+              placeholder="0.000"
+              value={form.quantity}
+              onChange={(e) => set("quantity", e.target.value)}
+            />
+          </Field>
+          <Field label="Unit">
+            <SearchableSelect
+              value={form.unit_id}
+              onChange={(v) => set("unit_id", v)}
+              placeholder="— Unit —"
+              accent="#0049A7"
+              options={(units.data ?? []).map((u) => ({
+                value: u.id,
+                label: u.abbreviation,
+              }))}
+            />
+          </Field>
+          <Field label={form.constructionType === "Woven" ? "Rate / Meter (₹)" : "Rate / Kilogram (₹)"}>
+            <Input type="number" step="0.01" placeholder="0.00" value={form.unit_cost} onChange={(e) => set("unit_cost", e.target.value)} />
+          </Field>
+        </div>
+        {totalValue && (
+          <p className="text-xs text-muted-foreground">Total Value: ₹{totalValue}</p>
+        )}
 
         <Field label="Notes">
           <Textarea value={form.notes} onChange={(e) => set("notes", e.target.value)} />
@@ -327,41 +399,9 @@ export function AddFabricModal({ open, onClose }: Props) {
               ]}
             />
           </Field>
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="Product">
-              <SearchableSelect
-                value={form.product_id}
-                onChange={(v) => set("product_id", v)}
-                placeholder="— Select —"
-                accent="#0049A7"
-                options={(products.data ?? []).map((p) => ({
-                  value: p.id,
-                  label: p.name,
-                }))}
-              />
-            </Field>
-            <Field label="Qty (m / kg)">
-              <Input
-                type="number"
-                step="0.001"
-                placeholder="0.000"
-                value={form.quantity}
-                onChange={(e) => set("quantity", e.target.value)}
-              />
-            </Field>
-            <Field label="Unit">
-              <SearchableSelect
-                value={form.unit_id}
-                onChange={(v) => set("unit_id", v)}
-                placeholder="— Unit —"
-                accent="#0049A7"
-                options={(units.data ?? []).map((u) => ({
-                  value: u.id,
-                  label: u.abbreviation,
-                }))}
-              />
-            </Field>
-          </div>
+          {!form.product_id && form.warehouse_id && (
+            <p className="text-xs text-amber-600">Pick a Product above to book this lot into inventory.</p>
+          )}
           {form.quantity && form.warehouse_id && form.product_id && form.unit_id && (
             <p className="text-xs text-blue-600">Will book {form.quantity} units into inventory on save.</p>
           )}

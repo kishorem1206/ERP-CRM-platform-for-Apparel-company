@@ -36,6 +36,8 @@ interface Lot {
   id: string;
   lot_number: string;
   material_type: string;
+  product_id: string | null;
+  product_name: string | null;
   blend_composition: string | null;
   fibre_type: string | null;
   yarn_count: string | null;
@@ -141,6 +143,16 @@ export default function LotsPage() {
       render: (row) => (
         <span className="text-sm text-muted-foreground">{lotSummary(row as unknown as Lot)}</span>
       ),
+    },
+    {
+      key: "product_name",
+      header: "Product",
+      render: (row) =>
+        row.product_name ? (
+          <span className="text-sm">{row.product_name as string}</span>
+        ) : (
+          <span className="text-xs text-muted-foreground italic">Not linked</span>
+        ),
     },
     {
       key: "colour",

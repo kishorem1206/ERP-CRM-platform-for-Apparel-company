@@ -22,7 +22,7 @@ export function money(v: unknown) {
 }
 
 export function PdfDocumentPage({
-  title, number, status, backHref, pdfPath, downloadName, facts, loading, error,
+  title, number, status, backHref, pdfPath, downloadName, facts, loading, error, extra,
 }: {
   title: string;
   number?: string;
@@ -33,6 +33,8 @@ export function PdfDocumentPage({
   facts: Fact[];
   loading: boolean;
   error: boolean;
+  /** Optional content rendered after the facts grid and before the PDF preview. */
+  extra?: React.ReactNode;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [pdfFailed, setPdfFailed] = useState(false);
@@ -98,6 +100,8 @@ export function PdfDocumentPage({
               </div>
             ))}
           </div>
+
+          {extra}
 
           <div className="rounded-2xl border border-border bg-card p-3">
             {pdfFailed ? (

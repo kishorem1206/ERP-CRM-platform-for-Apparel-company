@@ -33,6 +33,8 @@ class ProductOut(BaseModel):
     product_type: str
     category_id: Optional[UUID] = None
     category_name: Optional[str] = None
+    brand_id: Optional[UUID] = None
+    brand_name: Optional[str] = None
     unit_id: Optional[UUID] = None
     unit_abbreviation: Optional[str] = None
     hsn_id: Optional[UUID] = None
@@ -84,6 +86,7 @@ class ProductCreate(BaseModel):
     product_type: str = Field(..., pattern="^(finished_good|yarn|fabric|trim|packing|raw_material)$")
     category_id: Optional[UUID] = None
     sub_category_id: Optional[UUID] = None
+    brand_id: Optional[UUID] = None
     unit_id: Optional[UUID] = None
     hsn_id: Optional[UUID] = None
     mrp: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
@@ -104,6 +107,7 @@ class ProductUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=300)
     category_id: Optional[UUID] = None
     sub_category_id: Optional[UUID] = None
+    brand_id: Optional[UUID] = None
     unit_id: Optional[UUID] = None
     hsn_id: Optional[UUID] = None
     mrp: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
@@ -131,6 +135,12 @@ class ProductVariantCreate(BaseModel):
 
 
 class CategoryOut(BaseModel):
+    id: UUID
+    name: str
+    model_config = {"from_attributes": True}
+
+
+class BrandOut(BaseModel):
     id: UUID
     name: str
     model_config = {"from_attributes": True}
@@ -207,4 +217,5 @@ class WarehouseOut(BaseModel):
     code: Optional[str] = None
     address: Optional[str] = None
     is_active: bool
+    material_type: Optional[str] = None
     model_config = {"from_attributes": True}

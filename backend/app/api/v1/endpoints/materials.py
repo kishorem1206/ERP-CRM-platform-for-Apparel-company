@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from app.api.v1.deps import AuthUser, DBSession
 from app.models.inventory import InventoryTransaction
+from app.models.master import Brand, Product
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.materials import (
     FabricCreate, FabricRunCreate, FabricRunOut,
@@ -16,6 +17,18 @@ from app.services.materials import MaterialsService
 router = APIRouter(prefix="/materials", tags=["materials"])
 
 
+async def _resolve_product_name(db: DBSession, product_id: UUID | None) -> str | None:
+    if not product_id:
+        return None
+    return (await db.execute(select(Product.name).where(Product.id == product_id))).scalar_one_or_none()
+
+
+async def _resolve_brand_name(db: DBSession, brand_id: UUID | None) -> str | None:
+    if not brand_id:
+        return None
+    return (await db.execute(select(Brand.name).where(Brand.id == brand_id))).scalar_one_or_none()
+
+
 @router.post("/yarn", status_code=201)
 async def add_yarn(body: YarnCreate, db: DBSession, user: AuthUser):
     user.require("materials.create")
@@ -23,7 +36,10 @@ async def add_yarn(body: YarnCreate, db: DBSession, user: AuthUser):
     lot = await svc.create_yarn(body, user.company_id, user.user_id)
     await db.commit()
     await db.refresh(lot)
-    return ApiResponse(success=True, data=LotOut.model_validate(lot))
+    out = LotOut.model_validate(lot)
+    out.product_name = await _resolve_product_name(db, lot.product_id)
+    out.brand_name = await _resolve_brand_name(db, lot.brand_id)
+    return ApiResponse(success=True, data=out)
 
 
 @router.post("/fabric", status_code=201)
@@ -33,7 +49,10 @@ async def add_fabric(body: FabricCreate, db: DBSession, user: AuthUser):
     lot = await svc.create_fabric(body, user.company_id, user.user_id)
     await db.commit()
     await db.refresh(lot)
-    return ApiResponse(success=True, data=LotOut.model_validate(lot))
+    out = LotOut.model_validate(lot)
+    out.product_name = await _resolve_product_name(db, lot.product_id)
+    out.brand_name = await _resolve_brand_name(db, lot.brand_id)
+    return ApiResponse(success=True, data=out)
 
 
 @router.post("/trims", status_code=201)
@@ -43,7 +62,10 @@ async def add_trim(body: TrimCreate, db: DBSession, user: AuthUser):
     lot = await svc.create_trim(body, user.company_id, user.user_id)
     await db.commit()
     await db.refresh(lot)
-    return ApiResponse(success=True, data=LotOut.model_validate(lot))
+    out = LotOut.model_validate(lot)
+    out.product_name = await _resolve_product_name(db, lot.product_id)
+    out.brand_name = await _resolve_brand_name(db, lot.brand_id)
+    return ApiResponse(success=True, data=out)
 
 
 @router.post("/fabric-runs", status_code=201)
@@ -90,10 +112,27 @@ async def list_lots(
         )
         stock_map = {str(row.lot_id): float(row.qty or 0) for row in stock_rows}
 
+    # Resolve linked product names in one batch — same source of truth the
+    # Products catalog itself uses, so a lot's category can never silently
+    # drift from the product it's linked to.
+    product_ids = {r.product_id for r in rows if r.product_id}
+    product_name_map: dict[str, str] = {}
+    if product_ids:
+        product_rows = await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))
+        product_name_map = {str(p.id): p.name for p in product_rows}
+
+    brand_ids = {r.brand_id for r in rows if r.brand_id}
+    brand_name_map: dict[str, str] = {}
+    if brand_ids:
+        brand_rows = await db.execute(select(Brand.id, Brand.name).where(Brand.id.in_(brand_ids)))
+        brand_name_map = {str(b.id): b.name for b in brand_rows}
+
     data = []
     for r in rows:
         out = LotOut.model_validate(r)
         out.stock_qty = stock_map.get(str(r.id))
+        out.product_name = product_name_map.get(str(r.product_id)) if r.product_id else None
+        out.brand_name = brand_name_map.get(str(r.brand_id)) if r.brand_id else None
         data.append(out)
 
     return ApiResponse(
@@ -118,7 +157,10 @@ async def get_lot(lot_id: UUID, db: DBSession, user: AuthUser):
     if not lot:
         from fastapi import HTTPException
         raise HTTPException(404, "Lot not found")
-    return ApiResponse(success=True, data=LotOut.model_validate(lot))
+    out = LotOut.model_validate(lot)
+    out.product_name = await _resolve_product_name(db, lot.product_id)
+    out.brand_name = await _resolve_brand_name(db, lot.brand_id)
+    return ApiResponse(success=True, data=out)
 
 
 @router.get("/fabric-runs")

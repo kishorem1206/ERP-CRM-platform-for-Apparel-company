@@ -13,16 +13,24 @@ from app.models.sales import (
     Delivery, DeliveryItem, Invoice,
     Quotation, QuotationItem,
     SalesOrder, SalesOrderItem,
+    SalesReturn, SalesReturnItem,
 )
-from app.schemas.inventory import IssueParams
+from app.schemas.inventory import IssueParams, ReceiveParams
 from app.schemas.sales import (
     CustomerCreate, CustomerUpdate,
     DeliveryCreate,
     InvoiceCreate,
     QuotationCreate, QuotationUpdate,
     SalesOrderCreate, SalesOrderUpdate,
+    SalesReturnCreate,
 )
 from app.services.inventory import InventoryService
+
+
+class QuantityValidationError(ValueError):
+    """Raised when a Sales Return would credit more than was ever
+    delivered on the referenced DeliveryItem line (Phase 10's "prevent the
+    same remainder from being returned or credited twice")."""
 
 
 def _item_amounts(
@@ -440,6 +448,14 @@ class SalesService:
         )
         return result.scalar_one_or_none()
 
+    async def list_sales_returns_for_delivery(self, delivery_id: UUID, company_id: UUID) -> list[SalesReturn]:
+        result = await self.db.execute(
+            select(SalesReturn)
+            .where(SalesReturn.delivery_id == delivery_id, SalesReturn.company_id == company_id)
+            .options(selectinload(SalesReturn.items))
+        )
+        return result.scalars().all()
+
     async def create_delivery(self, body: DeliveryCreate, company_id: UUID, user_id: UUID) -> Delivery:
         now = datetime.now(timezone.utc)
         number = await _next_seq(self.db, "DC", company_id, Delivery)
@@ -455,7 +471,7 @@ class SalesService:
         d = Delivery(
             company_id=company_id, delivery_number=number, sales_order_id=body.sales_order_id,
             customer_id=so.customer_id, warehouse_id=body.warehouse_id,
-            delivery_date=body.delivery_date, transporter=body.transporter,
+            delivery_date=body.delivery_date, purpose=body.purpose, transporter=body.transporter,
             lr_number=body.lr_number, vehicle_number=body.vehicle_number,
             notes=body.notes, status="dispatched", dispatched_at=now,
             carton_count=body.carton_count, package_count=body.package_count,
@@ -467,12 +483,19 @@ class SalesService:
         await self.db.flush()
 
         for item_data in body.items:
+            # Value the stock leaving at its real production cost, not the
+            # customer's selling price (item_data.unit_price is kept separately
+            # on DeliveryItem.unit_price below for revenue/invoicing).
+            cost = await self.inv.get_weighted_avg_cost(
+                company_id, item_data.product_id, body.warehouse_id, item_data.variant_id,
+            )
             inv_txn = await self.inv.issue(
                 IssueParams(
                     company_id=company_id, product_id=item_data.product_id,
                     variant_id=item_data.variant_id, warehouse_id=body.warehouse_id,
+                    lot_id=item_data.lot_id,
                     quantity=item_data.quantity, unit_id=item_data.unit_id,
-                    unit_cost=item_data.unit_price, material_type="finished_good",
+                    unit_cost=cost, material_type="finished_good",
                     transaction_date=body.delivery_date, reference_type="delivery",
                     reference_id=d.id, notes=f"DC {number}",
                 ),
@@ -483,10 +506,12 @@ class SalesService:
             self.db.add(DeliveryItem(
                 delivery_id=d.id, so_item_id=item_data.so_item_id,
                 product_id=item_data.product_id, variant_id=item_data.variant_id,
+                lot_id=inv_txn.lot_id,
                 quantity=item_data.quantity, unit_id=item_data.unit_id,
                 unit_price=item_data.unit_price,
                 total_amount=(item_data.unit_price * item_data.quantity).quantize(Decimal("0.01")),
                 inv_transaction_id=inv_txn.id,
+                returnable=item_data.returnable, weight_kg=item_data.weight_kg,
             ))
 
             # Update SO item delivered_qty
@@ -514,6 +539,125 @@ class SalesService:
         result = await self.db.execute(
             select(Delivery).where(Delivery.id == d.id)
             .options(selectinload(Delivery.customer), selectinload(Delivery.items))
+        )
+        return result.scalar_one()
+
+    # ── Sales Returns ────────────────────────────────────────────────────────
+    # Customer returning finished goods — distinct from the raw-material MIS
+    # return (production -> warehouse). Double-credit protection mirrors the
+    # MIS-return pattern: rather than a single running counter, each new
+    # return's quantity is checked against SUM(prior returns) for the same
+    # delivery_item_id, so the same remainder can never be returned twice.
+
+    async def list_sales_returns(
+        self, company_id: UUID, customer_id: UUID | None = None,
+        page: int = 1, page_size: int = 50,
+    ) -> tuple[list[SalesReturn], int]:
+        q = (
+            select(SalesReturn)
+            .where(SalesReturn.company_id == company_id)
+            .options(selectinload(SalesReturn.customer), selectinload(SalesReturn.items))
+        )
+        if customer_id:
+            q = q.where(SalesReturn.customer_id == customer_id)
+        total = (await self.db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
+        q = q.order_by(SalesReturn.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        return (await self.db.execute(q)).scalars().all(), total
+
+    async def get_sales_return(self, rid: UUID, company_id: UUID) -> SalesReturn | None:
+        result = await self.db.execute(
+            select(SalesReturn)
+            .where(SalesReturn.id == rid, SalesReturn.company_id == company_id)
+            .options(selectinload(SalesReturn.customer), selectinload(SalesReturn.items))
+        )
+        return result.scalar_one_or_none()
+
+    async def create_sales_return(
+        self, body: SalesReturnCreate, company_id: UUID, user_id: UUID,
+    ) -> SalesReturn:
+        now = datetime.now(timezone.utc)
+        number = await _next_seq(self.db, "SR", company_id, SalesReturn)
+
+        r = SalesReturn(
+            company_id=company_id, return_number=number, delivery_id=body.delivery_id,
+            customer_id=body.customer_id, return_date=body.return_date, reason=body.reason,
+            notes=body.notes, status="completed",
+            created_by=user_id, created_at=now, updated_at=now,
+        )
+        self.db.add(r)
+        await self.db.flush()
+
+        for item_data in body.items:
+            delivery_item: DeliveryItem | None = None
+            delivery_warehouse_id: UUID | None = None
+            if item_data.delivery_item_id:
+                di_res = await self.db.execute(
+                    select(DeliveryItem, Delivery.warehouse_id).join(Delivery)
+                    .where(DeliveryItem.id == item_data.delivery_item_id, Delivery.company_id == company_id)
+                )
+                row = di_res.first()
+                if not row:
+                    raise QuantityValidationError("Referenced delivery line not found.")
+                delivery_item, delivery_warehouse_id = row
+                if not delivery_item.returnable:
+                    raise QuantityValidationError("This delivery line is marked non-returnable.")
+
+                already_returned = (await self.db.execute(
+                    select(func.coalesce(func.sum(SalesReturnItem.quantity), 0))
+                    .where(SalesReturnItem.delivery_item_id == item_data.delivery_item_id)
+                )).scalar() or Decimal("0")
+                if already_returned + item_data.quantity > delivery_item.quantity:
+                    raise QuantityValidationError(
+                        f"Cannot return more than was delivered on this line "
+                        f"(delivered: {delivery_item.quantity}, already returned: {already_returned}, "
+                        f"requested: {item_data.quantity})."
+                    )
+
+            restocks = item_data.disposition in ("usable_stock", "resale_stock")
+            warehouse_id = item_data.warehouse_id or delivery_warehouse_id
+            if restocks and not warehouse_id:
+                raise QuantityValidationError(
+                    "A warehouse is required to credit stock back for usable_stock/resale_stock "
+                    "returns that aren't linked to a delivery line."
+                )
+
+            if restocks:
+                unit_cost = await self.inv.get_weighted_avg_cost(
+                    company_id, item_data.product_id, warehouse_id, item_data.variant_id,
+                )
+            else:
+                # Scrap/wastage carries no inventory value - tracked for
+                # record-keeping only, never inflates sellable stock value.
+                unit_cost = Decimal("0")
+            total_cost = (unit_cost * item_data.quantity).quantize(Decimal("0.01"))
+
+            inv_txn_id = None
+            if restocks:
+                inv_txn = await self.inv.receive(
+                    ReceiveParams(
+                        company_id=company_id, product_id=item_data.product_id,
+                        variant_id=item_data.variant_id, warehouse_id=warehouse_id,
+                        quantity=item_data.quantity, unit_id=item_data.unit_id,
+                        unit_cost=unit_cost, material_type="finished_good",
+                        transaction_date=body.return_date, reference_type="sales_return",
+                        reference_id=r.id, notes=f"Return against {number}",
+                    ),
+                    user_id=user_id,
+                )
+                inv_txn_id = inv_txn.id
+
+            self.db.add(SalesReturnItem(
+                sales_return_id=r.id, delivery_item_id=item_data.delivery_item_id,
+                product_id=item_data.product_id, variant_id=item_data.variant_id,
+                quantity=item_data.quantity, unit_id=item_data.unit_id,
+                disposition=item_data.disposition, unit_cost=unit_cost, total_cost=total_cost,
+                inv_transaction_id=inv_txn_id, notes=item_data.notes,
+            ))
+
+        await self.db.flush()
+        result = await self.db.execute(
+            select(SalesReturn).where(SalesReturn.id == r.id)
+            .options(selectinload(SalesReturn.customer), selectinload(SalesReturn.items))
         )
         return result.scalar_one()
 

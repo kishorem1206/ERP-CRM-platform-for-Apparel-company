@@ -60,6 +60,19 @@ interface SOItemOut {
   product_name?: string;
 }
 
+interface StockBalanceRow {
+  product_id: string;
+  balance: string;
+}
+
+const PURPOSE_OPTIONS = [
+  { value: "sale", label: "Sale" },
+  { value: "sample", label: "Sample" },
+  { value: "job_work_return", label: "Job-work return" },
+  { value: "branch_transfer", label: "Branch transfer" },
+  { value: "other", label: "Other" },
+];
+
 const STATUS_FILTERS = [
   { label: "All", value: "" },
   { label: "Draft", value: "draft" },
@@ -114,6 +127,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
   const [soId, setSoId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [deliveryDate, setDeliveryDate] = useState(today);
+  const [purpose, setPurpose] = useState("sale");
   const [transporter, setTransporter] = useState("");
   const [lrNumber, setLrNumber] = useState("");
   const [vehicleNumber, setVehicleNumber] = useState("");
@@ -124,6 +138,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
   const [packingMarks, setPackingMarks] = useState("");
   const [notes, setNotes] = useState("");
   const [itemQtys, setItemQtys] = useState<Record<string, string>>({});
+  const [itemReturnable, setItemReturnable] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
 
   const { data: salesOrders } = useQuery({
@@ -143,8 +158,16 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
     },
     enabled: !!soId,
   });
+  const { data: balances } = useQuery({
+    queryKey: ["stock-balance-for-delivery", warehouseId],
+    queryFn: async () => (await api.get(`/inventory/balance?warehouse_id=${warehouseId}`)).data.data ?? [],
+    enabled: !!warehouseId,
+  });
 
   const soItems: SOItemOut[] = soDetail?.items ?? [];
+  const balanceByProduct = new Map<string, number>(
+    (balances ?? []).map((b: StockBalanceRow) => [b.product_id, Number(b.balance)]),
+  );
 
   const mut = useMutation({
     mutationFn: () =>
@@ -152,6 +175,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
         sales_order_id: soId,
         warehouse_id: warehouseId,
         delivery_date: deliveryDate,
+        purpose,
         transporter: transporter || null,
         lr_number: lrNumber || null,
         vehicle_number: vehicleNumber || null,
@@ -167,6 +191,7 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
           unit_id: it.unit_id,
           quantity: parseFloat(itemQtys[it.id] ?? it.quantity),
           unit_price: parseFloat(String(it.unit_price)),
+          returnable: itemReturnable[it.id] ?? true,
         })),
       }),
     onSuccess: () => {
@@ -174,8 +199,18 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
       onClose();
     },
     onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(typeof msg === "string" ? msg : "Failed to create delivery");
+      const err = (e as {
+        response?: { data?: { error?: string | { message?: string; available?: string; shortage?: string } } };
+      })?.response?.data?.error;
+      if (typeof err === "string") {
+        setError(err);
+      } else if (err?.message) {
+        const extra = err.shortage && Number(err.shortage) > 0
+          ? ` (available: ${err.available}, short by: ${err.shortage})` : "";
+        setError(`${err.message}${extra}`);
+      } else {
+        setError("Failed to create delivery");
+      }
     },
   });
 
@@ -227,6 +262,16 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
             <div>
               <label className="text-xs font-medium text-muted-foreground">Delivery Date *</label>
               <DatePicker value={deliveryDate} onChange={(v) => setDeliveryDate(v)} required />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Purpose</label>
+              <SearchableSelect
+                value={purpose}
+                onChange={(v) => setPurpose(v)}
+                placeholder="Purpose of movement…"
+                accent="#8174F5"
+                options={PURPOSE_OPTIONS}
+              />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Transporter</label>
@@ -294,24 +339,42 @@ function AddDeliveryModal({ onClose }: { onClose: () => void }) {
                       <tr>
                         <th className="text-left px-2 py-1.5 font-medium">Product</th>
                         <th className="text-right px-2 py-1.5 font-medium">Ordered</th>
+                        <th className="text-right px-2 py-1.5 font-medium">Available</th>
                         <th className="text-right px-2 py-1.5 font-medium">Deliver Qty</th>
+                        <th className="text-center px-2 py-1.5 font-medium">Returnable</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {soItems.map((it) => (
-                        <tr key={it.id} className="border-t">
-                          <td className="px-2 py-1">{it.product_name ?? it.product_id.slice(0, 8)}</td>
-                          <td className="px-2 py-1 text-right text-muted-foreground">{it.quantity}</td>
-                          <td className="px-2 py-1">
-                            <input
-                              type="number" min="0.01" step="0.01"
-                              value={itemQtys[it.id] ?? it.quantity}
-                              onChange={(e) => setItemQtys((q) => ({ ...q, [it.id]: e.target.value }))}
-                              className="w-24 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring float-right"
-                            />
-                          </td>
-                        </tr>
-                      ))}
+                      {soItems.map((it) => {
+                        const requested = Number(itemQtys[it.id] ?? it.quantity);
+                        const available = warehouseId ? balanceByProduct.get(it.product_id) ?? 0 : null;
+                        const short = available !== null && requested > available;
+                        return (
+                          <tr key={it.id} className="border-t">
+                            <td className="px-2 py-1">{it.product_name ?? it.product_id.slice(0, 8)}</td>
+                            <td className="px-2 py-1 text-right text-muted-foreground">{it.quantity}</td>
+                            <td className="px-2 py-1 text-right" style={short ? { color: "#1D0DB0", fontWeight: 600 } : undefined}>
+                              {available === null ? "—" : available}
+                              {short && <span className="block text-[10px]">short {(requested - available!).toFixed(2)}</span>}
+                            </td>
+                            <td className="px-2 py-1">
+                              <input
+                                type="number" min="0.01" step="0.01"
+                                value={itemQtys[it.id] ?? it.quantity}
+                                onChange={(e) => setItemQtys((q) => ({ ...q, [it.id]: e.target.value }))}
+                                className="w-24 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring float-right"
+                              />
+                            </td>
+                            <td className="px-2 py-1 text-center">
+                              <input
+                                type="checkbox"
+                                checked={itemReturnable[it.id] ?? true}
+                                onChange={(e) => setItemReturnable((r) => ({ ...r, [it.id]: e.target.checked }))}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

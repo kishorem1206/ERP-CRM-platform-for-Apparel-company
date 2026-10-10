@@ -142,7 +142,12 @@ class TransactionOut(BaseModel):
     transfer_group_id: UUID | None = None
     material_type: str
     created_by_name: str | None = None
+    corrected_date: date | None = None
     model_config = {"from_attributes": True}
+
+
+class TransactionDateCorrect(BaseModel):
+    corrected_date: date
 
 
 class StockBalanceRow(BaseModel):

@@ -129,7 +129,7 @@ function getColumns(
 
 const EMPTY_FORM = {
   code: "", name: "", product_type: "finished_good" as ProductType,
-  category_id: "", unit_id: "", hsn_id: "",
+  category_id: "", brand_id: "", unit_id: "", hsn_id: "",
   cost_price: "", mrp: "", dealer_price: "", wholesale_price: "",
   fabric_type: "", fabric_composition: "", gsm: "", construction: "",
   fit: "", season: "", gender: "", description: "",
@@ -143,6 +143,10 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
   const { data: categories } = useQuery<MasterItem[]>({
     queryKey: ["master-categories"],
     queryFn: async () => (await api.get("/master/categories")).data.data,
+  });
+  const { data: brands } = useQuery<MasterItem[]>({
+    queryKey: ["master-brands"],
+    queryFn: async () => (await api.get("/master/brands")).data.data,
   });
   const { data: units } = useQuery<MasterItem[]>({
     queryKey: ["master-units"],
@@ -185,6 +189,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
       product_type: form.product_type,
     };
     if (form.category_id) payload.category_id = form.category_id;
+    if (form.brand_id) payload.brand_id = form.brand_id;
     if (form.unit_id) payload.unit_id = form.unit_id;
     if (form.hsn_id) payload.hsn_id = form.hsn_id;
     if (form.cost_price) payload.cost_price = Number(form.cost_price);
@@ -288,6 +293,19 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                     value: h.id,
                     label: `${h.hsn} — ${h.description ?? ""} (${h.gst_rate}% GST)`,
                   })),
+                ]}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Brand</label>
+              <SearchableSelect
+                value={form.brand_id}
+                onChange={(v) => set("brand_id", v)}
+                placeholder="— select —"
+                accent="#0F78FF"
+                options={[
+                  { value: "", label: "— select —" },
+                  ...(brands ?? []).map((b) => ({ value: b.id, label: b.name })),
                 ]}
               />
             </div>
@@ -407,7 +425,7 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
 
 interface ProductDetail {
   id: string; code: string; name: string; product_type: ProductType;
-  category_id: string | null; unit_id: string | null; hsn_id: string | null;
+  category_id: string | null; brand_id: string | null; unit_id: string | null; hsn_id: string | null;
   mrp: string | null; dealer_price: string | null; cost_price: string | null; wholesale_price: string | null;
   description: string | null; fabric_type: string | null; fabric_composition: string | null;
   gsm: string | null; construction: string | null; fit: string | null; season: string | null;
@@ -429,6 +447,10 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
     queryKey: ["master-categories"],
     queryFn: async () => (await api.get("/master/categories")).data.data,
   });
+  const { data: brands } = useQuery<MasterItem[]>({
+    queryKey: ["master-brands"],
+    queryFn: async () => (await api.get("/master/brands")).data.data,
+  });
   const { data: units } = useQuery<MasterItem[]>({
     queryKey: ["master-units"],
     queryFn: async () => (await api.get("/master/units")).data.data,
@@ -442,7 +464,7 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
     if (!product) return;
     setForm({
       code: product.code, name: product.name, product_type: product.product_type,
-      category_id: product.category_id ?? "", unit_id: product.unit_id ?? "", hsn_id: product.hsn_id ?? "",
+      category_id: product.category_id ?? "", brand_id: product.brand_id ?? "", unit_id: product.unit_id ?? "", hsn_id: product.hsn_id ?? "",
       cost_price: product.cost_price ?? "", mrp: product.mrp ?? "", dealer_price: product.dealer_price ?? "",
       wholesale_price: product.wholesale_price ?? "",
       fabric_type: product.fabric_type ?? "", fabric_composition: product.fabric_composition ?? "",
@@ -483,6 +505,7 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
     const payload: Record<string, unknown> = {
       name: form.name.trim(),
       category_id: form.category_id || null,
+      brand_id: form.brand_id || null,
       unit_id: form.unit_id || null,
       hsn_id: form.hsn_id || null,
       mrp: form.mrp ? Number(form.mrp) : null,
@@ -569,7 +592,7 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-1">
               <label className="text-xs font-medium">HSN Code</label>
               <SearchableSelect
@@ -583,6 +606,19 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
                     value: h.id,
                     label: `${h.hsn} — ${h.description ?? ""} (${h.gst_rate}% GST)`,
                   })),
+                ]}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Brand</label>
+              <SearchableSelect
+                value={form.brand_id}
+                onChange={(v) => set("brand_id", v)}
+                placeholder="— select —"
+                accent="#0F78FF"
+                options={[
+                  { value: "", label: "— select —" },
+                  ...(brands ?? []).map((b) => ({ value: b.id, label: b.name })),
                 ]}
               />
             </div>
@@ -859,7 +895,6 @@ function MergeHistoryPanel() {
 export default function ProductsPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [search, setSearch] = useState("");
-  const [searchInput, setSearchInput] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [mergingProductId, setMergingProductId] = useState<string | null>(null);
@@ -929,9 +964,8 @@ export default function ProductsPage() {
         <div className="flex items-center gap-2 border rounded-xl px-3 py-1.5 bg-background flex-1 max-w-xs">
           <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && setSearch(searchInput)}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
             placeholder="Search code or name..."
             className="text-sm bg-transparent outline-none w-full"
           />

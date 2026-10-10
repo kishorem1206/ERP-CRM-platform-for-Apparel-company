@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Check, X, Ruler, Boxes, Palette, Scale, Warehouse as WarehouseIcon, Receipt, Cog } from "lucide-react";
+import { Plus, Pencil, Trash2, Check, X, Ruler, Boxes, Palette, Scale, Warehouse as WarehouseIcon, Receipt, Cog, Tag, Shirt } from "lucide-react";
 import api from "@/lib/api";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { Can } from "@/lib/permissions";
@@ -36,6 +36,18 @@ const ENTITIES: (EntityConfig & { icon: typeof Ruler })[] = [
     description: "Top-level product groupings (e.g. Fabric, Trims, Finished Garments).",
     addLabel: "Category", icon: Boxes,
     fields: [{ key: "name", label: "Name", type: "text", placeholder: "e.g. Knitwear" }],
+  },
+  {
+    key: "brands", endpoint: "/master/brands", title: "Brands",
+    description: "One brand list reused across products, styles, and material lots.",
+    addLabel: "Brand", icon: Tag,
+    fields: [{ key: "name", label: "Name", type: "text", placeholder: "e.g. Zenith" }],
+  },
+  {
+    key: "style-parts", endpoint: "/master/style-parts", title: "Style Parts",
+    description: "Garment parts (Front, Back, Collar, Sleeves, Waistband, ...) selectable from Style creation.",
+    addLabel: "Style Part", icon: Shirt, deactivateOnly: true,
+    fields: [{ key: "name", label: "Name", type: "text", placeholder: "e.g. Collar" }],
   },
   {
     key: "sizes", endpoint: "/master/sizes", title: "Sizes",
@@ -94,6 +106,18 @@ const ENTITIES: (EntityConfig & { icon: typeof Ruler })[] = [
       { key: "name", label: "Name", type: "text", placeholder: "e.g. Yarn Store" },
       { key: "code", label: "Code", type: "text", placeholder: "e.g. WH-YARN", width: "w-32" },
       { key: "address", label: "Address", type: "text", placeholder: "Optional" },
+      {
+        key: "material_type", label: "Material Type", type: "text", width: "w-36",
+        options: [
+          { value: "", label: "General (no restriction)" },
+          { value: "yarn", label: "Yarn" },
+          { value: "fabric", label: "Fabric" },
+          { value: "trim", label: "Trim" },
+          { value: "packing", label: "Packing" },
+          { value: "raw_material", label: "Raw Material" },
+          { value: "finished_good", label: "Finished Good" },
+        ],
+      },
     ],
   },
   {

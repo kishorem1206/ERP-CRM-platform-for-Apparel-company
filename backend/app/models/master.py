@@ -87,6 +87,7 @@ class Warehouse(Base):
     code: Mapped[Optional[str]] = mapped_column(String(20))
     address: Mapped[Optional[str]] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    material_type: Mapped[Optional[str]] = mapped_column(String(30))   # NULL = general, else a PRODUCT_TYPES value
 
 
 class WarehouseLocation(Base):
@@ -131,6 +132,7 @@ class Product(BaseModel):
     category: Mapped[Optional["Category"]] = relationship()
     unit: Mapped[Optional["Unit"]] = relationship()
     hsn: Mapped[Optional["HsnCode"]] = relationship()
+    brand: Mapped[Optional["Brand"]] = relationship()
 
 
 class ProductVariant(Base):
@@ -141,6 +143,7 @@ class ProductVariant(Base):
     sku: Mapped[str] = mapped_column(String(100), nullable=False)
     colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id"))
     size_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"))
+    style_part_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id", ondelete="SET NULL"))
     barcode: Mapped[Optional[str]] = mapped_column(String(50))
     mrp: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     cost_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))

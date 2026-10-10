@@ -3,18 +3,18 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.business_rules import BusinessRulesError, business_rules
 from app.models.master import Product, ProductVariant
 from app.models.production import (
-    FabricProcessingEntry, InternalWorker, LotAdditionalCost, LotPackingMaterial, LotTrim,
-    MaterialIssue, MaterialIssueItem,
-    ProcessMaster, ProductionLot, ProductionLotSize, ProductionOutput,
-    ProductionStage, ProductionStageChallan, ProductionStageEntry, SizeChart, SizeChartItem, Style, StyleAdditionalCost,
-    StyleColour, StyleFabric, StylePackingMaterial, StyleProcess,
+    FabricProcessingEntry, InternalWorker, LotAdditionalCost, LotFabric, LotPackingMaterial, LotPartColour, LotPartSize,
+    LotTrim, LotYarn, MaterialIssue, MaterialIssueItem, ProductionMistakeLog,
+    ProcessMaster, ProductionAuditLog, ProductionLot, ProductionLotSize, ProductionOutput,
+    ProductionStage, ProductionStageChallan, ProductionStageEntry, ProductionStageSize, SizeChart, SizeChartItem, Style, StyleAdditionalCost,
+    StyleColour, StyleFabric, StyleFabricSize, StylePackingMaterial, StylePart, StylePartColour, StylePartSize, StyleProcess,
     StyleSize, StyleSubProcess, StyleTrim, StyleTrimSize, StyleYarn,
 )
 from app.models.sales import SalesOrder, SalesOrderItem
@@ -23,16 +23,60 @@ from app.schemas.production import (
     FabricProcessingComplete, FabricProcessingCreate, FabricProcessingUpdate,
     InternalWorkerCreate,
     LotAdditionalCostCreate, LotAdditionalCostUpdate, LotCostComponentOut, LotCostSummaryOut,
+    LotFabricActualUpdate, LotYarnActualUpdate,
     LotPackingActualUpdate, LotTrimActualUpdate,
-    MaterialIssueCreate, MISItemCreate, MISItemReturnUpdate,
+    MaterialIssueCreate, MISItemCreate, MISItemReturnUpdate, MistakeLogCreate,
     ProductionLotCreate, ProductionLotUpdate,
     ProductionOutputCreate, SizeChartCreate, StyleSizeIn,
     StageChallanBillUpdate, StageChallanCreate, StageChallanReceive,
-    StageCreate, StageEntryCreate, StageUpdate, StyleCreate, StyleProcessIn,
+    StageCreate, StageEntryCreate, StageSizeUpdate, StageUpdate, StyleCreate, StyleProcessIn,
     TargetPriceCheckOut, TargetPriceSuggestion,
 )
 from app.services.inventory import InventoryService
 from app.services.sku import build_variant_sku
+
+
+# Everything the API's _stage_out() reads off a ProductionStage. Any query
+# whose result is serialized through _stage_out must load all of these, or
+# Pydantic's sync validation hits an unloaded async relationship and raises
+# MissingGreenlet.
+_STAGE_OUT_LOADS = (
+    selectinload(ProductionStage.entries),
+    selectinload(ProductionStage.challans),
+    selectinload(ProductionStage.sizes),
+    selectinload(ProductionStage.style_process).selectinload(StyleProcess.sub_processes),
+)
+
+
+# Everything the API's _lot_out() (and compute_lot_cost_summary, build_lot_bom,
+# fabric_blockers) reads off a ProductionLot. get_lot, list_lots and
+# create_lot's final re-fetch all use this one set; when they each kept their
+# own copy, list_lots and create_lot drifted behind get_lot and both crashed
+# with MissingGreenlet as soon as _stage_out started reading stage.sizes and
+# stage.style_process.sub_processes.
+_LOT_FULL_LOADS = (
+    selectinload(ProductionLot.style).selectinload(Style.fabrics),
+    selectinload(ProductionLot.style).selectinload(Style.trims),
+    selectinload(ProductionLot.style).selectinload(Style.yarns),
+    selectinload(ProductionLot.sizes),
+    selectinload(ProductionLot.part_colours).selectinload(LotPartColour.style_part),
+    selectinload(ProductionLot.part_colours).selectinload(LotPartColour.colour),
+    selectinload(ProductionLot.part_colours).selectinload(LotPartColour.sizes),
+    selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
+    selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
+    selectinload(ProductionLot.stages).selectinload(ProductionStage.style_process).selectinload(StyleProcess.sub_processes),
+    selectinload(ProductionLot.stages).selectinload(ProductionStage.sizes),
+    selectinload(ProductionLot.additional_costs),
+    selectinload(ProductionLot.trims),
+    selectinload(ProductionLot.packing_materials).selectinload(LotPackingMaterial.product),
+    selectinload(ProductionLot.lot_fabrics).selectinload(LotFabric.style_part),
+    selectinload(ProductionLot.lot_fabrics).selectinload(LotFabric.colour),
+    selectinload(ProductionLot.lot_fabrics).selectinload(LotFabric.yarns),
+    selectinload(ProductionLot.lot_yarns).selectinload(LotYarn.colour),
+    selectinload(ProductionLot.fabric_processing),
+    selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
+    selectinload(ProductionLot.outputs),
+)
 
 
 def _stage_accepted_qty(stage: ProductionStage) -> int:
@@ -321,7 +365,7 @@ def compute_lot_cost_summary(
                 (actual_selling_price_per_piece - cost_per_piece) / actual_selling_price_per_piece * 100
             ).quantize(_CENTS)
 
-    is_final = lot.status in ("completed", "ready_to_dispatch")
+    is_final = lot.status in ("completed", "packing")
 
     return LotCostSummaryOut(
         components=components,
@@ -481,12 +525,20 @@ class ProductionService:
     def _style_detail_query(self):
         return select(Style).options(
             selectinload(Style.product).selectinload(Product.hsn),
+            selectinload(Style.brand),
             selectinload(Style.sizes),
             selectinload(Style.colours),
-            selectinload(Style.yarns),
-            selectinload(Style.fabrics),
+            selectinload(Style.part_colours).selectinload(StylePartColour.style_part),
+            selectinload(Style.part_colours).selectinload(StylePartColour.sizes),
+            selectinload(Style.yarns).selectinload(StyleYarn.style_fabric),
+            selectinload(Style.yarns).selectinload(StyleYarn.colour),
+            selectinload(Style.fabrics).selectinload(StyleFabric.size_breakdown),
+            selectinload(Style.fabrics).selectinload(StyleFabric.style_part),
             selectinload(Style.processes).selectinload(StyleProcess.sub_processes),
+            selectinload(Style.processes).selectinload(StyleProcess.style_part),
             selectinload(Style.trims).selectinload(StyleTrim.size_breakdown),
+            selectinload(Style.trims).selectinload(StyleTrim.style_part),
+            selectinload(Style.trims).selectinload(StyleTrim.colour),
             selectinload(Style.packing_materials),
             selectinload(Style.additional_costs),
         )
@@ -524,7 +576,7 @@ class ProductionService:
             company_id=company_id,
             code=body.code or f"STY-{uuid4().hex[:8].upper()}",
             name=body.name, product_type="finished_good",
-            gender=body.gender, season=body.season,
+            gender=body.gender, season=body.season, brand_id=body.brand_id,
             created_by=user_id,
         )
         self.db.add(product)
@@ -570,6 +622,45 @@ class ProductionService:
                 existing_pairs.add((size_id, colour_id))
         await self.db.flush()
 
+    async def _ensure_part_variants(self, style: Style) -> None:
+        """Mirrors _ensure_variants, but for Style Parts (Production Module
+        Reorganisation Phase 1): one variant per (part, colour, size) a part
+        is configured for, in ADDITION to the style's regular whole-garment
+        variants — these track the individual part (e.g. "Collar-M-Red"),
+        not the assembled product. A style with no parts configured
+        generates none of these, so it's a pure no-op for every style that
+        existed before this feature.
+        """
+        if not style.product_id:
+            return
+        part_colours = (await self.db.execute(
+            select(StylePartColour).where(StylePartColour.style_id == style.id)
+            .options(selectinload(StylePartColour.sizes))
+        )).scalars().all()
+        if not part_colours:
+            return
+
+        existing = await self.db.execute(
+            select(ProductVariant.style_part_id, ProductVariant.size_id, ProductVariant.colour_id)
+            .where(ProductVariant.product_id == style.product_id, ProductVariant.style_part_id.isnot(None))
+        )
+        existing_triples = {(row.style_part_id, row.size_id, row.colour_id) for row in existing}
+
+        product = (await self.db.execute(select(Product).where(Product.id == style.product_id))).scalar_one()
+        for pc in part_colours:
+            size_ids = [s.size_id for s in pc.sizes] or [None]
+            for size_id in size_ids:
+                key = (pc.style_part_id, size_id, pc.colour_id)
+                if key in existing_triples:
+                    continue
+                sku = await build_variant_sku(self.db, product.code, size_id, pc.colour_id, pc.style_part_id)
+                self.db.add(ProductVariant(
+                    product_id=style.product_id, sku=sku, size_id=size_id,
+                    colour_id=pc.colour_id, style_part_id=pc.style_part_id,
+                ))
+                existing_triples.add(key)
+        await self.db.flush()
+
     async def _fetch_process_masters(self, processes: list, company_id: UUID) -> dict[UUID, "ProcessMaster"]:
         ids = {p.process_master_id for p in processes if p.process_master_id}
         if not ids:
@@ -587,7 +678,7 @@ class ProductionService:
         master = masters.get(proc.process_master_id) if proc.process_master_id else None
         return StyleProcess(
             style_id=style_id, seq=proc.seq, process_name=proc.process_name,
-            process_master_id=proc.process_master_id,
+            process_master_id=proc.process_master_id, style_part_id=proc.style_part_id,
             is_enabled=proc.is_enabled,
             tolerance_pct=proc.tolerance_pct if proc.tolerance_pct is not None else (master.default_tolerance_pct if master else None),
             input_unit=proc.input_unit if proc.input_unit is not None else (master.default_unit if master else None),
@@ -692,7 +783,7 @@ class ProductionService:
             garment_type=body.garment_type, gender=body.gender, season=body.season,
             final_output_unit=body.final_output_unit, target_price=body.target_price,
             pieces_per_box=body.pieces_per_box, fabric_source=body.fabric_source,
-            product_id=product_id,
+            product_id=product_id, brand_id=body.brand_id,
         )
         self.db.add(s)
         await self.db.flush()
@@ -704,18 +795,38 @@ class ProductionService:
         for cl in body.colours:
             self.db.add(StyleColour(style_id=s.id, colour_id=cl.colour_id, sort_order=cl.sort_order, created_at=now))
 
-        for yn in body.yarns:
-            self.db.add(StyleYarn(
-                style_id=s.id, yarn_name=yn.yarn_name, lot_id=yn.lot_id,
-                quantity=yn.quantity, unit=yn.unit, notes=yn.notes, created_at=now,
-            ))
+        for pc in body.part_colours:
+            spc = StylePartColour(
+                style_id=s.id, style_part_id=pc.style_part_id, colour_id=pc.colour_id,
+                sort_order=pc.sort_order, created_at=now,
+            )
+            self.db.add(spc)
+            await self.db.flush()
+            for psz in pc.sizes:
+                self.db.add(StylePartSize(style_part_colour_id=spc.id, size_id=psz.size_id, quantity=psz.quantity, sort_order=psz.sort_order))
 
+        fabric_ids: list[UUID] = []
         for fb in body.fabrics:
-            self.db.add(StyleFabric(
+            sf = StyleFabric(
                 style_id=s.id, fabric_name=fb.fabric_name, lot_id=fb.lot_id,
+                style_part_id=fb.style_part_id, colour_id=fb.colour_id, source_type=fb.source_type,
+                knit_dia=fb.knit_dia, finish_dia=fb.finish_dia,
                 consumption=fb.consumption, unit=fb.unit, excess_pct=fb.excess_pct,
                 gsm=fb.gsm, dyeing_rate=fb.dyeing_rate, printing_rate=fb.printing_rate,
                 notes=fb.notes, created_at=now,
+            )
+            self.db.add(sf)
+            await self.db.flush()
+            fabric_ids.append(sf.id)
+            for fsz in fb.size_breakdown:
+                self.db.add(StyleFabricSize(style_fabric_id=sf.id, size_id=fsz.size_id, quantity=fsz.quantity))
+
+        for yn in body.yarns:
+            self.db.add(StyleYarn(
+                style_id=s.id, yarn_name=yn.yarn_name, lot_id=yn.lot_id,
+                style_fabric_id=fabric_ids[yn.fabric_index] if yn.fabric_index is not None else None,
+                colour_id=yn.colour_id, counts=yn.counts, consumption_pct=yn.consumption_pct,
+                quantity=yn.quantity, unit=yn.unit, notes=yn.notes, created_at=now,
             ))
 
         process_masters = await self._fetch_process_masters(body.processes, company_id)
@@ -726,12 +837,14 @@ class ProductionService:
             for sub in proc.sub_processes:
                 self.db.add(StyleSubProcess(
                     style_process_id=p.id, seq=sub.seq, name=sub.name,
+                    min_rate=sub.min_rate, max_rate=sub.max_rate, planned_rate=sub.planned_rate,
                     notes=sub.notes, created_at=now,
                 ))
 
         for tr in body.trims:
             t = StyleTrim(
                 style_id=s.id, trim_name=tr.trim_name, lot_id=tr.lot_id,
+                style_part_id=tr.style_part_id, colour_id=tr.colour_id,
                 quantity=tr.quantity, unit=tr.unit, category=tr.category,
                 process_seq=tr.process_seq,
                 excess_pct=tr.excess_pct, notes=tr.notes, created_at=now,
@@ -743,7 +856,7 @@ class ProductionService:
 
         for pm in body.packing_materials:
             self.db.add(StylePackingMaterial(
-                style_id=s.id, material_name=pm.material_name, quantity=pm.quantity,
+                style_id=s.id, material_name=pm.material_name, product_id=pm.product_id, quantity=pm.quantity,
                 unit=pm.unit, excess_pct=pm.excess_pct,
                 consumption_stage=pm.consumption_stage, notes=pm.notes, created_at=now,
             ))
@@ -758,6 +871,7 @@ class ProductionService:
         await self.db.flush()
         style = await self.get_style(s.id, company_id)
         await self._ensure_variants(style)
+        await self._ensure_part_variants(style)
         return style
 
     async def clone_style(self, style_id: UUID, company_id: UUID, user_id: UUID) -> Style | None:
@@ -772,6 +886,7 @@ class ProductionService:
         if not source:
             return None
 
+        _fabric_index_by_id = {fb.id: i for i, fb in enumerate(source.fabrics)}
         payload = StyleCreate(
             name=f"{source.name} (Copy)", code=None, description=source.description,
             garment_type=source.garment_type, gender=source.gender, season=source.season,
@@ -779,24 +894,37 @@ class ProductionService:
             pieces_per_box=source.pieces_per_box, fabric_source=source.fabric_source,
             sizes=[{"size_id": x.size_id, "sort_order": x.sort_order, "quantity": x.quantity, "size_chart_id": x.size_chart_id} for x in source.sizes],
             colours=[{"colour_id": x.colour_id, "sort_order": x.sort_order} for x in source.colours],
-            yarns=[{"yarn_name": x.yarn_name, "lot_id": x.lot_id, "quantity": x.quantity,
-                     "unit": x.unit, "notes": x.notes} for x in source.yarns],
+            part_colours=[{
+                "style_part_id": x.style_part_id, "colour_id": x.colour_id, "sort_order": x.sort_order,
+                "sizes": [{"size_id": sz.size_id, "quantity": sz.quantity, "sort_order": sz.sort_order} for sz in x.sizes],
+            } for x in source.part_colours],
+            yarns=[{
+                "yarn_name": x.yarn_name, "lot_id": x.lot_id,
+                "fabric_index": _fabric_index_by_id.get(x.style_fabric_id),
+                "colour_id": x.colour_id, "counts": x.counts, "consumption_pct": x.consumption_pct,
+                "quantity": x.quantity, "unit": x.unit, "notes": x.notes,
+            } for x in source.yarns],
             fabrics=[{"fabric_name": x.fabric_name, "lot_id": x.lot_id, "consumption": x.consumption,
+                       "style_part_id": x.style_part_id, "colour_id": x.colour_id, "source_type": x.source_type,
+                       "knit_dia": x.knit_dia, "finish_dia": x.finish_dia,
                        "unit": x.unit, "excess_pct": x.excess_pct, "gsm": x.gsm,
-                       "dyeing_rate": x.dyeing_rate, "printing_rate": x.printing_rate, "notes": x.notes}
+                       "dyeing_rate": x.dyeing_rate, "printing_rate": x.printing_rate, "notes": x.notes,
+                       "size_breakdown": [{"size_id": sb.size_id, "quantity": sb.quantity} for sb in x.size_breakdown]}
                       for x in source.fabrics],
             processes=[{
-                "seq": p.seq, "process_name": p.process_name, "process_master_id": p.process_master_id, "is_enabled": p.is_enabled,
+                "seq": p.seq, "process_name": p.process_name, "process_master_id": p.process_master_id,
+                "style_part_id": p.style_part_id, "is_enabled": p.is_enabled,
                 "tolerance_pct": p.tolerance_pct, "input_unit": p.input_unit, "output_unit": p.output_unit,
                 "conversion_rule": p.conversion_rule, "min_rate": p.min_rate, "max_rate": p.max_rate,
                 "planned_rate": p.planned_rate, "notes": p.notes,
-                "sub_processes": [{"seq": sp.seq, "name": sp.name, "notes": sp.notes} for sp in p.sub_processes],
+                "sub_processes": [{"seq": sp.seq, "name": sp.name, "min_rate": sp.min_rate, "max_rate": sp.max_rate, "planned_rate": sp.planned_rate, "notes": sp.notes} for sp in p.sub_processes],
             } for p in source.processes],
-            trims=[{"trim_name": x.trim_name, "lot_id": x.lot_id, "quantity": x.quantity, "unit": x.unit,
+            trims=[{"trim_name": x.trim_name, "lot_id": x.lot_id, "style_part_id": x.style_part_id, "colour_id": x.colour_id,
+                     "quantity": x.quantity, "unit": x.unit,
                      "category": x.category, "process_seq": x.process_seq, "excess_pct": x.excess_pct, "notes": x.notes,
                      "size_breakdown": [{"size_id": sb.size_id, "quantity": sb.quantity} for sb in x.size_breakdown]}
                     for x in source.trims],
-            packing_materials=[{"material_name": x.material_name, "quantity": x.quantity, "unit": x.unit,
+            packing_materials=[{"material_name": x.material_name, "product_id": x.product_id, "quantity": x.quantity, "unit": x.unit,
                                   "excess_pct": x.excess_pct, "consumption_stage": x.consumption_stage,
                                   "notes": x.notes} for x in source.packing_materials],
             additional_costs=[{"cost_type": x.cost_type, "description": x.description, "amount": x.amount,
@@ -828,10 +956,12 @@ class ProductionService:
         s.fabric_source = body.fabric_source
         s.target_price = body.target_price
         s.product_id = await self._resolve_style_product(body, company_id, user_id, existing_product_id=s.product_id)
+        s.brand_id = body.brand_id
         s.updated_at = now
 
         await self.db.execute(delete(StyleSize).where(StyleSize.style_id == style_id))
         await self.db.execute(delete(StyleColour).where(StyleColour.style_id == style_id))
+        await self.db.execute(delete(StylePartColour).where(StylePartColour.style_id == style_id))
         await self.db.execute(delete(StyleYarn).where(StyleYarn.style_id == style_id))
         await self.db.execute(delete(StyleFabric).where(StyleFabric.style_id == style_id))
         await self.db.execute(delete(StyleProcess).where(StyleProcess.style_id == style_id))
@@ -847,18 +977,38 @@ class ProductionService:
         for cl in body.colours:
             self.db.add(StyleColour(style_id=style_id, colour_id=cl.colour_id, sort_order=cl.sort_order, created_at=now))
 
-        for yn in body.yarns:
-            self.db.add(StyleYarn(
-                style_id=style_id, yarn_name=yn.yarn_name, lot_id=yn.lot_id,
-                quantity=yn.quantity, unit=yn.unit, notes=yn.notes, created_at=now,
-            ))
+        for pc in body.part_colours:
+            spc = StylePartColour(
+                style_id=style_id, style_part_id=pc.style_part_id, colour_id=pc.colour_id,
+                sort_order=pc.sort_order, created_at=now,
+            )
+            self.db.add(spc)
+            await self.db.flush()
+            for psz in pc.sizes:
+                self.db.add(StylePartSize(style_part_colour_id=spc.id, size_id=psz.size_id, quantity=psz.quantity, sort_order=psz.sort_order))
 
+        fabric_ids: list[UUID] = []
         for fb in body.fabrics:
-            self.db.add(StyleFabric(
+            sf = StyleFabric(
                 style_id=style_id, fabric_name=fb.fabric_name, lot_id=fb.lot_id,
+                style_part_id=fb.style_part_id, colour_id=fb.colour_id, source_type=fb.source_type,
+                knit_dia=fb.knit_dia, finish_dia=fb.finish_dia,
                 consumption=fb.consumption, unit=fb.unit, excess_pct=fb.excess_pct,
                 gsm=fb.gsm, dyeing_rate=fb.dyeing_rate, printing_rate=fb.printing_rate,
                 notes=fb.notes, created_at=now,
+            )
+            self.db.add(sf)
+            await self.db.flush()
+            fabric_ids.append(sf.id)
+            for fsz in fb.size_breakdown:
+                self.db.add(StyleFabricSize(style_fabric_id=sf.id, size_id=fsz.size_id, quantity=fsz.quantity))
+
+        for yn in body.yarns:
+            self.db.add(StyleYarn(
+                style_id=style_id, yarn_name=yn.yarn_name, lot_id=yn.lot_id,
+                style_fabric_id=fabric_ids[yn.fabric_index] if yn.fabric_index is not None else None,
+                colour_id=yn.colour_id, counts=yn.counts, consumption_pct=yn.consumption_pct,
+                quantity=yn.quantity, unit=yn.unit, notes=yn.notes, created_at=now,
             ))
 
         process_masters = await self._fetch_process_masters(body.processes, company_id)
@@ -869,12 +1019,14 @@ class ProductionService:
             for sub in proc.sub_processes:
                 self.db.add(StyleSubProcess(
                     style_process_id=p.id, seq=sub.seq, name=sub.name,
+                    min_rate=sub.min_rate, max_rate=sub.max_rate, planned_rate=sub.planned_rate,
                     notes=sub.notes, created_at=now,
                 ))
 
         for tr in body.trims:
             t = StyleTrim(
                 style_id=style_id, trim_name=tr.trim_name, lot_id=tr.lot_id,
+                style_part_id=tr.style_part_id, colour_id=tr.colour_id,
                 quantity=tr.quantity, unit=tr.unit, category=tr.category,
                 process_seq=tr.process_seq,
                 excess_pct=tr.excess_pct, notes=tr.notes, created_at=now,
@@ -886,7 +1038,7 @@ class ProductionService:
 
         for pm in body.packing_materials:
             self.db.add(StylePackingMaterial(
-                style_id=style_id, material_name=pm.material_name, quantity=pm.quantity,
+                style_id=style_id, material_name=pm.material_name, product_id=pm.product_id, quantity=pm.quantity,
                 unit=pm.unit, excess_pct=pm.excess_pct,
                 consumption_stage=pm.consumption_stage, notes=pm.notes, created_at=now,
             ))
@@ -907,6 +1059,7 @@ class ProductionService:
         self.db.expire(s)
         style = await self.get_style(style_id, company_id)
         await self._ensure_variants(style)
+        await self._ensure_part_variants(style)
         return style
 
     # ── Production Lots ────────────────────────────────────────────────────
@@ -918,17 +1071,7 @@ class ProductionService:
         q = (
             select(ProductionLot)
             .where(ProductionLot.company_id == company_id)
-            .options(
-                selectinload(ProductionLot.style).selectinload(Style.fabrics), selectinload(ProductionLot.sizes),
-                selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
-                selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
-                selectinload(ProductionLot.additional_costs),
-                selectinload(ProductionLot.trims),
-                selectinload(ProductionLot.packing_materials),
-                selectinload(ProductionLot.fabric_processing),
-                selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
-                selectinload(ProductionLot.outputs),
-            )
+            .options(*_LOT_FULL_LOADS)
         )
         if status:
             q = q.where(ProductionLot.status == status)
@@ -940,20 +1083,307 @@ class ProductionService:
         result = await self.db.execute(
             select(ProductionLot)
             .where(ProductionLot.id == lot_id, ProductionLot.company_id == company_id)
-            .options(
-                selectinload(ProductionLot.style).selectinload(Style.fabrics),
-                selectinload(ProductionLot.sizes),
-                selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
-                selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
-                selectinload(ProductionLot.additional_costs),
-                selectinload(ProductionLot.trims),
-                selectinload(ProductionLot.packing_materials),
-                selectinload(ProductionLot.fabric_processing),
-                selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
-                selectinload(ProductionLot.outputs),
-            )
+            .options(*_LOT_FULL_LOADS)
         )
         return result.scalar_one_or_none()
+
+    async def build_lot_bom(self, lot: ProductionLot) -> dict:
+        """Consolidated BOM (Phase 6) — one view across Yarn/Fabric/Trims/
+        Packing Materials, each line showing required vs. available stock.
+        "Available" is only computed where a line is linked to a specific
+        received batch (lot_id on the originating Style* row); otherwise
+        left unknown (None) rather than guessed.
+
+        Reconciliation (spec rule 15 — don't double-count): a fabric
+        sourced "from yarn" is marked informational — its yarn components
+        are what's actually procured, not the fabric itself — mirroring
+        the reference tool's own "produced from yarn, no separate
+        planning needed" convention.
+        """
+        style_fabric_lot_id = {f.id: f.lot_id for f in (lot.style.fabrics if lot.style else [])}
+        style_trim_lot_id = {t.id: t.lot_id for t in (lot.style.trims if lot.style else [])}
+        style_yarn_lot_id = {y.id: y.lot_id for y in (lot.style.yarns if lot.style else [])}
+
+        async def _line(name, unit, required, lot_ref_id, extra):
+            available = None
+            if lot_ref_id:
+                available = await self.inv.get_lot_balance(lot_ref_id)
+            shortage = None
+            if available is not None and required is not None:
+                shortage = max(required - available, Decimal("0"))
+            return {
+                "name": name, "unit": unit, "required_qty": required,
+                "available_qty": available, "shortage_qty": shortage, **extra,
+            }
+
+        effective_source = {}
+        for fb in lot.lot_fabrics:
+            effective_source[fb.id] = fb.source_type or (lot.style.fabric_source if lot.style else "yarn")
+
+        fabric_lines = []
+        for fb in lot.lot_fabrics:
+            is_from_yarn = effective_source.get(fb.id) == "yarn"
+            fabric_lines.append(await _line(
+                fb.fabric_name, fb.unit, fb.planned_qty,
+                style_fabric_lot_id.get(fb.style_fabric_id),
+                {
+                    "id": fb.id, "category": "fabric",
+                    "style_part_name": fb.style_part.name if fb.style_part else None,
+                    "colour_name": fb.colour.name if fb.colour else None,
+                    "is_informational": is_from_yarn,
+                    "notes": "Produced from yarn — no separate planning needed" if is_from_yarn else None,
+                },
+            ))
+
+        yarn_lines = []
+        for yn in lot.lot_yarns:
+            yarn_lines.append(await _line(
+                yn.yarn_name, yn.unit, yn.planned_qty,
+                style_yarn_lot_id.get(yn.style_yarn_id),
+                {
+                    "id": yn.id, "category": "yarn",
+                    "colour_name": yn.colour.name if yn.colour else None,
+                    "is_informational": False, "notes": None,
+                },
+            ))
+
+        trim_lines = []
+        for tr in lot.trims:
+            trim_lines.append(await _line(
+                tr.trim_name, tr.unit, tr.planned_qty,
+                style_trim_lot_id.get(tr.style_trim_id),
+                {"id": tr.id, "category": "trim", "style_part_name": None, "colour_name": None, "is_informational": False, "notes": None},
+            ))
+
+        packing_lines = []
+        for pm in lot.packing_materials:
+            available = None
+            if pm.product_id:
+                available = await self.inv.get_total_balance(lot.company_id, pm.product_id)
+            shortage = max(pm.planned_qty - available, Decimal("0")) if (available is not None and pm.planned_qty is not None) else None
+            packing_lines.append({
+                "id": pm.id, "category": "packing", "name": pm.material_name, "unit": pm.unit,
+                "required_qty": pm.planned_qty, "available_qty": available, "shortage_qty": shortage,
+                "style_part_name": None, "colour_name": None, "is_informational": False, "notes": None,
+            })
+
+        all_lines = fabric_lines + yarn_lines + trim_lines + packing_lines
+        return {
+            "production_lot_id": lot.id, "lot_number": lot.lot_number,
+            "fabric": fabric_lines, "yarn": yarn_lines, "trims": trim_lines, "packing_materials": packing_lines,
+            "total_lines": len(all_lines),
+            "shortage_lines": sum(1 for l in all_lines if l["shortage_qty"] not in (None, Decimal("0"))),
+        }
+
+    async def update_stage_size(
+        self, stage_id: UUID, size_id: UUID, body: StageSizeUpdate, company_id: UUID,
+    ) -> ProductionStageSize | None:
+        """Record size-wise Accepted/Rejected/Rework for one stage (Phase 9
+        — Checking: "receive only quantities released from Cutting", don't
+        send rejected items to Packing unless the workflow permits it).
+        accepted + rejected + rework can never exceed what came in for that
+        size — same validation discipline as the existing aggregate check.
+        """
+        result = await self.db.execute(
+            select(ProductionStageSize)
+            .join(ProductionStage, ProductionStage.id == ProductionStageSize.production_stage_id)
+            .where(
+                ProductionStageSize.production_stage_id == stage_id,
+                ProductionStageSize.size_id == size_id,
+                ProductionStage.production_lot_id.in_(
+                    select(ProductionLot.id).where(ProductionLot.company_id == company_id)
+                ),
+            )
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            return None
+        accepted = body.accepted_qty if body.accepted_qty is not None else row.accepted_qty
+        rejected = body.rejected_qty if body.rejected_qty is not None else row.rejected_qty
+        rework = body.rework_qty if body.rework_qty is not None else row.rework_qty
+        if accepted + rejected + rework > row.input_qty:
+            raise QuantityValidationError(
+                f"Accepted + Rejected + Rework ({accepted + rejected + rework}) cannot exceed "
+                f"the incoming quantity for this size ({row.input_qty})."
+            )
+        row.accepted_qty = accepted
+        row.rejected_qty = rejected
+        row.rework_qty = rework
+        if body.defect_reason is not None:
+            row.defect_reason = body.defect_reason or None
+        row.updated_at = datetime.now(timezone.utc)
+        await self.db.flush()
+
+        # Mirror _propagate_to_next_stage, but at size granularity: the next
+        # stage's per-size input_qty was only ever seeded on the lot's FIRST
+        # stage (create_lot, above) — every later stage starts at 0 with no
+        # path to fill it in, which silently blocks size-wise tracking past
+        # stage 1. Push this size's newly-accepted qty into the next stage's
+        # own ProductionStageSize row (creating it if this is its first size
+        # update), the same way the aggregate planned_qty already flows.
+        stage = (await self.db.execute(select(ProductionStage).where(ProductionStage.id == stage_id))).scalar_one()
+        nxt = await self._next_stage(stage)
+        if nxt is not None:
+            nxt_row = (await self.db.execute(
+                select(ProductionStageSize).where(
+                    ProductionStageSize.production_stage_id == nxt.id, ProductionStageSize.size_id == size_id,
+                )
+            )).scalar_one_or_none()
+            if nxt_row is None:
+                self.db.add(ProductionStageSize(
+                    production_stage_id=nxt.id, size_id=size_id, input_qty=accepted, updated_at=datetime.now(timezone.utc),
+                ))
+            else:
+                nxt_row.input_qty = accepted
+                nxt_row.updated_at = datetime.now(timezone.utc)
+            await self.db.flush()
+        return row
+
+    # Stage-type buckets for the "Completed (Consolidated)" view — Cutting
+    # covers all pre-QC making/finishing work, Checking is QC, Packing is
+    # packing, matching the same vocabulary the lot's own status uses.
+    _SUMMARY_BUCKETS: list[tuple[str, str, set[str]]] = [
+        ("cutting", "Cutting", {"cutting", "making", "finishing"}),
+        ("checking", "Checking", {"qc"}),
+        ("packing", "Packing", {"packing", "dispatch"}),
+    ]
+
+    def build_lot_production_summary(self, lot: ProductionLot) -> dict:
+        """The "Completed (Consolidated)" view (Phase 9) — every figure
+        derived from stage transactions (ProductionStageSize rollups
+        across all stages in each bucket), never a separately-maintained
+        total, per the spec's own rule.
+        """
+        buckets = []
+        cut_qty = checked_qty = accepted_qty = packed_qty = rejected_qty = rework_qty = 0
+        for key, label, stage_types in self._SUMMARY_BUCKETS:
+            relevant = [s for s in lot.stages if s.stage_type in stage_types]
+            b_input = b_accepted = b_rejected = b_rework = 0
+            for st in relevant:
+                for sz in st.sizes:
+                    b_input += sz.input_qty
+                    b_accepted += sz.accepted_qty
+                    b_rejected += sz.rejected_qty
+                    b_rework += sz.rework_qty
+            b_pending = max(b_input - b_accepted - b_rejected - b_rework, 0)
+            buckets.append({
+                "stage_type": key, "label": label, "input_qty": b_input,
+                "accepted_qty": b_accepted, "rejected_qty": b_rejected,
+                "rework_qty": b_rework, "pending_qty": b_pending,
+            })
+            rejected_qty += b_rejected
+            rework_qty += b_rework
+            if key == "cutting":
+                cut_qty = b_accepted
+            elif key == "checking":
+                checked_qty = b_input
+                accepted_qty = b_accepted
+            elif key == "packing":
+                packed_qty = b_accepted
+
+        return {
+            "production_lot_id": lot.id, "lot_number": lot.lot_number, "planned_qty": lot.planned_qty,
+            "cut_qty": cut_qty, "checked_qty": checked_qty, "accepted_qty": accepted_qty, "packed_qty": packed_qty,
+            "rejected_qty": rejected_qty, "rework_qty": rework_qty,
+            "remaining_qty": max(lot.planned_qty - packed_qty, 0),
+            "buckets": buckets,
+        }
+
+    async def _dispatch_reconciliation(self, lot: ProductionLot) -> tuple[Decimal, Decimal]:
+        """Dispatch and DC reconciliation (Phase 11) — how much of what this
+        lot produced has actually shipped, and how much of that came back.
+        The only linkage between a production lot and its deliveries today
+        is indirect (lot -> sales order -> delivery items against that
+        order's line items); a lot never linked to a sales order has
+        nothing to reconcile against, which is reported as 0/0 rather than
+        guessed."""
+        if not lot.sales_order_id:
+            return Decimal("0"), Decimal("0")
+        result = await self.db.execute(
+            text("""
+                SELECT
+                    COALESCE((SELECT SUM(di.quantity) FROM delivery_items di
+                              JOIN deliveries d ON d.id = di.delivery_id
+                              WHERE d.sales_order_id = :so), 0) AS dispatched,
+                    COALESCE((SELECT SUM(sri.quantity) FROM sales_return_items sri
+                              JOIN delivery_items di2 ON di2.id = sri.delivery_item_id
+                              JOIN deliveries d2 ON d2.id = di2.delivery_id
+                              WHERE d2.sales_order_id = :so), 0) AS returned
+            """),
+            {"so": str(lot.sales_order_id)},
+        )
+        row = result.first()
+        return Decimal(row.dispatched), Decimal(row.returned)
+
+    async def build_production_dashboard(self, company_id: UUID) -> dict:
+        """Production Progress Dashboard (Phase 11) — consolidates, across
+        every non-cancelled lot: size/colour pending quantities (via the
+        Phase 9 production summary), material shortages (via the Phase 6
+        BOM), process-wise rejection/rework, production cost variance (via
+        the existing cost summary), and dispatch/DC reconciliation. Every
+        figure is read from the same, already-correct per-lot computations
+        used elsewhere (get_lot/build_lot_bom/build_lot_production_summary/
+        compute_lot_cost_summary) rather than a second, parallel
+        calculation that could disagree with them.
+        """
+        lot_ids_result = await self.db.execute(
+            select(ProductionLot.id)
+            .where(ProductionLot.company_id == company_id, ProductionLot.status != "cancelled")
+            .order_by(ProductionLot.created_at.desc())
+        )
+        lot_ids = [r[0] for r in lot_ids_result.fetchall()]
+
+        rows: list[dict] = []
+        totals = {
+            "lots": 0, "planned_qty": 0, "produced_qty": 0, "pending_qty": 0,
+            "rejected_qty": 0, "rework_qty": 0, "material_shortage_lines": 0,
+            "cost_planned": Decimal("0"), "cost_actual": Decimal("0"), "cost_variance_amount": Decimal("0"),
+            "dispatched_qty": Decimal("0"), "returned_qty": Decimal("0"),
+        }
+        lots_by_status: dict[str, int] = {}
+
+        for lid in lot_ids:
+            lot = await self.get_lot(lid, company_id)
+            if not lot:
+                continue
+            summary = self.build_lot_production_summary(lot)
+            bom = await self.build_lot_bom(lot)
+            selling_prices = await self.resolve_selling_prices(lot)
+            cost = compute_lot_cost_summary(lot, selling_prices)
+            dispatched_qty, returned_qty = await self._dispatch_reconciliation(lot)
+
+            cost_planned = cost.total_planned or Decimal("0")
+            variance_amount = cost_planned - cost.total_actual
+
+            rows.append({
+                "lot_id": lot.id, "lot_number": lot.lot_number,
+                "style_name": lot.style.name if lot.style else None,
+                "customer_id": lot.customer_id, "status": lot.status,
+                "planned_qty": lot.planned_qty, "produced_qty": lot.actual_qty,
+                "pending_qty": summary["remaining_qty"], "rejected_qty": summary["rejected_qty"],
+                "rework_qty": summary["rework_qty"], "yield_pct": cost.yield_pct,
+                "material_shortage_lines": bom["shortage_lines"],
+                "cost_planned": cost_planned, "cost_actual": cost.total_actual,
+                "cost_variance_amount": variance_amount,
+                "dispatched_qty": dispatched_qty, "returned_qty": returned_qty,
+                "undispatched_qty": max(Decimal(lot.actual_qty) - dispatched_qty, Decimal("0")),
+            })
+
+            totals["lots"] += 1
+            totals["planned_qty"] += lot.planned_qty
+            totals["produced_qty"] += lot.actual_qty
+            totals["pending_qty"] += summary["remaining_qty"]
+            totals["rejected_qty"] += summary["rejected_qty"]
+            totals["rework_qty"] += summary["rework_qty"]
+            totals["material_shortage_lines"] += bom["shortage_lines"]
+            totals["cost_planned"] += cost_planned
+            totals["cost_actual"] += cost.total_actual
+            totals["cost_variance_amount"] += variance_amount
+            totals["dispatched_qty"] += dispatched_qty
+            totals["returned_qty"] += returned_qty
+            lots_by_status[lot.status] = lots_by_status.get(lot.status, 0) + 1
+
+        return {"rows": rows, "totals": totals, "lots_by_status": lots_by_status}
 
     # Style process names don't carry a stage_type (cutting/making/finishing/qc/
     # packing/dispatch) the way ProductionStage requires; this maps the
@@ -995,6 +1425,9 @@ class ProductionService:
                     selectinload(Style.sizes),
                     selectinload(Style.trims).selectinload(StyleTrim.size_breakdown),
                     selectinload(Style.packing_materials),
+                    selectinload(Style.fabrics).selectinload(StyleFabric.size_breakdown),
+                    selectinload(Style.yarns),
+                    selectinload(Style.part_colours).selectinload(StylePartColour.sizes),
                 )
             )
             style = style_result.scalar_one_or_none()
@@ -1058,6 +1491,32 @@ class ProductionService:
                     ))
                     resolved_size_qty[ssz.size_id] = int(ssz.quantity)
 
+        # Part/Colour/Size planned quantities (Phase 8 — the Order->Style->
+        # Part->Colour->Size->Planned Quantity hierarchy at the actual lot
+        # level): explicit override wins, else pre-filled from the Style's
+        # own part_colours/sizes template, same convention as plain sizes.
+        if body.part_colours:
+            for pc in body.part_colours:
+                lpc = LotPartColour(
+                    production_lot_id=lot.id, style_part_id=pc.style_part_id, colour_id=pc.colour_id,
+                    sort_order=pc.sort_order, created_at=now,
+                )
+                self.db.add(lpc)
+                await self.db.flush()
+                for psz in pc.sizes:
+                    self.db.add(LotPartSize(lot_part_colour_id=lpc.id, size_id=psz.size_id, planned_qty=psz.planned_qty, sort_order=0))
+        elif style:
+            for spc in style.part_colours:
+                lpc = LotPartColour(
+                    production_lot_id=lot.id, style_part_colour_id=spc.id, style_part_id=spc.style_part_id,
+                    colour_id=spc.colour_id, sort_order=spc.sort_order, created_at=now,
+                )
+                self.db.add(lpc)
+                await self.db.flush()
+                for ssz in spc.sizes:
+                    if ssz.quantity is not None:
+                        self.db.add(LotPartSize(lot_part_colour_id=lpc.id, size_id=ssz.size_id, planned_qty=int(ssz.quantity), sort_order=ssz.sort_order))
+
         # Snapshot Style Trims / Packing Materials (§21: "fetched automatically
         # when the Production Lot is created"). Trims with a size-wise
         # breakdown are summed against this LOT's resolved per-size plan;
@@ -1089,7 +1548,47 @@ class ProductionService:
                     planned_qty = Decimal(str(base_qty * excess_mult))
                 self.db.add(LotPackingMaterial(
                     production_lot_id=lot.id, style_packing_material_id=pm.id, material_name=pm.material_name,
-                    unit=pm.unit, consumption_stage=pm.consumption_stage, planned_qty=planned_qty, created_at=now,
+                    product_id=pm.product_id, unit=pm.unit, consumption_stage=pm.consumption_stage,
+                    planned_qty=planned_qty, created_at=now,
+                ))
+
+            # Fabric / Yarn requirement snapshot (Phase 6 — BOM Consolidation):
+            # same size-breakdown-aware scaling as trims above. A yarn's
+            # planned_qty is its consumption_pct share of its parent fabric's
+            # own planned_qty (see LotYarn docstring) — computed after the
+            # fabric loop so the parent's quantity already exists.
+            lot_fabric_by_style_fabric: dict[UUID, LotFabric] = {}
+            for fb in style.fabrics:
+                if fb.size_breakdown:
+                    base_qty = sum(
+                        float(sb.quantity) * resolved_size_qty.get(sb.size_id, 0)
+                        for sb in fb.size_breakdown
+                    )
+                else:
+                    base_qty = float(fb.consumption) * body.planned_qty if fb.consumption is not None else None
+                planned_qty = None
+                if base_qty is not None:
+                    excess_mult = 1 + float(fb.excess_pct) / 100 if fb.excess_pct is not None else 1
+                    planned_qty = Decimal(str(base_qty * excess_mult))
+                lf = LotFabric(
+                    production_lot_id=lot.id, style_fabric_id=fb.id, fabric_name=fb.fabric_name,
+                    style_part_id=fb.style_part_id, colour_id=fb.colour_id, source_type=fb.source_type,
+                    unit=fb.unit, planned_qty=planned_qty, created_at=now,
+                )
+                self.db.add(lf)
+                await self.db.flush()
+                lot_fabric_by_style_fabric[fb.id] = lf
+
+            for yn in style.yarns:
+                lot_fabric = lot_fabric_by_style_fabric.get(yn.style_fabric_id) if yn.style_fabric_id else None
+                planned_qty = None
+                if lot_fabric is not None and lot_fabric.planned_qty is not None and yn.consumption_pct is not None:
+                    planned_qty = (lot_fabric.planned_qty * yn.consumption_pct / 100).quantize(Decimal("0.0001"))
+                self.db.add(LotYarn(
+                    production_lot_id=lot.id, lot_fabric_id=lot_fabric.id if lot_fabric else None,
+                    style_yarn_id=yn.id, yarn_name=yn.yarn_name, colour_id=yn.colour_id,
+                    counts=yn.counts, consumption_pct=yn.consumption_pct, unit=yn.unit,
+                    planned_qty=planned_qty, created_at=now,
                 ))
 
         # Stages are sorted by created_at for display (ProductionStage has no
@@ -1104,10 +1603,11 @@ class ProductionService:
         # the LOT's original planned_qty unconditionally, which is the root
         # cause of a downstream stage showing the LOT quantity instead of the
         # previous stage's actual accepted quantity.
+        created_stages: list[ProductionStage] = []
         if style and style.processes:
             for i, proc in enumerate(sorted((p for p in style.processes if p.is_enabled), key=lambda p: p.seq)):
                 stage_time = now + timedelta(milliseconds=i)
-                self.db.add(ProductionStage(
+                st = ProductionStage(
                     production_lot_id=lot.id, style_process_id=proc.id,
                     stage_type=self._infer_stage_type(proc.process_name),
                     stage_name=proc.process_name, planned_qty=body.planned_qty if i == 0 else None,
@@ -1115,7 +1615,9 @@ class ProductionService:
                     output_unit=proc.output_unit, conversion_rule=proc.conversion_rule,
                     min_rate=proc.min_rate, max_rate=proc.max_rate, planned_rate=proc.planned_rate,
                     created_at=stage_time, updated_at=stage_time,
-                ))
+                )
+                self.db.add(st)
+                created_stages.append(st)
         else:
             # No Style (or Style has no configured workflow) — fall back to
             # the generic garment-production stages so the LOT is still usable.
@@ -1126,24 +1628,34 @@ class ProductionService:
             ]
             for i, (stype, sname) in enumerate(default_stages):
                 stage_time = now + timedelta(milliseconds=i)
-                self.db.add(ProductionStage(
+                st = ProductionStage(
                     production_lot_id=lot.id, stage_type=stype, stage_name=sname,
                     planned_qty=body.planned_qty if i == 0 else None,
                     created_at=stage_time, updated_at=stage_time,
-                ))
+                )
+                self.db.add(st)
+                created_stages.append(st)
 
         await self.db.flush()
+
+        # Size-wise detail (Phase 9): one ProductionStageSize row per
+        # (stage, size) — only the first stage starts with a real input_qty
+        # (mirroring the aggregate planned_qty rule above); later stages
+        # start at 0 and are filled in as work actually reaches them.
+        if resolved_size_qty:
+            for i, st in enumerate(created_stages):
+                for size_id, qty in resolved_size_qty.items():
+                    self.db.add(ProductionStageSize(
+                        production_stage_id=st.id, size_id=size_id,
+                        input_qty=qty if i == 0 else 0, updated_at=now,
+                    ))
+            # This session has autoflush disabled (app/db/session.py) — without
+            # an explicit flush here, the rows just added above are invisible
+            # to the selectinload below (and to any other query), not just
+            # stale-cached.
+            await self.db.flush()
         result = await self.db.execute(
-            select(ProductionLot).where(ProductionLot.id == lot.id)
-            .options(selectinload(ProductionLot.style).selectinload(Style.fabrics), selectinload(ProductionLot.sizes),
-                     selectinload(ProductionLot.stages).selectinload(ProductionStage.entries),
-                     selectinload(ProductionLot.stages).selectinload(ProductionStage.challans),
-                     selectinload(ProductionLot.additional_costs),
-                     selectinload(ProductionLot.trims),
-                     selectinload(ProductionLot.packing_materials),
-                     selectinload(ProductionLot.fabric_processing),
-                     selectinload(ProductionLot.material_issues).selectinload(MaterialIssue.items),
-                     selectinload(ProductionLot.outputs))
+            select(ProductionLot).where(ProductionLot.id == lot.id).options(*_LOT_FULL_LOADS)
         )
         return result.scalar_one()
 
@@ -1177,42 +1689,93 @@ class ProductionService:
         await self.db.flush()
         return lot
 
-    async def advance_lot_status(self, lot_id: UUID, company_id: UUID, new_status: str) -> ProductionLot | None:
-        valid_flow = {
-            "draft": "planned", "planned": "approved",
-            "approved": "in_production", "in_production": "qc",
-            "qc": "packing", "packing": "ready_to_dispatch",
-        }
+    # The LOT's own coarse status (item #8 of the 16-item request): Cutting
+    # covers all making/finishing work before QC, Checking is QC, Packing is
+    # packing — each bucket maps to the ProductionStage.stage_type values
+    # already used for floor-level stage logging, so "is this phase done" is
+    # read from stages the floor already records rather than a separate flag.
+    _LOT_STATUS_FLOW: dict[str, str] = {"cutting": "checking", "checking": "packing", "packing": "completed"}
+    _LOT_STAGE_BUCKETS: dict[str, set[str]] = {
+        "cutting": {"cutting", "making", "finishing"},
+        "checking": {"qc"},
+        "packing": {"packing"},
+    }
+
+    def _lot_stage_gate(self, lot: ProductionLot) -> list[str]:
+        """What's missing before `lot` can leave its current status — empty
+        means clear to advance. Spec: "move to next stage only if every
+        relevant area filled, otherwise popup should remind them."
+        """
+        bucket = self._LOT_STAGE_BUCKETS.get(lot.status)
+        if bucket is None:
+            return []
+        relevant = [s for s in lot.stages if s.stage_type in bucket]
+        if not relevant:
+            return [f"No {lot.status} stage has been logged for this lot yet."]
+        incomplete = [s for s in relevant if s.status != "completed"]
+        if incomplete:
+            names = ", ".join(s.stage_name for s in incomplete)
+            return [f"{len(incomplete)} {lot.status} stage(s) still in progress: {names}"]
+        return []
+
+    def _audit(
+        self, *, company_id: UUID, production_lot_id: UUID, entity_type: str, entity_id: UUID,
+        action: str, field_name: str | None, old_value, new_value, user_id: UUID | None,
+    ) -> None:
+        self.db.add(ProductionAuditLog(
+            company_id=company_id, production_lot_id=production_lot_id,
+            entity_type=entity_type, entity_id=entity_id, action=action, field_name=field_name,
+            old_value=None if old_value is None else str(old_value)[:200],
+            new_value=None if new_value is None else str(new_value)[:200],
+            changed_by=user_id, changed_at=datetime.now(timezone.utc),
+        ))
+
+    async def list_audit_log(self, lot_id: UUID, company_id: UUID) -> list[ProductionAuditLog]:
+        result = await self.db.execute(
+            select(ProductionAuditLog)
+            .where(ProductionAuditLog.production_lot_id == lot_id, ProductionAuditLog.company_id == company_id)
+            .order_by(ProductionAuditLog.changed_at.desc())
+        )
+        return result.scalars().all()
+
+    async def advance_lot_status(
+        self, lot_id: UUID, company_id: UUID, new_status: str, user_id: UUID | None = None,
+    ) -> ProductionLot | None:
         lot = await self.get_lot(lot_id, company_id)
         if not lot:
             return None
-        if new_status not in valid_flow.values() and new_status not in ("cancelled", "completed"):
+        if new_status not in self._LOT_STATUS_FLOW.values() and new_status not in ("cancelled", "completed"):
             return None
+        if new_status != "cancelled" and self._LOT_STATUS_FLOW.get(lot.status) == new_status:
+            missing = self._lot_stage_gate(lot)
+            if missing:
+                raise BusinessRulesError("STAGE_INCOMPLETE", missing[0])
+        old_status = lot.status
         lot.status = new_status
         lot.updated_at = datetime.now(timezone.utc)
         if new_status == "completed":
             lot.closed_at = datetime.now(timezone.utc)
+        if old_status != new_status:
+            self._audit(company_id=company_id, production_lot_id=lot.id, entity_type="production_lot",
+                        entity_id=lot.id, action="status_changed", field_name="status",
+                        old_value=old_status, new_value=new_status, user_id=user_id)
         await self.db.flush()
         return lot
 
-    async def reopen_lot(self, lot_id: UUID, company_id: UUID) -> ProductionLot | None:
-        """Reopen a cancelled/completed lot. Resumes at in_production when work
-        was already recorded (stages, MIS, or output), otherwise back to draft.
-        """
+    async def reopen_lot(self, lot_id: UUID, company_id: UUID, user_id: UUID | None = None) -> ProductionLot | None:
+        """Reopen a cancelled/completed lot back to Cutting."""
         lot = await self.get_lot(lot_id, company_id)
         if not lot:
             return None
         if lot.status not in ("cancelled", "completed"):
             raise ValueError(f"Only a cancelled or completed lot can be reopened (this one is {lot.status}).")
-        has_activity = (
-            lot.actual_qty > 0
-            or bool(lot.material_issues)
-            or bool(lot.outputs)
-            or any(s.sent_qty > 0 or s.input_qty > 0 for s in lot.stages)
-        )
-        lot.status = "in_production" if has_activity else "draft"
+        old_status = lot.status
+        lot.status = "cutting"
         lot.closed_at = None
         lot.updated_at = datetime.now(timezone.utc)
+        self._audit(company_id=company_id, production_lot_id=lot.id, entity_type="production_lot",
+                    entity_id=lot.id, action="reopened", field_name="status",
+                    old_value=old_status, new_value="cutting", user_id=user_id)
         await self.db.flush()
         return lot
 
@@ -1305,7 +1868,7 @@ class ProductionService:
         result = await self.db.execute(
             select(ProductionStage)
             .where(ProductionStage.id == stage.id)
-            .options(selectinload(ProductionStage.entries), selectinload(ProductionStage.challans))
+            .options(*_STAGE_OUT_LOADS)
         )
         return result.scalar_one()
 
@@ -1410,18 +1973,44 @@ class ProductionService:
         await self.db.flush()
         return entry
 
-    async def update_stage(self, stage_id: UUID, body: StageUpdate, company_id: UUID) -> ProductionStage | None:
+    # Stage fields worth an audit row when they change — status and the
+    # assignment/quantity corrections; stage_name/notes edits are cosmetic.
+    _AUDITED_STAGE_FIELDS = ("status", "assignment_type", "vendor_id", "worker_id", "rate_per_pc",
+                             "planned_qty", "sent_qty", "received_qty", "rejected_qty")
+
+    async def update_stage(
+        self, stage_id: UUID, body: StageUpdate, company_id: UUID, user_id: UUID | None = None,
+    ) -> ProductionStage | None:
         result = await self.db.execute(
             select(ProductionStage)
             .join(ProductionLot, ProductionLot.id == ProductionStage.production_lot_id)
             .where(ProductionStage.id == stage_id, ProductionLot.company_id == company_id)
-            .options(selectinload(ProductionStage.entries), selectinload(ProductionStage.challans))
+            .options(*_STAGE_OUT_LOADS)
         )
         stage = result.scalar_one_or_none()
         if not stage:
             return None
 
         updates = body.model_dump(exclude_unset=True)
+
+        # Stages are completed in order: a stage can't be completed while an
+        # earlier one is still open, and a completed stage can't be reopened
+        # once a later one has been completed on top of it.
+        new_status = updates.get("status")
+        if new_status and new_status != stage.status:
+            siblings = (await self.db.execute(
+                select(ProductionStage.stage_name, ProductionStage.status, ProductionStage.created_at)
+                .where(ProductionStage.production_lot_id == stage.production_lot_id, ProductionStage.id != stage.id)
+            )).all()
+            if new_status == "completed":
+                open_before = [n for n, st, c in siblings if c < stage.created_at and st != "completed"]
+                if open_before:
+                    raise QuantityValidationError(f"Complete the earlier stage(s) first: {', '.join(open_before)}.")
+            elif stage.status == "completed":
+                done_after = [n for n, st, c in siblings if c > stage.created_at and st == "completed"]
+                if done_after:
+                    raise QuantityValidationError(f"Can't reopen — later stage(s) already completed: {', '.join(done_after)}.")
+
         # Validate any correction to sent/received/rejected as one consistent
         # set (§7 — editing a stage must not create impossible quantities):
         # received + rejected must never exceed sent.
@@ -1435,6 +2024,12 @@ class ProductionService:
             )
 
         for field, val in updates.items():
+            old = getattr(stage, field)
+            if field in self._AUDITED_STAGE_FIELDS and old != val:
+                self._audit(company_id=company_id, production_lot_id=stage.production_lot_id,
+                            entity_type="production_stage", entity_id=stage.id,
+                            action="status_changed" if field == "status" else "corrected",
+                            field_name=f"{stage.stage_name}.{field}", old_value=old, new_value=val, user_id=user_id)
             setattr(stage, field, val)
         stage.updated_at = datetime.now(timezone.utc)
         if stage.rate_per_pc is not None or any(c.bill_amount for c in stage.challans):
@@ -1753,6 +2348,38 @@ class ProductionService:
         await self.db.flush()
         return trim
 
+    async def update_lot_fabric_actual(
+        self, fabric_id: UUID, body: LotFabricActualUpdate, company_id: UUID,
+    ) -> LotFabric | None:
+        result = await self.db.execute(
+            select(LotFabric)
+            .join(ProductionLot, ProductionLot.id == LotFabric.production_lot_id)
+            .where(LotFabric.id == fabric_id, ProductionLot.company_id == company_id)
+        )
+        fabric = result.scalar_one_or_none()
+        if not fabric:
+            return None
+        for field, val in body.model_dump(exclude_unset=True).items():
+            setattr(fabric, field, val)
+        await self.db.flush()
+        return fabric
+
+    async def update_lot_yarn_actual(
+        self, yarn_id: UUID, body: LotYarnActualUpdate, company_id: UUID,
+    ) -> LotYarn | None:
+        result = await self.db.execute(
+            select(LotYarn)
+            .join(ProductionLot, ProductionLot.id == LotYarn.production_lot_id)
+            .where(LotYarn.id == yarn_id, ProductionLot.company_id == company_id)
+        )
+        yarn = result.scalar_one_or_none()
+        if not yarn:
+            return None
+        for field, val in body.model_dump(exclude_unset=True).items():
+            setattr(yarn, field, val)
+        await self.db.flush()
+        return yarn
+
     async def update_lot_packing_actual(
         self, packing_id: UUID, body: LotPackingActualUpdate, company_id: UUID,
     ) -> LotPackingMaterial | None:
@@ -1794,7 +2421,41 @@ class ProductionService:
         )
         return result.scalar_one_or_none()
 
+    async def _accumulate_material_actual(self, production_lot_id: UUID, batch_lot_id: UUID, quantity: Decimal) -> None:
+        """Adds `quantity` to the actual_qty of whichever LotFabric/LotYarn/
+        LotTrim row (on this production lot) was planned against the
+        specific inventory batch `batch_lot_id` — a no-op when nothing was
+        planned against that exact batch (most issues, since planning
+        against a specific received lot is the exception, not the rule)."""
+        for lot_model, style_model in ((LotFabric, StyleFabric), (LotYarn, StyleYarn), (LotTrim, StyleTrim)):
+            style_fk = "style_fabric_id" if style_model is StyleFabric else ("style_yarn_id" if style_model is StyleYarn else "style_trim_id")
+            await self.db.execute(
+                update(lot_model)
+                .where(
+                    getattr(lot_model, "production_lot_id") == production_lot_id,
+                    getattr(lot_model, style_fk).in_(
+                        select(style_model.id).where(style_model.lot_id == batch_lot_id)
+                    ),
+                )
+                .values(actual_qty=func.coalesce(getattr(lot_model, "actual_qty"), 0) + quantity)
+            )
+
     async def create_mis(self, body: MaterialIssueCreate, company_id: UUID, user_id: UUID) -> MaterialIssue:
+        # Phase 8 — "do not allow stock to be issued twice through duplicate
+        # requests or retries": the client resends the same idempotency_key
+        # if a submission is retried (network blip, double-click before the
+        # button disables). If an MIS with that key already exists, return
+        # it unchanged instead of issuing the same stock a second time.
+        if body.idempotency_key:
+            existing = await self.db.execute(
+                select(MaterialIssue)
+                .where(MaterialIssue.company_id == company_id, MaterialIssue.idempotency_key == body.idempotency_key)
+                .options(selectinload(MaterialIssue.production_lot), selectinload(MaterialIssue.items))
+            )
+            found = existing.scalar_one_or_none()
+            if found:
+                return found
+
         now = datetime.now(timezone.utc)
         issue_number = await _next_seq(self.db, "MIS", company_id, MaterialIssue)
 
@@ -1802,14 +2463,18 @@ class ProductionService:
             company_id=company_id, issue_number=issue_number,
             production_lot_id=body.production_lot_id, stage_id=body.stage_id,
             warehouse_id=body.warehouse_id, issue_date=body.issue_date,
+            idempotency_key=body.idempotency_key,
             notes=body.notes, created_by=user_id, created_at=now,
         )
         self.db.add(mis)
         await self.db.flush()
 
         for item_data in body.items:
-            total_cost = (item_data.issued_qty * item_data.unit_cost).quantize(Decimal("0.01"))
-            inv_txn = await self.inv.issue(
+            # FIFO costing (item #10): the client sends only quantity, not a
+            # rate — each cost layer consumed becomes its own line so, e.g.,
+            # issuing 15 when 10 were bought at ₹100 and 10 more at ₹200
+            # produces two lines: 10 @ ₹100 and 5 @ ₹200, not one blended rate.
+            inv_txns = await self.inv.issue_fifo(
                 IssueParams(
                     company_id=company_id,
                     product_id=item_data.product_id,
@@ -1817,7 +2482,7 @@ class ProductionService:
                     warehouse_id=body.warehouse_id,
                     quantity=item_data.issued_qty,
                     unit_id=item_data.unit_id,
-                    unit_cost=item_data.unit_cost,
+                    unit_cost=Decimal("0"),
                     material_type="raw_material",
                     transaction_date=body.issue_date,
                     reference_type="material_issue",
@@ -1828,28 +2493,27 @@ class ProductionService:
             )
             await self.db.flush()
 
-            self.db.add(MaterialIssueItem(
-                material_issue_id=mis.id,
-                product_id=item_data.product_id,
-                variant_id=item_data.variant_id,
-                planned_qty=item_data.planned_qty,
-                issued_qty=item_data.issued_qty,
-                unit_id=item_data.unit_id,
-                unit_cost=item_data.unit_cost,
-                total_cost=total_cost,
-                inv_transaction_id=inv_txn.id,
-            ))
-
-        await self.db.flush()
-
-        # Advance lot status to in_production if still at planned/approved
-        lot_res = await self.db.execute(
-            select(ProductionLot).where(ProductionLot.id == body.production_lot_id)
-        )
-        lot = lot_res.scalar_one_or_none()
-        if lot and lot.status in ("draft", "planned", "approved", "material_pending"):
-            lot.status = "in_production"
-            lot.updated_at = now
+            for i, inv_txn in enumerate(inv_txns):
+                self.db.add(MaterialIssueItem(
+                    material_issue_id=mis.id,
+                    product_id=item_data.product_id,
+                    variant_id=item_data.variant_id,
+                    lot_id=inv_txn.lot_id,
+                    planned_qty=item_data.planned_qty if i == 0 else None,
+                    issued_qty=inv_txn.quantity,
+                    unit_id=item_data.unit_id,
+                    unit_cost=inv_txn.unit_cost,
+                    total_cost=inv_txn.total_cost,
+                    inv_transaction_id=inv_txn.id,
+                ))
+                # Material planning vs actual consumption (Phase 11): when the
+                # consumed batch (inv_txn.lot_id) is the same specific batch a
+                # StyleFabric/StyleYarn/StyleTrim row was planned against, roll
+                # the issued quantity into that material's LOT-level
+                # actual_qty automatically — no manual entry needed for the
+                # common case of planning against a received batch.
+                if inv_txn.lot_id is not None:
+                    await self._accumulate_material_actual(body.production_lot_id, inv_txn.lot_id, inv_txn.quantity)
 
         await self.db.flush()
 
@@ -1937,12 +2601,37 @@ class ProductionService:
         q = q.order_by(ProductionOutput.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
         return (await self.db.execute(q)).scalars().all(), total
 
+    async def get_output(self, output_id: UUID, company_id: UUID) -> ProductionOutput | None:
+        result = await self.db.execute(
+            select(ProductionOutput)
+            .where(ProductionOutput.id == output_id, ProductionOutput.company_id == company_id)
+            .options(selectinload(ProductionOutput.production_lot))
+        )
+        return result.scalar_one_or_none()
+
     async def create_output(
         self, body: ProductionOutputCreate, company_id: UUID, user_id: UUID,
     ) -> ProductionOutput:
         now = datetime.now(timezone.utc)
         output_number = await _next_seq(self.db, "OUT", company_id, ProductionOutput)
         total_cost = (body.quantity * body.unit_cost).quantize(Decimal("0.01"))
+
+        # Output row created first (flushed for its id) so the inventory
+        # receipt can carry reference_id=output.id — previously this was left
+        # None, meaning a finished-goods stock-in could never be traced back
+        # to the production lot/output that created it (Phase 11 —
+        # order-to-production traceability / dispatch reconciliation both
+        # need this link).
+        output = ProductionOutput(
+            company_id=company_id, output_number=output_number,
+            production_lot_id=body.production_lot_id, warehouse_id=body.warehouse_id,
+            output_date=body.output_date, product_id=body.product_id, variant_id=body.variant_id,
+            quantity=body.quantity, rejected_qty=body.rejected_qty, unit_id=body.unit_id,
+            unit_cost=body.unit_cost, total_cost=total_cost,
+            created_by=user_id, created_at=now,
+        )
+        self.db.add(output)
+        await self.db.flush()
 
         inv_txn = await self.inv.receive(
             ReceiveParams(
@@ -1956,23 +2645,12 @@ class ProductionService:
                 material_type="finished_good",
                 transaction_date=body.output_date,
                 reference_type="production_output",
-                reference_id=None,
+                reference_id=output.id,
                 notes=f"OUT {output_number}",
             ),
             user_id=user_id,
         )
-        await self.db.flush()
-
-        output = ProductionOutput(
-            company_id=company_id, output_number=output_number,
-            production_lot_id=body.production_lot_id, warehouse_id=body.warehouse_id,
-            output_date=body.output_date, product_id=body.product_id, variant_id=body.variant_id,
-            quantity=body.quantity, rejected_qty=body.rejected_qty, unit_id=body.unit_id,
-            unit_cost=body.unit_cost, total_cost=total_cost,
-            inv_transaction_id=inv_txn.id,
-            created_by=user_id, created_at=now,
-        )
-        self.db.add(output)
+        output.inv_transaction_id = inv_txn.id
         await self.db.flush()
 
         # Update lot actual_qty
@@ -2003,3 +2681,49 @@ class ProductionService:
             .options(selectinload(ProductionOutput.production_lot))
         )
         return result.scalar_one()
+
+    # ── Mistake Log (16-item request #15) ──────────────────────────────────
+
+    async def list_mistake_logs(self, lot_id: UUID, company_id: UUID) -> list[ProductionMistakeLog]:
+        result = await self.db.execute(
+            select(ProductionMistakeLog)
+            .join(ProductionLot, ProductionMistakeLog.production_lot_id == ProductionLot.id)
+            .where(ProductionMistakeLog.production_lot_id == lot_id, ProductionLot.company_id == company_id)
+            .options(selectinload(ProductionMistakeLog.stage), selectinload(ProductionMistakeLog.staff))
+            .order_by(ProductionMistakeLog.mistake_date.desc(), ProductionMistakeLog.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def create_mistake_log(
+        self, lot_id: UUID, body: MistakeLogCreate, company_id: UUID, user_id: UUID,
+    ) -> ProductionMistakeLog | None:
+        lot = await self.db.execute(
+            select(ProductionLot.id).where(ProductionLot.id == lot_id, ProductionLot.company_id == company_id)
+        )
+        if not lot.scalar_one_or_none():
+            return None
+        log = ProductionMistakeLog(
+            company_id=company_id, production_lot_id=lot_id,
+            stage_id=body.stage_id, process_name=body.process_name,
+            staff_id=body.staff_id, staff_name=body.staff_name,
+            mistake_date=body.mistake_date, description=body.description,
+            problem_type=body.problem_type, action_taken=body.action_taken,
+            created_at=datetime.now(timezone.utc), created_by=user_id,
+        )
+        self.db.add(log)
+        await self.db.flush()
+        await self.db.refresh(log, attribute_names=["stage", "staff"])
+        return log
+
+    async def delete_mistake_log(self, log_id: UUID, company_id: UUID) -> bool:
+        result = await self.db.execute(
+            select(ProductionMistakeLog)
+            .join(ProductionLot, ProductionMistakeLog.production_lot_id == ProductionLot.id)
+            .where(ProductionMistakeLog.id == log_id, ProductionLot.company_id == company_id)
+        )
+        log = result.scalar_one_or_none()
+        if not log:
+            return False
+        await self.db.delete(log)
+        await self.db.flush()
+        return True

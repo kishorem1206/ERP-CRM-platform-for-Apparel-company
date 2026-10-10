@@ -1,17 +1,16 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
-
-const TEAL = "#8174F5";
 
 const STATUS_HEX: Record<string, string> = {
   draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
   in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
   completed: "#0F78FF", cancelled: "#1D0DB0",
   pending: "#0049A7", received: "#0F78FF", partial: "#A096F7",
-  issued: TEAL, open: "#0049A7", closed: "#0F78FF",
+  issued: "#8174F5", open: "#0049A7", closed: "#0F78FF",
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -28,30 +27,55 @@ function StatusDot({ status }: { status: string }) {
   );
 }
 
+interface MISItem {
+  used_qty: string | null;
+  returned_qty: string | null;
+  wastage_qty: string | null;
+  issued_qty: string;
+}
+
 type MIS = Record<string, unknown> & {
   id: string;
   issue_number: string;
   lot_number: string | null;
   issue_date: string;
   status: string;
-  warehouse_id: string;
+  warehouse_name: string | null;
+  stage_name: string | null;
   notes: string | null;
+  items: MISItem[];
 };
+
+function reconciled(items: MISItem[]): boolean {
+  if (items.length === 0) return false;
+  return items.every((i) => i.used_qty !== null || i.returned_qty !== null || i.wastage_qty !== null);
+}
 
 const columns: Column<MIS>[] = [
   { key: "issue_number", header: "MIS No." },
   { key: "lot_number", header: "Lot No." },
+  { key: "stage_name", header: "Stage", render: (row) => row.stage_name ?? "—" },
   { key: "issue_date", header: "Issue Date" },
-  { key: "warehouse_id", header: "Warehouse" },
+  { key: "warehouse_name", header: "Warehouse", render: (row) => row.warehouse_name ?? "—" },
   {
     key: "status",
     header: "Status",
     render: (row) => <StatusDot status={row.status} />,
   },
-  { key: "notes", header: "Notes" },
+  {
+    key: "reconciled",
+    header: "Material Return",
+    render: (row) =>
+      reconciled(row.items) ? (
+        <span className="text-[11px] font-semibold" style={{ color: "#0F78FF" }}>Recorded</span>
+      ) : (
+        <span className="text-[11px] text-muted-foreground">Pending</span>
+      ),
+  },
 ];
 
 export default function MISPage() {
+  const router = useRouter();
   const { data, isLoading } = useQuery({
     queryKey: ["production-mis"],
     queryFn: async () => {
@@ -79,7 +103,12 @@ export default function MISPage() {
             <p className="text-sm font-medium mt-0.5">All material issue records</p>
           </div>
         </div>
-        <DataTable columns={columns} data={data ?? []} loading={isLoading} />
+        <DataTable
+          columns={columns}
+          data={data ?? []}
+          loading={isLoading}
+          onRowClick={(row) => router.push(`/production/mis/${row.id as string}`)}
+        />
       </div>
     </div>
   );

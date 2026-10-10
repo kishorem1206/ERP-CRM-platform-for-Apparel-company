@@ -121,7 +121,7 @@ export function SegControl({ options, value, onChange }: { options: string[]; va
 }
 
 // Submit / cancel buttons
-export function ModalActions({ onClose, loading, label = "Save" }: { onClose: () => void; loading: boolean; label?: string }) {
+export function ModalActions({ onClose, loading, label = "Save", disabled = false }: { onClose: () => void; loading: boolean; label?: string; disabled?: boolean }) {
   return (
     <>
       <button
@@ -133,7 +133,7 @@ export function ModalActions({ onClose, loading, label = "Save" }: { onClose: ()
       </button>
       <button
         type="submit"
-        disabled={loading}
+        disabled={loading || disabled}
         className="px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors"
       >
         {loading ? "Saving…" : label}

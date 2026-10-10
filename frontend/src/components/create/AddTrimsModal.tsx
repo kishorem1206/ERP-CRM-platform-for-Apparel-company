@@ -24,7 +24,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
     trim_unit: "Pieces",
     colour: "",
     split_by_colour: false,
-    brand: "",
+    brand_id: "",
     description: "",
     quantity: "",
     unit_cost: "",
@@ -72,6 +72,12 @@ export function AddTrimsModal({ open, onClose }: Props) {
     enabled: open,
   });
 
+  const brands = useQuery({
+    queryKey: ["master-brands"],
+    queryFn: async () => (await api.get("/master/brands")).data.data as { id: string; name: string }[],
+    enabled: open,
+  });
+
   function set(k: string, v: unknown) { setForm((f) => ({ ...f, [k]: v })); setErr(null); }
 
   const totalValue = useMemo(() => {
@@ -91,7 +97,8 @@ export function AddTrimsModal({ open, onClose }: Props) {
         split_by_colour: form.split_by_colour,
         unit_cost: form.unit_cost ? Number(form.unit_cost) : undefined,
         quantity: form.quantity ? Number(form.quantity) : undefined,
-        notes: [form.brand ? `Brand: ${form.brand}` : "", form.description, form.notes].filter(Boolean).join(" | ") || undefined,
+        notes: [form.description, form.notes].filter(Boolean).join(" | ") || undefined,
+        brand_id: form.brand_id || undefined,
         // Inventory booking
         warehouse_id: form.warehouse_id || undefined,
         product_id: form.product_id || undefined,
@@ -147,6 +154,26 @@ export function AddTrimsModal({ open, onClose }: Props) {
 
         <div className="h-px bg-border" />
 
+        {/* Catalog product — links this lot's category to the Products catalog so
+            Yarn/Fabric/Trim stays consistent everywhere, including Production. */}
+        <Field
+          label="Product (optional)"
+          hint="Links this lot to a product in your catalog, so its category stays consistent with Production and the rest of the app — instead of being typed separately here."
+        >
+          <SearchableSelect
+            value={form.product_id}
+            onChange={(v) => set("product_id", v)}
+            placeholder="— Not linked to a catalog product —"
+            accent="#0F78FF"
+            options={(products.data ?? []).map((p) => ({
+              value: p.id,
+              label: p.name,
+            }))}
+          />
+        </Field>
+
+        <div className="h-px bg-border" />
+
         {/* Trim type */}
         <Field label="Trim Type">
           <div className="flex gap-1 flex-wrap">
@@ -175,7 +202,16 @@ export function AddTrimsModal({ open, onClose }: Props) {
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Brand">
-            <Input placeholder="Brand name" value={form.brand} onChange={(e) => set("brand", e.target.value)} />
+            <SearchableSelect
+              value={form.brand_id}
+              onChange={(v) => set("brand_id", v)}
+              placeholder="— Not specified —"
+              accent="#0F78FF"
+              options={[
+                { value: "", label: "— Not specified —" },
+                ...(brands.data ?? []).map((b) => ({ value: b.id, label: b.name })),
+              ]}
+            />
           </Field>
           <Field label="Colour">
             <Input placeholder="Colour / shade" value={form.colour} onChange={(e) => set("colour", e.target.value)} />
@@ -240,32 +276,18 @@ export function AddTrimsModal({ open, onClose }: Props) {
               ]}
             />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Product">
-              <SearchableSelect
-                value={form.product_id}
-                onChange={(v) => set("product_id", v)}
-                placeholder="— Select —"
-                accent="#0F78FF"
-                options={(products.data ?? []).map((p) => ({
-                  value: p.id,
-                  label: p.name,
-                }))}
-              />
-            </Field>
-            <Field label="Unit">
-              <SearchableSelect
-                value={form.unit_id}
-                onChange={(v) => set("unit_id", v)}
-                placeholder="— Unit —"
-                accent="#0F78FF"
-                options={(units.data ?? []).map((u) => ({
-                  value: u.id,
-                  label: `${u.name} (${u.abbreviation})`,
-                }))}
-              />
-            </Field>
-          </div>
+          <Field label="Unit">
+            <SearchableSelect
+              value={form.unit_id}
+              onChange={(v) => set("unit_id", v)}
+              placeholder="— Unit —"
+              accent="#0F78FF"
+              options={(units.data ?? []).map((u) => ({
+                value: u.id,
+                label: `${u.name} (${u.abbreviation})`,
+              }))}
+            />
+          </Field>
           {form.quantity && form.warehouse_id && form.product_id && form.unit_id && (
             <p className="text-xs text-blue-600">Will book {form.quantity} {form.trim_unit} into inventory on save.</p>
           )}

@@ -1,0 +1,67 @@
+# Render Blueprint — free-tier deployment of Apparel ERP.
+#
+#   web    apparel-erp        Next.js + FastAPI in one container (deploy/render/Dockerfile)
+#   cache  apparel-erp-cache  Render Key Value (Redis-compatible): login OTPs,
+#                             rate limits, 2FA sessions, live notifications,
+#                             AI assistant chat history
+#
+# Postgres is Neon (not Render) — paste its connection string as DATABASE_URL.
+# Scheduled jobs are triggered by a Cloudflare Worker (deploy/cloudflare-cron)
+# calling /api/v1/internal/cron/tick with CRON_SECRET.
+# Step-by-step setup: DEPLOY.md.
+
+services:
+  - type: web
+    name: apparel-erp
+    runtime: docker
+    plan: free
+    region: singapore           # keep Neon in AWS ap-southeast-1 (Singapore) too
+    dockerfilePath: ./deploy/render/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      # ── Required ────────────────────────────────────────────────────────────
+      - key: DATABASE_URL       # Neon connection string (the direct one, not "-pooler")
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: apparel-erp-cache
+          property: connectionString
+      - key: APP_SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: CRON_SECRET         # copy this into the Cloudflare Worker's CRON_SECRET
+        generateValue: true
+      - key: ADMIN_SEED_PASSWORD # only used if the database has no admin@company.com yet
+        sync: false
+
+      # ── Free-tier sizing ────────────────────────────────────────────────────
+      - key: APP_ENV
+        value: production
+      - key: DB_POOL_SIZE        # Neon free tier: keep connections modest
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "5"
+
+      # ── AI assistant (optional) ─────────────────────────────────────────────
+      - key: LLM_PROVIDER
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_API_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+
+      # ── Attachments on Cloudflare R2 (optional; without it uploads don't persist) ──
+      # STORAGE_BACKEND=s3, S3_ENDPOINT_URL, AWS_S3_BUCKET, AWS_ACCESS_KEY_ID,
+      # AWS_SECRET_ACCESS_KEY — add in the dashboard once the bucket exists.
+
+  - type: keyvalue
+    name: apparel-erp-cache
+    plan: free
+    region: singapore
+    ipAllowList: []             # reachable only from this workspace's services

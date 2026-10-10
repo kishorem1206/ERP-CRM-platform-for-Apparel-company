@@ -126,7 +126,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def business_rules_exception_handler(request: Request, exc: BusinessRulesError):
     return ORJSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"success": False, "error": {"code": exc.code, "message": exc.message}},
+        content={"success": False, "error": {
+            "code": exc.code, "message": exc.message,
+            "available": str(exc.available) if exc.available is not None else None,
+            "shortage": str(exc.shortage) if exc.shortage is not None else None,
+        }},
     )
 
 

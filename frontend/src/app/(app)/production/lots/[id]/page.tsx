@@ -1,10 +1,10 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Pencil, Plus, X, ChevronRight, Truck, Trash2, RotateCcw, Inbox, Download, FileText,
-  Flame, Printer, Shirt, CircleDot, Sparkles, Droplets, CheckCircle2, Wind, Package, MoreHorizontal,
+  Flame, Printer, Shirt, CircleDot, Sparkles, Droplets, CheckCircle2, Wind, Package, MoreHorizontal, Scissors,
 } from "lucide-react";
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
@@ -17,14 +17,11 @@ const inputCls =
   "w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
 const STATUS_HEX: Record<string, string> = {
-  draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
-  in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
-  ready_to_dispatch: "#0F78FF", completed: "#0F78FF", cancelled: "#1D0DB0",
+  cutting: "#8174F5", checking: "#A096F7", packing: "#0F78FF",
+  completed: "#0F78FF", cancelled: "#1D0DB0",
 };
 const STATUS_FLOW: Record<string, string> = {
-  draft: "planned", planned: "approved", approved: "in_production",
-  in_production: "qc", qc: "packing", packing: "ready_to_dispatch",
-  ready_to_dispatch: "completed",
+  cutting: "checking", checking: "packing", packing: "completed",
 };
 const STAGE_STATUS_HEX: Record<string, string> = {
   pending: "#94A3B8", in_progress: "#0049A7", completed: "#0F78FF",
@@ -81,9 +78,16 @@ interface Stage {
   input_weight_kg: number | null; output_weight_kg: number | null; wastage_kg: number | null; recoverable_kg: number | null;
   variance_kg: number | null; permitted_tolerance_kg: number | null; within_tolerance: boolean | null;
   weight_per_piece: number | null; effective_rate_per_kg: number | null;
+  operations: { name: string; planned_rate: number | null; estimated_cost_share: number | null }[];
+  sizes: StageSize[];
+  completion_warnings: string[];
   entries: StageEntry[]; challans: StageChallan[];
 }
 interface Worker { id: string; name: string; role_title: string | null }
+interface StageSize {
+  id: string; size_id: string; input_qty: number; accepted_qty: number;
+  rejected_qty: number; rework_qty: number; pending_qty: number; defect_reason: string | null;
+}
 interface LotAdditionalCost {
   id: string; cost_type: string; description: string;
   planned_amount: number | null; actual_amount: number | null;
@@ -94,7 +98,7 @@ interface LotTrim {
   planned_qty: number | null; actual_qty: number | null; notes: string | null;
 }
 interface LotPackingMaterial {
-  id: string; material_name: string; consumption_stage: string | null; unit: string | null;
+  id: string; material_name: string; product_name: string | null; consumption_stage: string | null; unit: string | null;
   planned_qty: number | null; actual_qty: number | null; notes: string | null;
 }
 interface FabricProcessing {
@@ -127,6 +131,11 @@ interface LotDetail {
   trims: LotTrim[]; packing_materials: LotPackingMaterial[]; boxes_required: number | null;
   fabric_blockers: string[];
   fabric_processing: FabricProcessing[]; cost_summary: LotCostSummary;
+  part_colours: LotPartColour[];
+}
+interface LotPartColour {
+  id: string; style_part_name: string | null; colour_name: string | null;
+  sizes: { size_id: string; planned_qty: number }[];
 }
 interface MISItem {
   id: string; product_id: string; product_name: string | null; unit_abbreviation: string | null;
@@ -135,6 +144,35 @@ interface MISItem {
 }
 interface MISRow { id: string; issue_number: string; issue_date: string; status: string; items: MISItem[] }
 interface OutputRow { id: string; output_number: string; output_date: string; quantity: number; rejected_qty: number | null; unit_cost: number; total_cost: number }
+interface MistakeLog {
+  id: string; stage_id: string | null; stage_name: string | null; process_name: string | null;
+  staff_id: string | null; staff_name: string | null; resolved_staff_name: string | null;
+  mistake_date: string; description: string; problem_type: string | null; action_taken: string | null;
+}
+interface BomLine {
+  id: string; category: string; name: string; style_part_name: string | null; colour_name: string | null;
+  unit: string | null; required_qty: number | null; available_qty: number | null; shortage_qty: number | null;
+  is_informational: boolean; notes: string | null;
+}
+interface LotBom {
+  production_lot_id: string; lot_number: string;
+  yarn: BomLine[]; fabric: BomLine[]; trims: BomLine[]; packing_materials: BomLine[];
+  total_lines: number; shortage_lines: number;
+}
+interface StageSummaryBucket {
+  stage_type: string; label: string;
+  input_qty: number; accepted_qty: number; rejected_qty: number; rework_qty: number; pending_qty: number;
+}
+interface AuditEntry {
+  id: string; entity_type: string; action: string; field_name: string | null;
+  old_value: string | null; new_value: string | null; changed_by_name: string | null; changed_at: string;
+}
+interface LotProductionSummary {
+  production_lot_id: string; lot_number: string; planned_qty: number;
+  cut_qty: number; checked_qty: number; accepted_qty: number; packed_qty: number;
+  rejected_qty: number; rework_qty: number; remaining_qty: number;
+  buckets: StageSummaryBucket[];
+}
 
 function Card({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -904,6 +942,7 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
 // ── Add Stage Modal ─────────────────────────────────────────────────────────────
 
 const STAGE_CHIPS: { name: string; stage_type: string; icon: typeof Flame }[] = [
+  { name: "Cutting", stage_type: "cutting", icon: Scissors },
   { name: "Fusing", stage_type: "making", icon: Flame },
   { name: "Printing", stage_type: "making", icon: Printer },
   { name: "Stitching", stage_type: "making", icon: Shirt },
@@ -1417,7 +1456,7 @@ function EditFabricProcessingModal({ entry, lotId, onClose }: { entry: FabricPro
 }
 
 // ── Issue Material Modal (MIS create — one or more line items) ────────────────
-interface MISItemRow { key: string; productId: string; quantity: string; unitId: string; unitCost: string }
+interface MISItemRow { key: string; productId: string; quantity: string; unitId: string }
 let misRowSeq = 0;
 function newMisRowId() {
   misRowSeq += 1;
@@ -1431,25 +1470,37 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
   const [issueDate, setIssueDate] = useState(today);
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<MISItemRow[]>([
-    { key: newMisRowId(), productId: "", quantity: "", unitId: "", unitCost: "0" },
+    { key: newMisRowId(), productId: "", quantity: "", unitId: "" },
   ]);
   const [error, setError] = useState("");
+  const idempotencyKey = useRef(crypto.randomUUID()).current;
+
+  const balances = useQuery({
+    queryKey: ["inventory-balance", warehouseId],
+    queryFn: async () => (await api.get("/inventory/balance", { params: { warehouse_id: warehouseId } })).data.data as { product_id: string; balance: string }[],
+    enabled: !!warehouseId,
+  });
+  const balanceByProduct = new Map((balances.data ?? []).map((b) => [b.product_id, Number(b.balance)]));
 
   const products = useQuery({
     queryKey: ["products", "all-ref"],
-    queryFn: async () => (await api.get("/products", { params: { page_size: 500 } })).data.data as { id: string; name: string; code: string; product_type: string }[],
+    queryFn: async () => (await api.get("/products", { params: { page_size: 500 } })).data.data as { id: string; name: string; code: string; product_type: string; unit_id: string | null }[],
   });
   const warehouses = useQuery({
     queryKey: ["master-warehouses"],
-    queryFn: async () => (await api.get("/master/warehouses")).data.data as { id: string; name: string }[],
+    queryFn: async () => (await api.get("/master/warehouses")).data.data as { id: string; name: string; material_type: string | null }[],
   });
   const units = useQuery({
     queryKey: ["master-units"],
     queryFn: async () => (await api.get("/master/units")).data.data as { id: string; name: string; abbreviation: string }[],
   });
+  const selectedWarehouse = (warehouses.data ?? []).find((w) => w.id === warehouseId);
+  const availableProducts = selectedWarehouse?.material_type
+    ? (products.data ?? []).filter((p) => p.product_type === selectedWarehouse.material_type)
+    : (products.data ?? []);
 
   function addItem() {
-    setItems((r) => [...r, { key: newMisRowId(), productId: "", quantity: "", unitId: "", unitCost: "0" }]);
+    setItems((r) => [...r, { key: newMisRowId(), productId: "", quantity: "", unitId: "" }]);
   }
   function updateItem(key: string, patch: Partial<MISItemRow>) {
     setItems((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -1467,11 +1518,11 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
         warehouse_id: warehouseId,
         issue_date: issueDate,
         notes: notes || undefined,
+        idempotency_key: idempotencyKey,
         items: validItems.map((it) => ({
           product_id: it.productId,
           issued_qty: Number(it.quantity) || 0,
           unit_id: it.unitId,
-          unit_cost: Number(it.unitCost) || 0,
         })),
       }),
     onSuccess: () => {
@@ -1515,17 +1566,23 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
 
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-2">Items</p>
+          <p className="text-[11px] text-muted-foreground mb-2">
+            Rate is costed automatically on save, oldest purchased stock first (FIFO) — if a quantity spans more than one purchase batch, it's split into separate lines at their own rates.
+          </p>
           <div className="space-y-2">
             {items.map((it) => (
               <div key={it.key} className="p-3 rounded-xl border border-border bg-background">
                 <div className="grid grid-cols-12 gap-2 items-start">
-                  <div className="col-span-5">
+                  <div className="col-span-7">
                     <SearchableSelect
                       value={it.productId}
-                      onChange={(v) => updateItem(it.key, { productId: v })}
-                      placeholder="Select material"
+                      onChange={(v) => {
+                        const picked = availableProducts.find((p) => p.id === v);
+                        updateItem(it.key, { productId: v, unitId: picked?.unit_id || it.unitId });
+                      }}
+                      placeholder={selectedWarehouse?.material_type ? `Select ${selectedWarehouse.material_type}` : "Select material"}
                       accent={INDIGO}
-                      options={(products.data ?? [])
+                      options={availableProducts
                         .filter((p) => p.product_type !== "finished_good")
                         .map((p) => ({ value: p.id, label: p.name, meta: `${p.product_type} · ${p.code}` }))}
                     />
@@ -1542,15 +1599,26 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
                       options={(units.data ?? []).map((u) => ({ value: u.id, label: u.abbreviation || u.name }))}
                     />
                   </div>
-                  <div className="col-span-2">
-                    <input type="number" step="0.01" className={inputCls} placeholder="Rate (₹)" value={it.unitCost} onChange={(e) => updateItem(it.key, { unitCost: e.target.value })} />
-                  </div>
                   <div className="col-span-1 flex justify-end">
                     <button type="button" onClick={() => removeItem(it.key)} className="p-1.5 rounded-md text-muted-foreground hover:text-[#1D0DB0] hover:bg-[#1D0DB0]/10 transition-colors">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
+                {it.productId && warehouseId && (() => {
+                  const available = balanceByProduct.get(it.productId);
+                  const requested = Number(it.quantity) || 0;
+                  const short = available != null && requested > available;
+                  return (
+                    <p className={`mt-1.5 text-[11px] ${short ? "text-[#1D0DB0] font-medium" : "text-muted-foreground"}`}>
+                      {available != null
+                        ? short
+                          ? `Only ${available.toLocaleString("en-IN")} available in this warehouse — short by ${(requested - available).toLocaleString("en-IN")}`
+                          : `${available.toLocaleString("en-IN")} available in this warehouse`
+                        : "No stock on record in this warehouse"}
+                    </p>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -1586,8 +1654,142 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
   );
 }
 
+// ── Mistake Log Modal ──────────────────────────────────────────────────────
+const PROBLEM_TYPES = ["Wrong Measurement", "Fabric Defect", "Stitching Error", "Wrong Colour", "Damage", "Delay", "Other"];
+
+function AddMistakeLogModal({ lotId, stages, onClose }: { lotId: string; stages: Stage[]; onClose: () => void }) {
+  const qc = useQueryClient();
+  const today = new Date().toISOString().slice(0, 10);
+  const [stageId, setStageId] = useState("");
+  const [processName, setProcessName] = useState("");
+  const [staffId, setStaffId] = useState("");
+  const [staffName, setStaffName] = useState("");
+  const [mistakeDate, setMistakeDate] = useState(today);
+  const [description, setDescription] = useState("");
+  const [problemType, setProblemType] = useState("");
+  const [actionTaken, setActionTaken] = useState("");
+  const [error, setError] = useState("");
+
+  const workers = useQuery({
+    queryKey: ["production-workers"],
+    queryFn: async () => (await api.get("/production/workers")).data.data as { id: string; name: string; role_title: string | null }[],
+  });
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api.post(`/production/lots/${lotId}/mistake-logs`, {
+        stage_id: stageId || undefined,
+        process_name: stageId ? undefined : (processName || undefined),
+        staff_id: staffId || undefined,
+        staff_name: staffId ? undefined : (staffName || undefined),
+        mistake_date: mistakeDate,
+        description,
+        problem_type: problemType || undefined,
+        action_taken: actionTaken || undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["production-mistake-logs", lotId] });
+      onClose();
+    },
+    onError: (e: unknown) => setError(parseApiError(e, "Failed to log mistake")),
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-lg" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">Log Mistake</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Process (this lot's stages)</label>
+            <SearchableSelect
+              value={stageId}
+              onChange={setStageId}
+              placeholder="— Not listed below —"
+              accent={INDIGO}
+              options={[
+                { value: "", label: "— Not listed below —" },
+                ...stages.map((s) => ({ value: s.id, label: s.stage_name })),
+              ]}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Date</label>
+            <DatePicker value={mistakeDate} onChange={setMistakeDate} />
+          </div>
+        </div>
+        {!stageId && (
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Process (if not listed above)</label>
+            <input className={inputCls} placeholder="e.g. Cutting" value={processName} onChange={(e) => setProcessName(e.target.value)} />
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Staff</label>
+            <SearchableSelect
+              value={staffId}
+              onChange={setStaffId}
+              placeholder="— Not listed below —"
+              accent={INDIGO}
+              options={[
+                { value: "", label: "— Not listed below —" },
+                ...(workers.data ?? []).map((w) => ({ value: w.id, label: w.name, meta: w.role_title ?? undefined })),
+              ]}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Problem Type</label>
+            <SearchableSelect
+              value={problemType}
+              onChange={setProblemType}
+              placeholder="— Select —"
+              accent={INDIGO}
+              options={PROBLEM_TYPES.map((p) => ({ value: p, label: p }))}
+            />
+          </div>
+        </div>
+        {!staffId && (
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Staff name (if not listed above)</label>
+            <input className={inputCls} placeholder="Name" value={staffName} onChange={(e) => setStaffName(e.target.value)} />
+          </div>
+        )}
+
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Description *</label>
+          <textarea className={`${inputCls} resize-none`} rows={3} placeholder="What happened?" value={description} onChange={(e) => setDescription(e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Action Taken</label>
+          <textarea className={`${inputCls} resize-none`} rows={2} placeholder="Corrective action taken, if any" value={actionTaken} onChange={(e) => setActionTaken(e.target.value)} />
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => { setError(""); mut.mutate(); }}
+          disabled={mut.isPending || !description.trim()}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {mut.isPending ? "Saving…" : "Log Mistake"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 // ── Record Output Modal (FG receive with quality split) ───────────────────────
-function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => void }) {
+function RecordOutputModal({ lotId, suggestedUnitCost, onClose }: { lotId: string; suggestedUnitCost: number | null; onClose: () => void }) {
   const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
   const [productId, setProductId] = useState("");
@@ -1597,7 +1799,7 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
   const [outputDate, setOutputDate] = useState(today);
   const [quantity, setQuantity] = useState("");
   const [rejectedQty, setRejectedQty] = useState("0");
-  const [unitCost, setUnitCost] = useState("0");
+  const [unitCost, setUnitCost] = useState(suggestedUnitCost != null ? String(suggestedUnitCost) : "0");
 
   const products = useQuery({
     queryKey: ["products", "finished_good"],
@@ -1706,6 +1908,11 @@ function RecordOutputModal({ lotId, onClose }: { lotId: string; onClose: () => v
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Unit Cost (₹)</label>
           <input type="number" step="0.01" className={inputCls} value={unitCost} onChange={(e) => setUnitCost(e.target.value)} />
+          {suggestedUnitCost != null && (
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Pre-filled from the Lot&apos;s computed cost per piece — this is the value the stock will carry into inventory, so Sales profit/COGS reporting stays accurate. Adjust only if this batch's actual cost differs.
+            </p>
+          )}
         </div>
         <p className="text-[11px] text-muted-foreground">
           Only First Quality Qty is received into sellable inventory. Rejected Qty is recorded for visibility only.
@@ -1812,12 +2019,41 @@ function ChallanRow({ challan, lotId, assigneeName, onReceive }: { challan: Stag
 
 // ── Stage Card ────────────────────────────────────────────────────────────────
 function StageCard({
-  stage, idx, lotId, vendorById, workerById, onEditRate, onAddEntry, onSendToVendor, onReceiveChallan,
+  stage, idx, lotId, vendorById, workerById, onEditRate, onAddEntry, onSendToVendor, onReceiveChallan, sizeById,
+  isCurrent, canReopen, nextStageName,
 }: {
   stage: Stage; idx: number; lotId: string; vendorById: Map<string, string>; workerById: Map<string, string>;
   onEditRate: () => void; onAddEntry: () => void; onSendToVendor: () => void;
   onReceiveChallan: (challan: StageChallan) => void;
+  sizeById: Map<string, string>;
+  isCurrent: boolean; canReopen: boolean; nextStageName: string | null;
 }) {
+  const qc = useQueryClient();
+  const [sizeDraft, setSizeDraft] = useState<Record<string, { accepted_qty: string; rejected_qty: string; rework_qty: string; defect_reason: string }>>({});
+  const updateStageSizeMut = useMutation({
+    mutationFn: ({ sizeId, body }: { sizeId: string; body: Record<string, unknown> }) =>
+      api.patch(`/production/stages/${stage.id}/sizes/${sizeId}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["production-lot", lotId] }),
+  });
+  const [confirmComplete, setConfirmComplete] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const statusMut = useMutation({
+    mutationFn: (status: "completed" | "in_progress") => api.patch(`/production/stages/${stage.id}`, { status }),
+    onSuccess: () => {
+      setConfirmComplete(false);
+      setStatusError(null);
+      qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
+    },
+    onError: (e: unknown) => {
+      const err = (e as { response?: { data?: { error?: string | { message?: string } } } })?.response?.data?.error;
+      setStatusError(typeof err === "string" ? err : err?.message ?? "Could not update the stage.");
+    },
+  });
+  const onMarkComplete = () => {
+    setStatusError(null);
+    if (stage.completion_warnings.length > 0) setConfirmComplete(true);
+    else statusMut.mutate("completed");
+  };
   const sortedEntries = [...stage.entries].sort((a, b) => a.entry_date.localeCompare(b.entry_date));
   const sortedChallans = [...stage.challans].sort((a, b) => a.out_date.localeCompare(b.out_date));
   const isAssigned = !!stage.assignment_type;
@@ -1829,8 +2065,64 @@ function StageCard({
       <div className="flex items-center gap-3 px-4 py-2.5 bg-muted/30 border-b border-border">
         <span className="text-xs font-mono text-muted-foreground">{idx + 1}</span>
         <span className="text-sm font-semibold flex-1">{stage.stage_name}</span>
+        {isCurrent && (
+          <Can perm="production.edit">
+            <button
+              onClick={onMarkComplete}
+              disabled={statusMut.isPending || confirmComplete}
+              className="px-2 py-0.5 rounded text-[11px] font-semibold text-white disabled:opacity-40"
+              style={{ background: INDIGO }}
+              title={nextStageName ? `Complete this stage and move on to ${nextStageName}` : "Complete the final stage"}
+            >
+              {nextStageName ? `Complete & Move to ${nextStageName}` : "Mark Complete"}
+            </button>
+          </Can>
+        )}
+        {canReopen && (
+          <Can perm="production.edit">
+            <button
+              onClick={() => statusMut.mutate("in_progress")}
+              disabled={statusMut.isPending}
+              className="text-[11px] font-semibold text-muted-foreground hover:text-foreground underline-offset-2 hover:underline disabled:opacity-40"
+              title="Reopen this stage to correct its entries"
+            >
+              Reopen
+            </button>
+          </Can>
+        )}
         <StatusBadge status={stage.status} />
       </div>
+      {confirmComplete && (
+        <div className="px-4 py-3 border-b border-border text-xs" style={{ background: "#F59E0B14" }}>
+          <p className="font-semibold" style={{ color: "#B45309" }}>
+            Some details for {stage.stage_name} look incomplete:
+          </p>
+          <ul className="list-disc ml-4 mt-1.5 space-y-0.5" style={{ color: "#92400E" }}>
+            {stage.completion_warnings.map((w) => <li key={w}>{w}</li>)}
+          </ul>
+          <div className="flex items-center gap-2 mt-3">
+            <button
+              onClick={() => statusMut.mutate("completed")}
+              disabled={statusMut.isPending}
+              className="px-3 py-1 rounded text-[11px] font-semibold text-white disabled:opacity-40"
+              style={{ background: "#B45309" }}
+            >
+              {statusMut.isPending ? "Completing…" : "Complete anyway"}
+            </button>
+            <button
+              onClick={() => setConfirmComplete(false)}
+              className="px-3 py-1 rounded text-[11px] font-semibold border border-border hover:bg-muted"
+            >
+              Go back and fill them in
+            </button>
+          </div>
+        </div>
+      )}
+      {statusError && (
+        <div className="px-4 py-2 border-b border-border text-xs" style={{ background: "#1D0DB012", color: "#1D0DB0" }}>
+          {statusError}
+        </div>
+      )}
       <div className="px-4 py-3 grid grid-cols-4 gap-3 text-xs border-b border-border">
         <div><p className="text-muted-foreground">Tolerance</p><p className="font-medium mt-0.5">{stage.tolerance_pct != null ? `${Number(stage.tolerance_pct)}%` : "—"}</p></div>
         <div><p className="text-muted-foreground">Input / Output Unit</p><p className="font-medium mt-0.5">{stage.input_unit ?? "—"} / {stage.output_unit ?? "—"}</p></div>
@@ -1889,6 +2181,100 @@ function StageCard({
         <div><p className="text-muted-foreground">Rejected</p><p className="font-medium mt-0.5 text-[#1D0DB0]">{stage.rejected_qty}</p></div>
         <div><p className="text-muted-foreground">Bill Amount</p><p className="font-semibold mt-0.5" style={{ color: INDIGO }}>{stage.bill_amount != null ? INR(Number(stage.bill_amount)) : "—"}</p></div>
       </div>
+      {stage.operations.length > 0 && (
+        <div className="px-4 py-3 border-b border-border">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+            Operations <span className="normal-case font-normal">(estimated split of the Bill Amount above — not a separate charge)</span>
+          </p>
+          <div className="flex gap-4 flex-wrap text-xs">
+            {stage.operations.map((op) => (
+              <div key={op.name}>
+                <span className="font-medium">{op.name}</span>
+                <span className="text-muted-foreground ml-1.5">
+                  {op.planned_rate != null ? `₹${op.planned_rate}/pc` : "no rate"}
+                  {op.estimated_cost_share != null && ` · ~${INR(Number(op.estimated_cost_share))}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {stage.sizes.length > 0 && (
+        <div className="px-4 py-3 border-b border-border">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Size-wise</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-muted-foreground">
+                  <th className="py-1 pr-3">Size</th>
+                  <th className="py-1 pr-3 text-right">In</th>
+                  <th className="py-1 pr-3 text-right">Accepted</th>
+                  <th className="py-1 pr-3 text-right">Rejected</th>
+                  <th className="py-1 pr-3 text-right">Rework</th>
+                  <th className="py-1 pr-3 text-right">Pending</th>
+                  <th className="py-1 pr-3">Defect Reason</th>
+                  <th className="py-1"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {stage.sizes.map((sz) => {
+                  const draft = sizeDraft[sz.size_id] ?? {
+                    accepted_qty: String(sz.accepted_qty), rejected_qty: String(sz.rejected_qty),
+                    rework_qty: String(sz.rework_qty), defect_reason: sz.defect_reason ?? "",
+                  };
+                  const dirty = sizeDraft[sz.size_id] !== undefined;
+                  return (
+                    <tr key={sz.id} className="border-t border-border">
+                      <td className="py-1.5 pr-3 font-medium">{sizeById.get(sz.size_id) ?? "—"}</td>
+                      <td className="py-1.5 pr-3 text-right">{sz.input_qty}</td>
+                      <td className="py-1.5 pr-3 text-right">
+                        <input type="number" className="w-16 rounded border border-input bg-background px-1.5 py-0.5 text-right" value={draft.accepted_qty}
+                          onChange={(e) => setSizeDraft((p) => ({ ...p, [sz.size_id]: { ...draft, accepted_qty: e.target.value } }))} />
+                      </td>
+                      <td className="py-1.5 pr-3 text-right">
+                        <input type="number" className="w-16 rounded border border-input bg-background px-1.5 py-0.5 text-right" value={draft.rejected_qty}
+                          onChange={(e) => setSizeDraft((p) => ({ ...p, [sz.size_id]: { ...draft, rejected_qty: e.target.value } }))} />
+                      </td>
+                      <td className="py-1.5 pr-3 text-right">
+                        <input type="number" className="w-16 rounded border border-input bg-background px-1.5 py-0.5 text-right" value={draft.rework_qty}
+                          onChange={(e) => setSizeDraft((p) => ({ ...p, [sz.size_id]: { ...draft, rework_qty: e.target.value } }))} />
+                      </td>
+                      <td className="py-1.5 pr-3 text-right text-muted-foreground">{sz.pending_qty}</td>
+                      <td className="py-1.5 pr-3">
+                        <input className="w-32 rounded border border-input bg-background px-1.5 py-0.5" value={draft.defect_reason}
+                          onChange={(e) => setSizeDraft((p) => ({ ...p, [sz.size_id]: { ...draft, defect_reason: e.target.value } }))} />
+                      </td>
+                      <td className="py-1.5">
+                        <Can perm="production.edit">
+                          <button
+                            disabled={!dirty || updateStageSizeMut.isPending}
+                            onClick={() => {
+                              updateStageSizeMut.mutate({
+                                sizeId: sz.size_id,
+                                body: {
+                                  accepted_qty: Number(draft.accepted_qty) || 0,
+                                  rejected_qty: Number(draft.rejected_qty) || 0,
+                                  rework_qty: Number(draft.rework_qty) || 0,
+                                  defect_reason: draft.defect_reason || null,
+                                },
+                              });
+                              setSizeDraft((p) => { const n = { ...p }; delete n[sz.size_id]; return n; });
+                            }}
+                            className="px-2 py-0.5 rounded text-[11px] font-semibold text-white disabled:opacity-40"
+                            style={{ background: INDIGO }}
+                          >
+                            Save
+                          </button>
+                        </Can>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div className="px-4 py-3 border-b border-border">
         <div className="flex items-center justify-between mb-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Entries</p>
@@ -1965,6 +2351,7 @@ export default function LotDetailPage() {
   const [completeFabricEntry, setCompleteFabricEntry] = useState<FabricProcessing | null>(null);
   const [editFabricEntry, setEditFabricEntry] = useState<FabricProcessing | null>(null);
   const [showRecordOutput, setShowRecordOutput] = useState(false);
+  const [showAddMistake, setShowAddMistake] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showEditPrice, setShowEditPrice] = useState(false);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
@@ -2009,11 +2396,40 @@ export default function LotDetailPage() {
     enabled: !!id,
   });
 
+  const mistakeLogsQuery = useQuery({
+    queryKey: ["production-mistake-logs", id],
+    queryFn: async () => (await api.get(`/production/lots/${id}/mistake-logs`)).data.data as MistakeLog[],
+    enabled: !!id,
+  });
+  const bomQuery = useQuery({
+    queryKey: ["production-lot", id, "bom"],
+    queryFn: async () => (await api.get(`/production/lots/${id}/bom`)).data.data as LotBom,
+    enabled: !!id,
+  });
+  const auditQuery = useQuery({
+    queryKey: ["production-lot", id, "audit"],
+    queryFn: async () => (await api.get(`/production/lots/${id}/audit-log`)).data.data as AuditEntry[],
+    enabled: !!id,
+  });
+  const summaryQuery = useQuery({
+    queryKey: ["production-lot", id, "summary"],
+    queryFn: async () => (await api.get(`/production/lots/${id}/summary`)).data.data as LotProductionSummary,
+    enabled: !!id,
+  });
+  const deleteMistakeLogMut = useMutation({
+    mutationFn: (logId: string) => api.delete(`/production/lots/mistake-logs/${logId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["production-mistake-logs", id] }),
+  });
+
+  const [stageGateMsg, setStageGateMsg] = useState<string | null>(null);
   const statusMut = useMutation({
     mutationFn: (status: string) => api.post(`/production/lots/${id}/status`, { status }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-lot", id] });
       qc.invalidateQueries({ queryKey: ["production-lots"] });
+    },
+    onError: (e: unknown) => {
+      setStageGateMsg(parseApiError(e, "This lot isn't ready to advance yet."));
     },
   });
 
@@ -2077,6 +2493,15 @@ export default function LotDetailPage() {
   const workerById = new Map((workers.data ?? []).map((w) => [w.id, w.name]));
   const colourById = new Map((colours.data ?? []).map((c) => [c.id, c.name]));
   const nextStatus = STATUS_FLOW[lot.status];
+
+  // Stages unlock one at a time: everything already completed plus the first
+  // open stage is shown; later stages are listed as upcoming until then.
+  const lotOpen = !["completed", "cancelled"].includes(lot.status);
+  const firstOpenIdx = lot.stages.findIndex((s) => s.status !== "completed");
+  const currentStageIdx = firstOpenIdx === -1 ? -1 : firstOpenIdx;
+  const visibleStages = firstOpenIdx === -1 ? lot.stages : lot.stages.slice(0, firstOpenIdx + 1);
+  const upcomingStages = firstOpenIdx === -1 ? [] : lot.stages.slice(firstOpenIdx + 1);
+  const lastCompletedIdx = firstOpenIdx === -1 ? lot.stages.length - 1 : firstOpenIdx - 1;
 
   const cs = lot.cost_summary;
 
@@ -2418,6 +2843,28 @@ export default function LotDetailPage() {
         </Card>
       )}
 
+      {lot.part_colours.length > 0 && (
+        <Card title="Part / Colour / Size Breakdown" subtitle="Pre-filled from the Style at lot creation">
+          <div className="space-y-3">
+            {lot.part_colours.map((pc) => (
+              <div key={pc.id} className="p-3 rounded-xl border border-border">
+                <p className="text-sm font-medium mb-2">
+                  {[pc.style_part_name, pc.colour_name].filter(Boolean).join(" · ") || "—"}
+                </p>
+                <div className="flex gap-4 flex-wrap text-xs">
+                  {pc.sizes.map((s) => (
+                    <div key={s.size_id}>
+                      <span className="text-muted-foreground">{sizeById.get(s.size_id) ?? "—"}:</span>{" "}
+                      <span className="font-medium">{s.planned_qty}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <Card
         title="Fabric Processing"
         subtitle="Dyeing / printing — precedes cutting; a weight gain or loss is expected, not an error"
@@ -2499,7 +2946,7 @@ export default function LotDetailPage() {
           <Empty text="No stages on this lot." />
         ) : (
           <div className="space-y-3">
-            {lot.stages.map((s, idx) => (
+            {visibleStages.map((s, idx) => (
               <StageCard
                 key={s.id}
                 stage={s}
@@ -2511,8 +2958,26 @@ export default function LotDetailPage() {
                 onAddEntry={() => setEntryStage(s)}
                 onSendToVendor={() => setVendorStage(s)}
                 onReceiveChallan={(c) => setReceiveChallan(c)}
+                sizeById={sizeById}
+                isCurrent={lotOpen && idx === currentStageIdx}
+                canReopen={lotOpen && idx === lastCompletedIdx}
+                nextStageName={lot.stages[idx + 1]?.stage_name ?? null}
               />
             ))}
+            {upcomingStages.length > 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">
+                <p className="font-semibold uppercase tracking-wide text-[11px] mb-1.5">Upcoming stages</p>
+                <p>
+                  {upcomingStages.map((s, i) => (
+                    <span key={s.id}>
+                      {i > 0 && <span className="mx-1.5">→</span>}
+                      <span className="font-medium text-foreground/70">{visibleStages.length + i + 1}. {s.stage_name}</span>
+                    </span>
+                  ))}
+                </p>
+                <p className="mt-1.5">Unlocks once {lot.stages[currentStageIdx]?.stage_name} is completed.</p>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -2557,6 +3022,158 @@ export default function LotDetailPage() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Bill of Materials"
+        subtitle="Consolidated Yarn / Fabric / Trims / Packing requirements for this lot, with available stock where a specific batch is linked"
+        action={
+          bomQuery.data && bomQuery.data.shortage_lines > 0 && (
+            <span className="text-xs px-2.5 py-1 rounded font-semibold" style={{ background: "#1D0DB018", color: "#1D0DB0" }}>
+              {bomQuery.data.shortage_lines} short
+            </span>
+          )
+        }
+      >
+        {!bomQuery.data || bomQuery.data.total_lines === 0 ? (
+          <Empty text="No material requirements on this lot yet." />
+        ) : (
+          <div className="space-y-5">
+            {([
+              ["Yarn Required", bomQuery.data.yarn],
+              ["Fabric Required", bomQuery.data.fabric],
+              ["Trims & Accessories Required", bomQuery.data.trims],
+              ["Packing Materials Required", bomQuery.data.packing_materials],
+            ] as [string, BomLine[]][]).filter(([, lines]) => lines.length > 0).map(([heading, lines]) => (
+              <div key={heading}>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">{heading}</p>
+                <div className="rounded-xl border border-border overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Material</th>
+                        <th className="text-left px-3 py-2 font-medium">Part / Colour</th>
+                        <th className="text-right px-3 py-2 font-medium">Required</th>
+                        <th className="text-right px-3 py-2 font-medium">Available</th>
+                        <th className="text-right px-3 py-2 font-medium">Shortage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lines.map((l) => (
+                        <tr key={l.id} className={`border-t border-border ${l.is_informational ? "opacity-50" : ""}`}>
+                          <td className="px-3 py-2 font-medium">
+                            {l.name}
+                            {l.is_informational && <span className="ml-2 text-[10px] font-normal text-muted-foreground">{l.notes}</span>}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {[l.style_part_name, l.colour_name].filter(Boolean).join(" · ") || "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {l.required_qty != null ? `${Number(l.required_qty).toLocaleString("en-IN")} ${l.unit ?? ""}` : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {l.available_qty != null ? Number(l.available_qty).toLocaleString("en-IN") : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold" style={{ color: l.shortage_qty && l.shortage_qty > 0 ? "#1D0DB0" : undefined }}>
+                            {l.shortage_qty != null ? Number(l.shortage_qty).toLocaleString("en-IN") : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title="Audit History" subtitle="Lot status changes and stage corrections — who changed what, and when">
+        {!auditQuery.data || auditQuery.data.length === 0 ? (
+          <Empty text="No status changes or corrections recorded yet." />
+        ) : (
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">When</th>
+                  <th className="text-left px-3 py-2 font-medium">What</th>
+                  <th className="text-left px-3 py-2 font-medium">Change</th>
+                  <th className="text-left px-3 py-2 font-medium">By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditQuery.data.map((a) => (
+                  <tr key={a.id} className="border-t border-border">
+                    <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{new Date(a.changed_at).toLocaleString("en-IN")}</td>
+                    <td className="px-3 py-2 font-medium">{a.field_name ?? a.action}</td>
+                    <td className="px-3 py-2">
+                      <span className="text-muted-foreground">{a.old_value ?? "—"}</span> → <span className="font-semibold">{a.new_value ?? "—"}</span>
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">{a.changed_by_name ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Completed / Consolidated"
+        subtitle="Rollup of cutting → checking → packing, derived from stage size-wise transactions — not a separately maintained total"
+      >
+        {!summaryQuery.data ? (
+          <Empty text="No production recorded on this lot yet." />
+        ) : (
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {([
+                ["Cut", summaryQuery.data.cut_qty],
+                ["Checked", summaryQuery.data.checked_qty],
+                ["Accepted", summaryQuery.data.accepted_qty],
+                ["Packed", summaryQuery.data.packed_qty],
+                ["Rejected", summaryQuery.data.rejected_qty],
+                ["Rework", summaryQuery.data.rework_qty],
+                ["Planned", summaryQuery.data.planned_qty],
+                ["Remaining", summaryQuery.data.remaining_qty],
+              ] as [string, number][]).map(([label, val]) => (
+                <div key={label} className="rounded-xl border border-border px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+                  <p className="text-lg font-semibold tabular-nums mt-0.5">{val.toLocaleString("en-IN")}</p>
+                </div>
+              ))}
+            </div>
+            {summaryQuery.data.buckets.length > 0 && (
+              <div className="rounded-xl border border-border overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium">Stage</th>
+                      <th className="text-right px-3 py-2 font-medium">Input</th>
+                      <th className="text-right px-3 py-2 font-medium">Accepted</th>
+                      <th className="text-right px-3 py-2 font-medium">Rejected</th>
+                      <th className="text-right px-3 py-2 font-medium">Rework</th>
+                      <th className="text-right px-3 py-2 font-medium">Pending</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summaryQuery.data.buckets.map((b) => (
+                      <tr key={b.stage_type} className="border-t border-border">
+                        <td className="px-3 py-2 font-medium">{b.label}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{b.input_qty.toLocaleString("en-IN")}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{b.accepted_qty.toLocaleString("en-IN")}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{b.rejected_qty.toLocaleString("en-IN")}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{b.rework_qty.toLocaleString("en-IN")}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{b.pending_qty.toLocaleString("en-IN")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -2611,11 +3228,11 @@ export default function LotDetailPage() {
               <div key={p.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
                 <div className="flex items-center gap-2">
                   {p.consumption_stage && <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{p.consumption_stage}</span>}
-                  <span className="font-medium">{p.material_name}</span>
+                  <span className="font-medium">{p.product_name ?? p.material_name}</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-muted-foreground text-xs">
-                    Planned {p.planned_qty != null ? `${Number(p.planned_qty).toLocaleString("en-IN")} ${p.unit ?? ""}` : "—"}
+                    Total Required {p.planned_qty != null ? `${Number(p.planned_qty).toLocaleString("en-IN")} ${p.unit ?? ""}` : "—"}
                   </span>
                   <span className="font-medium">
                     Actual {p.actual_qty != null ? `${Number(p.actual_qty).toLocaleString("en-IN")} ${p.unit ?? ""}` : "—"}
@@ -2624,6 +3241,48 @@ export default function LotDetailPage() {
                     <Pencil className="h-3 w-3" />
                   </button></Can>
                 </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Mistake Log"
+        subtitle="Staff, process, what happened, and the action taken — kept for future reference"
+        action={
+          <Can perm="production.create"><button onClick={() => setShowAddMistake(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+            <Plus className="h-3.5 w-3.5" /> Log Mistake
+          </button></Can>
+        }
+      >
+        {!mistakeLogsQuery.data || mistakeLogsQuery.data.length === 0 ? (
+          <Empty text="No mistakes logged for this lot." />
+        ) : (
+          <div className="space-y-2">
+            {mistakeLogsQuery.data.map((m) => (
+              <div key={m.id} className="p-3 rounded-xl border border-border text-sm space-y-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-muted-foreground">{m.mistake_date}</span>
+                    {(m.stage_name || m.process_name) && (
+                      <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{m.stage_name ?? m.process_name}</span>
+                    )}
+                    {m.problem_type && (
+                      <span className="text-[11px] px-2 py-0.5 rounded font-semibold" style={{ background: "#1D0DB018", color: "#1D0DB0" }}>{m.problem_type}</span>
+                    )}
+                    {(m.resolved_staff_name) && (
+                      <span className="text-xs text-muted-foreground">— {m.resolved_staff_name}</span>
+                    )}
+                  </div>
+                  <Can perm="production.edit">
+                    <button onClick={() => deleteMistakeLogMut.mutate(m.id)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Delete">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </Can>
+                </div>
+                <p>{m.description}</p>
+                {m.action_taken && <p className="text-xs text-muted-foreground"><span className="font-medium">Action taken:</span> {m.action_taken}</p>}
               </div>
             ))}
           </div>
@@ -2738,9 +3397,35 @@ export default function LotDetailPage() {
       {receiveChallan && <ReceiveChallanModal challan={receiveChallan} lotId={lot.id} onClose={() => setReceiveChallan(null)} />}
       {showAddStage && <AddStageModal lotId={lot.id} onClose={() => setShowAddStage(false)} />}
       {showIssueMaterial && <IssueMaterialModal lotId={lot.id} onClose={() => setShowIssueMaterial(false)} />}
+      {showAddMistake && <AddMistakeLogModal lotId={lot.id} stages={lot.stages} onClose={() => setShowAddMistake(false)} />}
       {showStartFabric && <StartFabricProcessingModal lotId={lot.id} onClose={() => setShowStartFabric(false)} />}
-      {showRecordOutput && <RecordOutputModal lotId={lot.id} onClose={() => setShowRecordOutput(false)} />}
+      {showRecordOutput && (
+        <RecordOutputModal
+          lotId={lot.id}
+          suggestedUnitCost={lot.cost_summary.cost_per_first_quality_piece}
+          onClose={() => setShowRecordOutput(false)}
+        />
+      )}
       {completeFabricEntry && <CompleteFabricProcessingModal entry={completeFabricEntry} lotId={lot.id} onClose={() => setCompleteFabricEntry(null)} />}
+      {stageGateMsg && (
+        <ModalShell onClose={() => setStageGateMsg(null)} maxWidth="max-w-md">
+          <div className="flex items-center justify-between px-5 py-4 border-b">
+            <h2 className="font-semibold text-base">Not ready to advance yet</h2>
+          </div>
+          <div className="p-5 space-y-4">
+            <p className="text-sm">{stageGateMsg}</p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setStageGateMsg(null)}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
+                style={{ background: INDIGO }}
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
       {editFabricEntry && <EditFabricProcessingModal entry={editFabricEntry} lotId={lot.id} onClose={() => setEditFabricEntry(null)} />}
       {confirmDelete && (
         <ModalShell maxWidth="max-w-xs" onClose={() => setConfirmDelete(false)}>

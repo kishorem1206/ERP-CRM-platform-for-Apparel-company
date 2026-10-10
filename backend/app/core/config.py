@@ -1,6 +1,24 @@
 from pathlib import Path
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_database_url(url: str) -> str:
+    """Accept the plain postgres:// URL that Neon (or any host) hands out and
+    turn it into one SQLAlchemy's asyncpg driver accepts: scheme becomes
+    postgresql+asyncpg, libpq's sslmode becomes asyncpg's ssl, and libpq-only
+    params asyncpg rejects (channel_binding) are dropped."""
+    parts = urlsplit(url)
+    scheme = "postgresql+asyncpg" if parts.scheme in ("postgres", "postgresql") else parts.scheme
+    params = dict(parse_qsl(parts.query))
+    sslmode = params.pop("sslmode", None)
+    params.pop("channel_binding", None)
+    if sslmode and "ssl" not in params:
+        params["ssl"] = sslmode
+    return urlunsplit((scheme, parts.netloc, parts.path, urlencode(params), parts.fragment))
 
 # Look for .env in: current dir → parent dir (project root when running from backend/)
 _env_candidates = [Path(".env"), Path("../.env"), Path(__file__).parents[3] / ".env"]
@@ -20,11 +38,18 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
     POSTGRES_HOST: str = "postgres"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "apparel_erp"
     POSTGRES_USER: str = "erp_user"
-    POSTGRES_PASSWORD: str
+    POSTGRES_PASSWORD: str = ""
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_db_url(cls, v: str) -> str:
+        return normalize_database_url(v)
 
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
@@ -35,9 +60,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
-    # Celery
-    CELERY_BROKER_URL: str = "redis://redis:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
+    # Scheduled jobs — POST /api/v1/internal/cron/tick must carry this value in
+    # the X-Cron-Secret header. Empty disables the endpoint entirely.
+    CRON_SECRET: str = ""
 
     # AI — OpenAI-compatible endpoint
     LLM_PROVIDER: str = ""
@@ -68,6 +93,9 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "ap-south-1"
     AWS_S3_BUCKET: str = ""
+    # S3-compatible endpoint for non-AWS storage, e.g. Cloudflare R2:
+    # https://<account_id>.r2.cloudflarestorage.com (leave empty for AWS S3).
+    S3_ENDPOINT_URL: str = ""
 
     # Observability
     SENTRY_DSN: str = ""

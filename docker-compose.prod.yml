@@ -46,24 +46,6 @@ services:
       rollback_config:
         parallelism: 1
 
-  celery_worker:
-    restart: always
-    volumes: []
-    command: celery -A app.workers.celery_app worker --loglevel=warning --concurrency=4 --max-tasks-per-child=500
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-
-  celery_beat:
-    restart: always
-    volumes: []
-    command: celery -A app.workers.celery_app beat --loglevel=warning --scheduler celery.beat:PersistentScheduler
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-
   frontend:
     restart: always
     volumes: []

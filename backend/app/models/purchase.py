@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, SmallInteger, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -22,6 +22,7 @@ class Vendor(Base):
     pan: Mapped[Optional[str]] = mapped_column(String(10))
     vendor_type: Mapped[str] = mapped_column(String(20), nullable=False, default="supplier")
     payment_terms: Mapped[int] = mapped_column(SmallInteger, default=30)
+    supplies_product_types: Mapped[Optional[list[str]]] = mapped_column(ARRAY(String(30)))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

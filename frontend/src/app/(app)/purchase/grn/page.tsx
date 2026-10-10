@@ -273,16 +273,22 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                     <Fragment key={i}>
                     <tr className="border-t">
                       <td className="px-2 py-1 min-w-[160px]">
-                        <SearchableSelect
-                          value={it.product_id}
-                          onChange={(v) => updateItem(i, "product_id", v)}
-                          placeholder="Select…"
-                          accent={TEAL}
-                          options={(products ?? []).map((p: { id: string; name: string }) => ({
-                            value: p.id,
-                            label: p.name,
-                          }))}
-                        />
+                        {it.po_item_id ? (
+                          <div className="px-2 py-1.5 text-xs text-muted-foreground" title="Locked to the Purchase Order's line item">
+                            {(products ?? []).find((p: { id: string; name: string }) => p.id === it.product_id)?.name ?? "—"}
+                          </div>
+                        ) : (
+                          <SearchableSelect
+                            value={it.product_id}
+                            onChange={(v) => updateItem(i, "product_id", v)}
+                            placeholder="Select…"
+                            accent={TEAL}
+                            options={(products ?? []).map((p: { id: string; name: string }) => ({
+                              value: p.id,
+                              label: p.name,
+                            }))}
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1 min-w-[100px]">
                         <SearchableSelect

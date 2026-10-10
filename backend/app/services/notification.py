@@ -35,10 +35,12 @@ async def create_notification(
 
 
 def publish_notification(company_id: str, payload: dict) -> None:
-    """Sync Redis publish — called from Celery tasks."""
+    """Sync Redis publish, called from the scheduled jobs. Those now run inside
+    the web process, so the short timeouts keep an unreachable Redis from
+    stalling the event loop that serves requests."""
     import redis as sync_redis
     from app.core.config import settings
-    r = sync_redis.from_url(settings.REDIS_URL)
+    r = sync_redis.from_url(settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
     r.publish(f"erp:notif:{company_id}", json.dumps(payload))
     r.close()
 

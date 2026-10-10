@@ -33,24 +33,16 @@ const mtdStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
 
 /* ── Status meta ─────────────────────────────────────────── */
 const STATUS_COLOR: Record<string, string> = {
-  draft:             "#94A3B8",
-  planned:           BLUE,
-  approved:          LAVENDER,
-  in_production:     TEAL,
-  qc:                "#A096F7",
-  packing:           "#A096F7",
-  ready_to_dispatch: "#0F78FF",
+  cutting:           TEAL,
+  checking:          "#A096F7",
+  packing:           "#0F78FF",
   completed:         "#0F78FF",
   cancelled:         "#1D0DB0",
 };
 const STATUS_LABEL: Record<string, string> = {
-  draft:             "Draft",
-  planned:           "Planned",
-  approved:          "Approved",
-  in_production:     "In Production",
-  qc:                "QC",
+  cutting:           "Cutting",
+  checking:          "Checking",
   packing:           "Packing",
-  ready_to_dispatch: "Ready",
   completed:         "Done",
   cancelled:         "Cancelled",
 };
@@ -445,10 +437,8 @@ export default function DashboardPage() {
   const totalPayable = (purchaseQ.data ?? []).reduce((s, r) => s + Number(r.outstanding), 0);
 
   const lots = prodQ.data ?? [];
-  const activeLots = lots.filter((r) =>
-    ["in_production", "planned", "approved"].includes(r.status)
-  ).length;
-  const qcLots = lots.filter((r) => ["qc", "packing"].includes(r.status)).length;
+  const activeLots = lots.filter((r) => r.status === "cutting").length;
+  const qcLots = lots.filter((r) => ["checking", "packing"].includes(r.status)).length;
   const recentLots = lots.slice(0, 8);
 
   const topCustomers = [...(salesQ.data ?? [])]

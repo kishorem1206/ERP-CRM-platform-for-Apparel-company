@@ -11,7 +11,7 @@ from app.api.v1.deps import AuthUser, DBSession
 from app.domain.business_rules import BusinessRulesError
 from app.models.company import Company
 from app.models.master import Product, ProductVariant, Unit
-from app.models.sales import Customer, Delivery, Invoice, NatureOfBusiness, PriceHistory, PriceList, PriceListItem, Quotation, SalesOrder
+from app.models.sales import Customer, Delivery, Invoice, NatureOfBusiness, PriceHistory, PriceList, PriceListItem, Quotation, SalesOrder, SalesReturn
 from app.models.user import User
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.sales import (
@@ -23,11 +23,12 @@ from app.schemas.sales import (
     PriceListItemUpdate, PriceListOut, PriceListUpdate, PriceResolveOut,
     QuotationCreate, QuotationItemOut, QuotationOut, QuotationUpdate,
     SalesOrderCreate, SalesOrderOut, SalesOrderUpdate, SOItemOut, StockCheckOut,
+    SalesReturnCreate, SalesReturnOut, SalesReturnItemOut,
 )
 from app.services.inventory import InventoryService
 from app.services.packing_slip import packing_slip_filename, render_packing_slip_pdf
 from app.services.pricing import PricingService
-from app.services.sales import SalesService
+from app.services.sales import SalesService, QuantityValidationError
 
 
 def _now() -> datetime:
@@ -77,11 +78,80 @@ def _delivery_out(d: Delivery) -> DeliveryOut:
         customer_id=d.customer_id,
         customer_name=d.customer.legal_name if d.customer else None,
         warehouse_id=d.warehouse_id, delivery_date=d.delivery_date, status=d.status,
+        purpose=d.purpose,
         transporter=d.transporter, lr_number=d.lr_number, vehicle_number=d.vehicle_number,
         notes=d.notes, dispatched_at=d.dispatched_at,
         carton_count=d.carton_count, package_count=d.package_count, packing_marks=d.packing_marks,
         gross_weight=d.gross_weight, net_weight=d.net_weight,
         items=[DeliveryItemOut.model_validate(i) for i in d.items],
+    )
+
+
+async def _enrich_delivery_out(db: DBSession, d: Delivery, out: DeliveryOut) -> DeliveryOut:
+    """Resolves per-item product/variant/lot names and cumulative returned
+    qty, plus linked Sales Return records - the detail-view-only lookups
+    `_delivery_out` itself skips to keep the list endpoint light."""
+    item_ids = [i.id for i in d.items]
+    product_ids = {i.product_id for i in d.items}
+    variant_ids = {i.variant_id for i in d.items if i.variant_id}
+    lot_ids = {i.lot_id for i in d.items if i.lot_id}
+
+    product_names: dict[UUID, str] = {}
+    if product_ids:
+        rows = (await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))).all()
+        product_names = {pid: name for pid, name in rows}
+
+    variant_info: dict[UUID, tuple[str | None, str | None, str | None]] = {}
+    if variant_ids:
+        from app.models.master import Colour, Size
+        rows = (await db.execute(
+            select(ProductVariant.id, ProductVariant.sku, Size.name, Colour.name)
+            .outerjoin(Size, Size.id == ProductVariant.size_id)
+            .outerjoin(Colour, Colour.id == ProductVariant.colour_id)
+            .where(ProductVariant.id.in_(variant_ids))
+        )).all()
+        variant_info = {vid: (sku, size_name, colour_name) for vid, sku, size_name, colour_name in rows}
+
+    lot_numbers: dict[UUID, str] = {}
+    if lot_ids:
+        from app.models.inventory import InventoryLot
+        rows = (await db.execute(select(InventoryLot.id, InventoryLot.lot_number).where(InventoryLot.id.in_(lot_ids)))).all()
+        lot_numbers = {lid: num for lid, num in rows}
+
+    returned_by_item: dict[UUID, Decimal] = {}
+    if item_ids:
+        from app.models.sales import SalesReturnItem
+        rows = (await db.execute(
+            select(SalesReturnItem.delivery_item_id, func.sum(SalesReturnItem.quantity))
+            .where(SalesReturnItem.delivery_item_id.in_(item_ids))
+            .group_by(SalesReturnItem.delivery_item_id)
+        )).all()
+        returned_by_item = {did: qty for did, qty in rows}
+
+    for item_out in out.items:
+        item_out.product_name = product_names.get(item_out.product_id)
+        if item_out.variant_id and item_out.variant_id in variant_info:
+            sku, size_name, colour_name = variant_info[item_out.variant_id]
+            item_out.sku = sku
+            item_out.size_name = size_name
+            item_out.colour_name = colour_name
+        if item_out.lot_id:
+            item_out.lot_number = lot_numbers.get(item_out.lot_id)
+        item_out.returned_qty = returned_by_item.get(item_out.id, Decimal("0"))
+
+    svc = SalesService(db)
+    returns = await svc.list_sales_returns_for_delivery(d.id, d.company_id)
+    out.returns = [_sales_return_out(r) for r in returns]
+    return out
+
+
+def _sales_return_out(r: SalesReturn) -> SalesReturnOut:
+    return SalesReturnOut(
+        id=r.id, return_number=r.return_number, delivery_id=r.delivery_id,
+        customer_id=r.customer_id,
+        customer_name=r.customer.legal_name if r.customer else None,
+        return_date=r.return_date, reason=r.reason, status=r.status, notes=r.notes,
+        items=[SalesReturnItemOut.model_validate(i) for i in r.items],
     )
 
 
@@ -354,6 +424,9 @@ async def create_delivery(body: DeliveryCreate, db: DBSession, user: AuthUser):
         d = await svc.create_delivery(body, user.company_id, user.user_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # BusinessRulesError (insufficient stock) is left to the global handler
+    # in main.py, which now reports available/shortage alongside the
+    # message - never silently issuing less than requested (Phase 10).
     return ApiResponse(success=True, data=_delivery_out(d))
 
 
@@ -364,7 +437,45 @@ async def get_delivery(delivery_id: UUID, db: DBSession, user: AuthUser):
     d = await svc.get_delivery(delivery_id, user.company_id)
     if not d:
         raise HTTPException(404, "Delivery not found")
-    return ApiResponse(success=True, data=_delivery_out(d))
+    out = await _enrich_delivery_out(db, d, _delivery_out(d))
+    return ApiResponse(success=True, data=out)
+
+
+# ── Sales Returns ─────────────────────────────────────────────────────────────
+
+@router.get("/returns")
+async def list_sales_returns(
+    db: DBSession, user: AuthUser,
+    customer_id: UUID | None = None, page: int = 1, page_size: int = 50,
+):
+    user.require("sales.view")
+    svc = SalesService(db)
+    returns, total = await svc.list_sales_returns(user.company_id, customer_id=customer_id, page=page, page_size=page_size)
+    return ApiResponse(success=True, data=[_sales_return_out(r) for r in returns],
+                       meta=PaginatedMeta(page=page, page_size=page_size, total=total))
+
+
+@router.post("/returns", status_code=201)
+async def create_sales_return(body: SalesReturnCreate, db: DBSession, user: AuthUser):
+    user.require("sales.create")
+    if not body.items:
+        raise HTTPException(400, "A return must have at least one item")
+    svc = SalesService(db)
+    try:
+        r = await svc.create_sales_return(body, user.company_id, user.user_id)
+    except QuantityValidationError as e:
+        raise HTTPException(422, str(e))
+    return ApiResponse(success=True, data=_sales_return_out(r))
+
+
+@router.get("/returns/{return_id}")
+async def get_sales_return(return_id: UUID, db: DBSession, user: AuthUser):
+    user.require("sales.view")
+    svc = SalesService(db)
+    r = await svc.get_sales_return(return_id, user.company_id)
+    if not r:
+        raise HTTPException(404, "Sales return not found")
+    return ApiResponse(success=True, data=_sales_return_out(r))
 
 
 @router.get("/deliveries/{delivery_id}/packing-slip")

@@ -28,6 +28,8 @@ def _to_product_out(p: Product) -> ProductOut:
         product_type=p.product_type,
         category_id=p.category_id,
         category_name=p.category.name if p.category else None,
+        brand_id=p.brand_id,
+        brand_name=p.brand.name if p.brand else None,
         unit_id=p.unit_id,
         unit_abbreviation=p.unit.abbreviation if p.unit else None,
         hsn_id=p.hsn_id,
@@ -85,6 +87,7 @@ async def list_products(
             selectinload(Product.category),
             selectinload(Product.unit),
             selectinload(Product.hsn),
+            selectinload(Product.brand),
             selectinload(Product.variants).selectinload(ProductVariant.colour),
             selectinload(Product.variants).selectinload(ProductVariant.size),
         )
@@ -146,6 +149,7 @@ async def create_product(
             selectinload(Product.category),
             selectinload(Product.unit),
             selectinload(Product.hsn),
+            selectinload(Product.brand),
             selectinload(Product.variants),
         )
     )
@@ -200,6 +204,7 @@ async def merge_product(source_product_id: UUID, body: ProductMergeRequest, db: 
             selectinload(Product.category),
             selectinload(Product.unit),
             selectinload(Product.hsn),
+            selectinload(Product.brand),
             selectinload(Product.variants).selectinload(ProductVariant.colour),
             selectinload(Product.variants).selectinload(ProductVariant.size),
         )
@@ -225,6 +230,7 @@ async def get_product(product_id: UUID, db: DBSession, user: AuthUser):
             selectinload(Product.category),
             selectinload(Product.unit),
             selectinload(Product.hsn),
+            selectinload(Product.brand),
             selectinload(Product.variants).selectinload(ProductVariant.colour),
             selectinload(Product.variants).selectinload(ProductVariant.size),
         )
@@ -259,6 +265,7 @@ async def update_product(product_id: UUID, body: ProductUpdate, db: DBSession, u
             selectinload(Product.category),
             selectinload(Product.unit),
             selectinload(Product.hsn),
+            selectinload(Product.brand),
             selectinload(Product.variants).selectinload(ProductVariant.colour),
             selectinload(Product.variants).selectinload(ProductVariant.size),
         )

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app.api.v1.deps import AuthUser, DBSession
 from app.api.v1.endpoints.purchase import get_purchase_entry, get_purchase_order
 from app.api.v1.endpoints.finance import get_credit_note, get_debit_note, get_payment, get_vendor_payment
-from app.api.v1.endpoints.sales import get_delivery, get_invoice, get_quotation, get_sales_order
+from app.api.v1.endpoints.sales import get_delivery, get_invoice, get_quotation, get_sales_order, get_sales_return
 from app.models.company import Company
 from app.models.master import Product, ProductVariant, Unit
 from app.models.purchase import PurchaseEntry, PurchaseOrder
@@ -181,6 +181,33 @@ async def delivery_challan_pdf(delivery_id: UUID, db: DBSession, user: AuthUser)
         "lines": items, "totals": [], "grand_total": None, "notes": d.notes,
     }
     return _pdf(await _company(db, user.company_id), doc, "DeliveryChallan", d.delivery_number)
+
+
+@router.get("/returns/{return_id}/pdf")
+async def sales_return_pdf(return_id: UUID, db: DBSession, user: AuthUser):
+    user.require("sales.view")
+    r = (await get_sales_return(return_id, db, user)).data
+    products, variants, units = await _product_names(
+        db, {i.product_id for i in r.items}, {i.variant_id for i in r.items if i.variant_id},
+        {i.unit_id for i in r.items},
+    )
+    items = [
+        {
+            "description": _item_name(i, products, variants)[0], "sub": _item_name(i, products, variants)[1],
+            "hsn": None, "qty": qty(i.quantity), "unit": units.get(i.unit_id),
+            "rate": inr(i.unit_cost) if i.unit_cost else None, "discount": None,
+            "amount": inr(i.total_cost) if i.total_cost else None,
+        }
+        for i in r.items
+    ]
+    meta = [("Disposition", ", ".join(sorted({i.disposition for i in r.items})))]
+    doc = {
+        "title": "Sales return", "number": r.return_number, "date": date_text(r.return_date),
+        "status": r.status, "meta": meta,
+        "parties": [{"label": "Customer", "name": r.customer_name, "lines": await _customer_lines(db, r.customer_id)}],
+        "lines": items, "totals": [], "grand_total": None, "notes": r.reason,
+    }
+    return _pdf(await _company(db, user.company_id), doc, "SalesReturn", r.return_number)
 
 
 @router.get("/invoices/{invoice_id}/pdf")

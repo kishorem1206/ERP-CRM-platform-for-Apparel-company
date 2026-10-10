@@ -26,19 +26,15 @@ type Lot = Record<string, unknown> & {
 
 const STATUS_TABS = [
   { label: "All", value: "all" },
-  { label: "Draft", value: "draft" },
-  { label: "Planned", value: "planned" },
-  { label: "Approved", value: "approved" },
-  { label: "In Production", value: "in_production" },
-  { label: "QC", value: "qc" },
+  { label: "Cutting", value: "cutting" },
+  { label: "Checking", value: "checking" },
   { label: "Packing", value: "packing" },
   { label: "Completed", value: "completed" },
   { label: "Cancelled", value: "cancelled" },
 ];
 
 const STATUS_HEX: Record<string, string> = {
-  draft: "#94A3B8", planned: "#0049A7", approved: "#0F78FF",
-  in_production: "#8174F5", qc: "#A096F7", packing: "#A096F7",
+  cutting: "#8174F5", checking: "#A096F7", packing: "#0F78FF",
   completed: "#0F78FF", cancelled: "#1D0DB0",
 };
 
@@ -129,7 +125,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         customer_id: customerId || null,
         order_ref: orderRef || null,
         planned_qty: parseInt(plannedQty) || 0,
-        colour_id: colourId || undefined,
+        colour_id: colourId,
         planned_weight_kg: plannedWeightKg ? Number(plannedWeightKg) : undefined,
         delivery_date: deliveryDate || null,
         season: season || null,
@@ -228,17 +224,14 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Colour (optional)</label>
+              <label className="text-xs font-medium text-muted-foreground">Colour *</label>
               <div className="mt-1">
                 <SearchableSelect
                   value={colourId}
                   onChange={setColourId}
-                  placeholder="None"
+                  placeholder="Select colour"
                   accent={INDIGO}
-                  options={[
-                    { value: "", label: "None" },
-                    ...(colours ?? []).map((c) => ({ value: c.id, label: c.name })),
-                  ]}
+                  options={(colours ?? []).map((c) => ({ value: c.id, label: c.name }))}
                 />
               </div>
             </div>
@@ -328,7 +321,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose}
               className="px-4 py-1.5 rounded border border-input text-sm hover:bg-muted">Cancel</button>
-            <button type="submit" disabled={mut.isPending}
+            <button type="submit" disabled={mut.isPending || !colourId}
               className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-60">
               {mut.isPending ? "Saving…" : "Create Lot"}
             </button>

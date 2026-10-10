@@ -38,14 +38,17 @@ class Style(Base):
     # The real sellable Product/SKU master behind this Style (Garments_ERP_Style_Master_Specification.md
     # §4-5). NULL for styles created before this link existed - never retroactively backfilled.
     product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"))
+    brand_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("brands.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 
     product: Mapped[Optional["Product"]] = relationship()
+    brand: Mapped[Optional["Brand"]] = relationship()
     lots: Mapped[list["ProductionLot"]] = relationship(back_populates="style")
     sizes: Mapped[list["StyleSize"]] = relationship(back_populates="style", cascade="all, delete-orphan", order_by="StyleSize.sort_order")
     colours: Mapped[list["StyleColour"]] = relationship(back_populates="style", cascade="all, delete-orphan", order_by="StyleColour.sort_order")
+    part_colours: Mapped[list["StylePartColour"]] = relationship(back_populates="style", cascade="all, delete-orphan", order_by="StylePartColour.sort_order")
     yarns: Mapped[list["StyleYarn"]] = relationship(back_populates="style", cascade="all, delete-orphan")
     fabrics: Mapped[list["StyleFabric"]] = relationship(back_populates="style", cascade="all, delete-orphan")
     processes: Mapped[list["StyleProcess"]] = relationship(back_populates="style", cascade="all, delete-orphan", order_by="StyleProcess.seq")
@@ -114,33 +117,111 @@ class StyleColour(Base):
     style: Mapped["Style"] = relationship(back_populates="colours")
 
 
+class StylePart(Base):
+    """Reusable Style Part master (e.g. Front/Back/Collar/Sleeves for a
+    shirt, Waistband/Fly for a trouser) — Production Module Reorganisation
+    Phase 1. Company-scoped and reusable across styles, exactly like the
+    Colour/Brand masters; adding a part to one style never requires a code
+    change or affects any other style.
+    """
+    __tablename__ = "style_parts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class StylePartColour(Base):
+    """Which colour(s) a given Style's part comes in — mirrors StyleColour
+    but scoped per part, since a part may use a different colour than the
+    garment's primary colour (e.g. a contrast collar). colour_id is
+    nullable: a part can be added before its colour is decided.
+    """
+    __tablename__ = "style_part_colours"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
+    style_part_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id"), nullable=False)
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id"))
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    style: Mapped["Style"] = relationship(back_populates="part_colours")
+    style_part: Mapped["StylePart"] = relationship()
+    sizes: Mapped[list["StylePartSize"]] = relationship(back_populates="style_part_colour", cascade="all, delete-orphan", order_by="StylePartSize.sort_order")
+
+
+class StylePartSize(Base):
+    """Per-size planned quantity for one (style, part, colour) combination —
+    mirrors StyleSize, scoped to a StylePartColour row instead of directly
+    to the Style, matching the reference ERP's per-part size-wise table
+    (spec §5 — operational quantities must never be a single overall figure
+    divided equally across sizes).
+    """
+    __tablename__ = "style_part_sizes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    style_part_colour_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_part_colours.id", ondelete="CASCADE"), nullable=False)
+    size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
+    style_part_colour: Mapped["StylePartColour"] = relationship(back_populates="sizes")
+
+
 class StyleYarn(Base):
-    """Style-specific yarn requirement — references the Yarn Master (inventory_lots)."""
+    """Style-specific yarn requirement — references the Yarn Master (inventory_lots).
+
+    style_fabric_id/colour_id/counts/consumption_pct were added in
+    Production Module Reorganisation Phase 3 (Yarn Planning) so a yarn row
+    can represent one component of a specific fabric's blend (e.g. 65%
+    Cotton + 35% Polyester composing one "From Yarn" fabric row) — all
+    nullable, so existing freestanding yarn rows are unaffected.
+    """
     __tablename__ = "style_yarns"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
+    style_fabric_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_fabrics.id", ondelete="CASCADE"))
     yarn_name: Mapped[str] = mapped_column(String(200), nullable=False)
     lot_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_lots.id"))
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id", ondelete="SET NULL"))
+    counts: Mapped[Optional[str]] = mapped_column(String(20))   # yarn thickness spec, e.g. "30S"
+    consumption_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))   # blend % within the parent fabric
     quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     unit: Mapped[Optional[str]] = mapped_column(String(30))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="yarns")
+    style_fabric: Mapped[Optional["StyleFabric"]] = relationship()
+    colour: Mapped[Optional["Colour"]] = relationship()
 
 
 class StyleFabric(Base):
-    """Style-specific fabric requirement — references the Fabric Master (inventory_lots)."""
+    """Style-specific fabric requirement — references the Fabric Master (inventory_lots).
+
+    style_part_id/colour_id/source_type/knit_dia/finish_dia and the
+    size_breakdown relationship were added in Production Module
+    Reorganisation Phase 2 (Fabric Requirement/Planning) — all nullable, so
+    existing fabric rows from before this phase are unaffected.
+    """
     __tablename__ = "style_fabrics"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
     fabric_name: Mapped[str] = mapped_column(String(200), nullable=False)
     lot_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_lots.id"))
-    consumption: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    style_part_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id", ondelete="SET NULL"))
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id", ondelete="SET NULL"))
+    source_type: Mapped[Optional[str]] = mapped_column(String(20))   # yarn / purchased — NULL inherits Style.fabric_source
+    knit_dia: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
+    finish_dia: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
+    consumption: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))   # flat fallback when no size_breakdown rows exist
     unit: Mapped[Optional[str]] = mapped_column(String(30))
-    excess_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    excess_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))   # wastage %
     gsm: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
     dyeing_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     printing_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
@@ -148,6 +229,25 @@ class StyleFabric(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="fabrics")
+    style_part: Mapped[Optional["StylePart"]] = relationship()
+    colour: Mapped[Optional["Colour"]] = relationship()
+    size_breakdown: Mapped[list["StyleFabricSize"]] = relationship(back_populates="style_fabric", cascade="all, delete-orphan", order_by="StyleFabricSize.sort_order")
+
+
+class StyleFabricSize(Base):
+    """Size-wise fabric consumption — mirrors StyleTrimSize. Absence of rows
+    means the parent StyleFabric.consumption figure applies uniformly
+    across sizes, matching the Trims size-breakdown convention.
+    """
+    __tablename__ = "style_fabric_sizes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    style_fabric_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_fabrics.id", ondelete="CASCADE"), nullable=False)
+    size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(15, 4), nullable=False)
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
+    style_fabric: Mapped["StyleFabric"] = relationship(back_populates="size_breakdown")
 
 
 class ProcessMaster(Base):
@@ -177,11 +277,16 @@ class StyleProcess(Base):
     Processes are NOT a hard-coded universal sequence: each Style defines its
     own ordered, addable/removable process list with its own tolerance %,
     input/output units, conversion rule, and rate band.
+
+    style_part_id was added in Production Module Reorganisation Phase 5 —
+    a collar may skip a process the front goes through (nullable; NULL
+    means the process applies to the whole style, as before this phase).
     """
     __tablename__ = "style_processes"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
+    style_part_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id", ondelete="SET NULL"))
     seq: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     process_name: Mapped[str] = mapped_column(String(100), nullable=False)
     process_master_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("process_masters.id"))
@@ -197,17 +302,27 @@ class StyleProcess(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="processes")
+    style_part: Mapped[Optional["StylePart"]] = relationship()
     sub_processes: Mapped[list["StyleSubProcess"]] = relationship(back_populates="process", cascade="all, delete-orphan", order_by="StyleSubProcess.seq")
 
 
 class StyleSubProcess(Base):
-    """Sub-process under a Style process, e.g. Stitching > Power Table / Snitex / Helpers."""
+    """Sub-process / Operation under a Style process, e.g. Stitching >
+    Power Table / Snitex / Helpers. min_rate/max_rate/planned_rate were
+    added in Production Module Reorganisation Phase 7 (Wages) — the same
+    rate-band fields the parent StyleProcess already has, since an
+    operation within a process can be paid a different rate (e.g. an
+    Overlock operator vs. a Helper).
+    """
     __tablename__ = "style_sub_processes"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_process_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_processes.id", ondelete="CASCADE"), nullable=False)
     seq: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    min_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    max_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
+    planned_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -215,13 +330,21 @@ class StyleSubProcess(Base):
 
 
 class StyleTrim(Base):
-    """Style-specific trim requirement — references the Trim Master (inventory_lots)."""
+    """Style-specific trim requirement — references the Trim Master (inventory_lots).
+
+    style_part_id/colour_id were added in Production Module Reorganisation
+    Phase 4 (Trims Planning) — a collar may need a different trim than the
+    shirt front, and a trim's own colour may differ from its part's colour
+    (nullable, so existing trim rows are unaffected).
+    """
     __tablename__ = "style_trims"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
+    style_part_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id", ondelete="SET NULL"))
     trim_name: Mapped[str] = mapped_column(String(200), nullable=False)
     lot_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_lots.id"))
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id", ondelete="SET NULL"))
     quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     unit: Mapped[Optional[str]] = mapped_column(String(30))
     category: Mapped[Optional[str]] = mapped_column(String(30))   # Sizable / Non-Sizable
@@ -233,6 +356,8 @@ class StyleTrim(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="trims")
+    style_part: Mapped[Optional["StylePart"]] = relationship()
+    colour: Mapped[Optional["Colour"]] = relationship()
     size_breakdown: Mapped[list["StyleTrimSize"]] = relationship(back_populates="style_trim", cascade="all, delete-orphan")
 
 
@@ -259,7 +384,8 @@ class StylePackingMaterial(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("styles.id", ondelete="CASCADE"), nullable=False)
     material_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"))
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))   # per-piece quantity
     unit: Mapped[Optional[str]] = mapped_column(String(30))
     excess_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     consumption_stage: Mapped[Optional[str]] = mapped_column(String(50))   # e.g. "During Packing" / "After Ironing"
@@ -267,6 +393,7 @@ class StylePackingMaterial(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     style: Mapped["Style"] = relationship(back_populates="packing_materials")
+    product: Mapped[Optional["Product"]] = relationship()
 
 
 class StyleAdditionalCost(Base):
@@ -365,7 +492,7 @@ class ProductionLot(Base):
     # in services/production.py) and, once set, is pushed onto the produced
     # Product(s)' MRP so Inventory reflects it automatically.
     actual_selling_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="cutting")   # cutting / checking / packing / completed / cancelled
     notes: Mapped[Optional[str]] = mapped_column(Text)
     final_output_unit: Mapped[Optional[str]] = mapped_column(String(30))   # snapshot of Style.final_output_unit
     pieces_per_box: Mapped[Optional[int]] = mapped_column(Integer)         # snapshot of Style.pieces_per_box; editable per lot
@@ -377,6 +504,7 @@ class ProductionLot(Base):
 
     style: Mapped[Optional["Style"]] = relationship(back_populates="lots")
     sizes: Mapped[list["ProductionLotSize"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+    part_colours: Mapped[list["LotPartColour"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
     stages: Mapped[list["ProductionStage"]] = relationship(
         back_populates="production_lot", cascade="all, delete-orphan", order_by="ProductionStage.created_at"
     )
@@ -384,8 +512,51 @@ class ProductionLot(Base):
     outputs: Mapped[list["ProductionOutput"]] = relationship(back_populates="production_lot")
     additional_costs: Mapped[list["LotAdditionalCost"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
     trims: Mapped[list["LotTrim"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+    lot_fabrics: Mapped[list["LotFabric"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+    lot_yarns: Mapped[list["LotYarn"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
     packing_materials: Mapped[list["LotPackingMaterial"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
     fabric_processing: Mapped[list["FabricProcessingEntry"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+    mistake_logs: Mapped[list["ProductionMistakeLog"]] = relationship(back_populates="production_lot", cascade="all, delete-orphan")
+
+
+class LotPartColour(Base):
+    """LOT-level snapshot of a StylePartColour — Production Module
+    Reorganisation Phase 8 (the Order->Style->Part->Colour->Size->Planned
+    Quantity hierarchy, at the actual lot/order level rather than the
+    style blueprint's template). Pre-filled from the Style's own
+    part_colours at lot creation, explicitly overridable per lot — same
+    convention as ProductionLotSize mirroring StyleSize.
+    """
+    __tablename__ = "lot_part_colours"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    style_part_colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_part_colours.id"))
+    style_part_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id"), nullable=False)
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id", ondelete="SET NULL"))
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    production_lot: Mapped["ProductionLot"] = relationship(back_populates="part_colours")
+    style_part: Mapped["StylePart"] = relationship()
+    colour: Mapped[Optional["Colour"]] = relationship()
+    sizes: Mapped[list["LotPartSize"]] = relationship(back_populates="lot_part_colour", cascade="all, delete-orphan", order_by="LotPartSize.sort_order")
+
+
+class LotPartSize(Base):
+    """Per-size planned quantity for one LOT (style part, colour)
+    combination — mirrors ProductionLotSize, scoped under a LotPartColour
+    row instead of directly to the lot.
+    """
+    __tablename__ = "lot_part_sizes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lot_part_colour_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lot_part_colours.id", ondelete="CASCADE"), nullable=False)
+    size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
+    planned_qty: Mapped[int] = mapped_column(Integer, default=0)
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
+    lot_part_colour: Mapped["LotPartColour"] = relationship(back_populates="sizes")
 
 
 class ProductionLotSize(Base):
@@ -400,6 +571,35 @@ class ProductionLotSize(Base):
     finished_qty: Mapped[int] = mapped_column(Integer, default=0)
 
     production_lot: Mapped["ProductionLot"] = relationship(back_populates="sizes")
+
+
+class ProductionMistakeLog(Base):
+    """Per-lot mistake/incident log (16-item request #15): Staff - Process -
+    Description - Problem - Action Taken, kept for future reference and
+    documentation. staff_id/stage_id link to the existing Worker/Stage
+    masters when the person or process is known; the free-text fallbacks
+    cover anyone (e.g. a job-work vendor's staff) or anything not already
+    tracked as a formal ProductionStage on this lot.
+    """
+    __tablename__ = "production_mistake_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    stage_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("production_stages.id", ondelete="SET NULL"))
+    process_name: Mapped[Optional[str]] = mapped_column(String(100))
+    staff_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("internal_workers.id", ondelete="SET NULL"))
+    staff_name: Mapped[Optional[str]] = mapped_column(String(200))
+    mistake_date: Mapped[date] = mapped_column(Date, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    problem_type: Mapped[Optional[str]] = mapped_column(String(100))
+    action_taken: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+
+    production_lot: Mapped["ProductionLot"] = relationship(back_populates="mistake_logs")
+    stage: Mapped[Optional["ProductionStage"]] = relationship()
+    staff: Mapped[Optional["InternalWorker"]] = relationship()
 
 
 class ProductionStage(Base):
@@ -453,6 +653,50 @@ class ProductionStage(Base):
     production_lot: Mapped["ProductionLot"] = relationship(back_populates="stages")
     entries: Mapped[list["ProductionStageEntry"]] = relationship(back_populates="stage", cascade="all, delete-orphan")
     challans: Mapped[list["ProductionStageChallan"]] = relationship(back_populates="stage", cascade="all, delete-orphan")
+    style_process: Mapped[Optional["StyleProcess"]] = relationship()
+    sizes: Mapped[list["ProductionStageSize"]] = relationship(back_populates="stage", cascade="all, delete-orphan")
+
+
+class ProductionAuditLog(Base):
+    """Lot status transitions and stage corrections (Phase 11 audit history)."""
+    __tablename__ = "production_audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    field_name: Mapped[Optional[str]] = mapped_column(String(50))
+    old_value: Mapped[Optional[str]] = mapped_column(String(200))
+    new_value: Mapped[Optional[str]] = mapped_column(String(200))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ProductionStageSize(Base):
+    """Size-wise detail for one ProductionStage — Production Module
+    Reorganisation Phase 9 (Cutting/Checking/Packing). Mirrors
+    ProductionLotSize's shape, scoped per stage instead of per lot.
+    Recorded explicitly by floor staff (accepted/rejected/rework per
+    size) alongside — not replacing — the stage's own aggregate
+    input_qty/output_qty/accepted_qty, which remain the system of
+    record for stage-to-stage quantity flow.
+    """
+    __tablename__ = "production_stage_sizes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_stage_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_stages.id", ondelete="CASCADE"), nullable=False)
+    size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
+    input_qty: Mapped[int] = mapped_column(Integer, default=0)
+    accepted_qty: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_qty: Mapped[int] = mapped_column(Integer, default=0)
+    rework_qty: Mapped[int] = mapped_column(Integer, default=0)
+    defect_reason: Mapped[Optional[str]] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    stage: Mapped["ProductionStage"] = relationship(back_populates="sizes")
 
 
 class ProductionStageEntry(Base):
@@ -557,6 +801,62 @@ class LotTrim(Base):
     production_lot: Mapped["ProductionLot"] = relationship(back_populates="trims")
 
 
+class LotFabric(Base):
+    """LOT-level snapshot of a StyleFabric — Production Module Reorganisation
+    Phase 6 (BOM Consolidation). Mirrors LotTrim: planned_qty is computed
+    from the style fabric's size-wise consumption (or flat consumption x
+    the LOT's total planned_qty) x excess %.
+    """
+    __tablename__ = "lot_fabrics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    style_fabric_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_fabrics.id"))
+    fabric_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    style_part_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_parts.id", ondelete="SET NULL"))
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id", ondelete="SET NULL"))
+    source_type: Mapped[Optional[str]] = mapped_column(String(20))
+    unit: Mapped[Optional[str]] = mapped_column(String(30))
+    planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    actual_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    production_lot: Mapped["ProductionLot"] = relationship(back_populates="lot_fabrics")
+    style_part: Mapped[Optional["StylePart"]] = relationship()
+    colour: Mapped[Optional["Colour"]] = relationship()
+    yarns: Mapped[list["LotYarn"]] = relationship(back_populates="lot_fabric", cascade="all, delete-orphan")
+
+
+class LotYarn(Base):
+    """LOT-level snapshot of a StyleYarn — Production Module Reorganisation
+    Phase 6. planned_qty is this yarn's consumption_pct share of its
+    parent LotFabric's own planned_qty (e.g. a fabric needing 1500kg total,
+    blended 65% Cotton / 35% Polyester, needs 975kg Cotton + 525kg
+    Polyester). Yarns not assigned to a fabric (pre-Phase-3 freestanding
+    rows) get no computed quantity — nothing to scale against.
+    """
+    __tablename__ = "lot_yarns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    lot_fabric_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("lot_fabrics.id", ondelete="CASCADE"))
+    style_yarn_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_yarns.id"))
+    yarn_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    colour_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("colours.id", ondelete="SET NULL"))
+    counts: Mapped[Optional[str]] = mapped_column(String(20))
+    consumption_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    unit: Mapped[Optional[str]] = mapped_column(String(30))
+    planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    actual_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    production_lot: Mapped["ProductionLot"] = relationship(back_populates="lot_yarns")
+    lot_fabric: Mapped[Optional["LotFabric"]] = relationship(back_populates="yarns")
+    colour: Mapped[Optional["Colour"]] = relationship()
+
+
 class LotPackingMaterial(Base):
     """LOT-level snapshot of a StylePackingMaterial, auto-fetched at LOT
     creation (spec §22/§23). Not size-wise - packing is per total
@@ -568,6 +868,7 @@ class LotPackingMaterial(Base):
     production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
     style_packing_material_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("style_packing_materials.id"))
     material_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"))
     unit: Mapped[Optional[str]] = mapped_column(String(30))
     consumption_stage: Mapped[Optional[str]] = mapped_column(String(50))
     planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
@@ -576,6 +877,7 @@ class LotPackingMaterial(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     production_lot: Mapped["ProductionLot"] = relationship(back_populates="packing_materials")
+    product: Mapped[Optional["Product"]] = relationship()
 
 
 class MaterialIssue(Base):
@@ -590,6 +892,10 @@ class MaterialIssue(Base):
     warehouse_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("warehouses.id"), nullable=False)
     issue_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="issued")
+    # Phase 8 — Lot Creation and Material Issue: a client-generated key, the
+    # same one resent if a request is retried, so a duplicate submission
+    # returns the original MIS instead of issuing the same stock twice.
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(100))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))

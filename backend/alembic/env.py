@@ -10,7 +10,9 @@ from app.db.base import Base
 import app.models  # noqa: F401 — import all models so Alembic sees them
 
 config = context.config
-config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+from app.core.config import normalize_database_url  # noqa: E402
+
+config.set_main_option("sqlalchemy.url", normalize_database_url(os.environ["DATABASE_URL"]).replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

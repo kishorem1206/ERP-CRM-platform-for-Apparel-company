@@ -27,7 +27,7 @@ PERMISSIONS = [
     "purchase_return.view", "purchase_return.create",
     "inventory.view", "inventory.receive", "inventory.issue",
     "inventory.transfer", "inventory.adjust", "inventory.opening_balance",
-    "inventory.value",
+    "inventory.value", "inventory.correct_dates",
     "production.view", "production.create", "production.start", "production.delete",
     "production.log", "production.complete", "production.cancel",
     "finance.view", "finance.receipt", "finance.payment", "finance.expense",

@@ -371,12 +371,13 @@
   <div class="section-title">Material / Fabric Cost</div>
   <table class="data">
     <thead>
-      <tr><th>Material</th><th>Issue No.</th><th class="num">Quantity</th><th class="num">Rate</th><th class="num">Cost</th></tr>
+      <tr><th>Material</th><th>SKU</th><th>Issue No.</th><th class="num">Quantity</th><th class="num">Rate</th><th class="num">Cost</th></tr>
     </thead>
     <tbody>
       {% for r in material_rows %}
       <tr>
         <td>{{ r.product_name }}</td>
+        <td>{{ r.sku or "—" }}</td>
         <td>{{ r.issue_number }}</td>
         <td class="num">{{ r.issued_qty }}</td>
         <td class="num">{{ r.unit_cost | inr(2) }}</td>

@@ -9,13 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.deps import AuthUser, DBSession
-from app.models.master import Category, SubCategory, Colour, Size, Unit, HsnCode, Warehouse
-from app.models.production import ProcessMaster
+from app.models.master import Brand, Category, SubCategory, Colour, Size, Unit, HsnCode, Warehouse
+from app.models.production import ProcessMaster, StylePart
 from app.schemas.base import ApiResponse
 from app.schemas.product import (
-    CategoryOut, SizeOut, ColourOut, UnitOut, HsnOut, WarehouseOut,
+    BrandOut, CategoryOut, SizeOut, ColourOut, UnitOut, HsnOut, WarehouseOut,
     ProcessMasterCreate, ProcessMasterUpdate, ProcessMasterOut,
 )
+from app.schemas.production import StylePartCreate, StylePartOut
 
 router = APIRouter(prefix="/master", tags=["master"])
 
@@ -25,6 +26,147 @@ def _conflict(exc: IntegrityError, on_duplicate: str, on_reference: str) -> HTTP
     if "unique" in detail.lower() or "duplicate" in detail.lower():
         return HTTPException(409, on_duplicate)
     return HTTPException(409, on_reference)
+
+
+# ── Brands ──────────────────────────────────────────────────────────────────
+
+class BrandCreate(BaseModel):
+    name: str
+
+
+class BrandUpdate(BaseModel):
+    name: str | None = None
+
+
+@router.get("/brands")
+async def list_brands(db: DBSession, user: AuthUser):
+    user.require("master_data.view")
+    result = await db.execute(
+        select(Brand).where(Brand.company_id == user.company_id).order_by(Brand.name)
+    )
+    brands = result.scalars().all()
+    return ApiResponse(success=True, data=[BrandOut.model_validate(b) for b in brands])
+
+
+@router.post("/brands", status_code=201)
+async def create_brand(body: BrandCreate, db: DBSession, user: AuthUser):
+    user.require("master_data.create")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Brand name is required")
+    brand = Brand(company_id=user.company_id, name=name)
+    db.add(brand)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A brand with this name already exists", "Cannot create brand")
+    await db.refresh(brand)
+    return ApiResponse(success=True, data=BrandOut.model_validate(brand), message="Brand created")
+
+
+@router.patch("/brands/{brand_id}")
+async def update_brand(brand_id: UUID, body: BrandUpdate, db: DBSession, user: AuthUser):
+    user.require("master_data.edit")
+    result = await db.execute(
+        select(Brand).where(Brand.id == brand_id, Brand.company_id == user.company_id)
+    )
+    brand = result.scalar_one_or_none()
+    if not brand:
+        raise HTTPException(404, "Brand not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Brand name is required")
+        brand.name = name
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A brand with this name already exists", "Cannot update brand")
+    await db.refresh(brand)
+    return ApiResponse(success=True, data=BrandOut.model_validate(brand), message="Brand updated")
+
+
+@router.delete("/brands/{brand_id}")
+async def delete_brand(brand_id: UUID, db: DBSession, user: AuthUser):
+    user.require("master_data.delete")
+    result = await db.execute(
+        select(Brand).where(Brand.id == brand_id, Brand.company_id == user.company_id)
+    )
+    brand = result.scalar_one_or_none()
+    if not brand:
+        raise HTTPException(404, "Brand not found")
+    await db.delete(brand)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Cannot delete — this brand is used by existing products, styles, or lots")
+    return ApiResponse(success=True, message="Brand deleted")
+
+
+# ── Style Parts ───────────────────────────────────────────────────────────────
+# Production Module Reorganisation Phase 1 — reusable garment-part master
+# (Front/Back/Collar/Sleeves, Waistband/Fly, ...), selectable from Style
+# creation with inline "+ Add New Style Part", same pattern as Brands.
+
+class StylePartUpdate(BaseModel):
+    name: str | None = None
+    is_active: bool | None = None
+
+
+@router.get("/style-parts")
+async def list_style_parts(db: DBSession, user: AuthUser, include_inactive: bool = False):
+    user.require("master_data.view")
+    stmt = select(StylePart).where(StylePart.company_id == user.company_id)
+    if not include_inactive:
+        stmt = stmt.where(StylePart.is_active.is_(True))
+    result = await db.execute(stmt.order_by(StylePart.name))
+    parts = result.scalars().all()
+    return ApiResponse(success=True, data=[StylePartOut.model_validate(p) for p in parts])
+
+
+@router.post("/style-parts", status_code=201)
+async def create_style_part(body: StylePartCreate, db: DBSession, user: AuthUser):
+    user.require("master_data.create")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Style Part name is required")
+    part = StylePart(company_id=user.company_id, name=name, created_at=datetime.now(timezone.utc))
+    db.add(part)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A style part with this name already exists", "Cannot create style part")
+    await db.refresh(part)
+    return ApiResponse(success=True, data=StylePartOut.model_validate(part), message="Style Part created")
+
+
+@router.patch("/style-parts/{part_id}")
+async def update_style_part(part_id: UUID, body: StylePartUpdate, db: DBSession, user: AuthUser):
+    user.require("master_data.edit")
+    result = await db.execute(
+        select(StylePart).where(StylePart.id == part_id, StylePart.company_id == user.company_id)
+    )
+    part = result.scalar_one_or_none()
+    if not part:
+        raise HTTPException(404, "Style Part not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Style Part name is required")
+        part.name = name
+    if body.is_active is not None:
+        part.is_active = body.is_active
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _conflict(exc, "A style part with this name already exists", "Cannot update style part")
+    await db.refresh(part)
+    return ApiResponse(success=True, data=StylePartOut.model_validate(part), message="Style Part updated")
 
 
 # ── Categories ──────────────────────────────────────────────────────────────
@@ -460,6 +602,7 @@ class WarehouseCreate(BaseModel):
     name: str
     code: str | None = None
     address: str | None = None
+    material_type: str | None = None
 
 
 class WarehouseUpdate(BaseModel):
@@ -467,6 +610,7 @@ class WarehouseUpdate(BaseModel):
     code: str | None = None
     address: str | None = None
     is_active: bool | None = None
+    material_type: str | None = None
 
 
 @router.get("/warehouses")
@@ -486,7 +630,10 @@ async def create_warehouse(body: WarehouseCreate, db: DBSession, user: AuthUser)
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Warehouse name is required")
-    wh = Warehouse(company_id=user.company_id, name=name, code=body.code or None, address=body.address or None)
+    wh = Warehouse(
+        company_id=user.company_id, name=name, code=body.code or None, address=body.address or None,
+        material_type=body.material_type or None,
+    )
     db.add(wh)
     try:
         await db.commit()
@@ -517,6 +664,8 @@ async def update_warehouse(warehouse_id: UUID, body: WarehouseUpdate, db: DBSess
         wh.address = body.address or None
     if body.is_active is not None:
         wh.is_active = body.is_active
+    if body.material_type is not None:
+        wh.material_type = body.material_type or None
     try:
         await db.commit()
     except IntegrityError as exc:

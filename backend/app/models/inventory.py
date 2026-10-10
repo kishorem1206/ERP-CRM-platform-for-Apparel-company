@@ -19,6 +19,7 @@ class InventoryLot(Base):
     material_type: Mapped[str] = mapped_column(String(20), nullable=False)
     product_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"))
     variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id"))
+    brand_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("brands.id"))
     # Textile attributes
     yarn_count: Mapped[Optional[str]] = mapped_column(String(20))
     ply: Mapped[Optional[str]] = mapped_column(String(10))
@@ -158,3 +159,9 @@ class InventoryTransaction(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # Manual inventory-ageing date correction (Phase 10 §32/Inventory ageing)
+    # — transaction_date itself is never overwritten; a correction is an
+    # explicit, audited override used only by ageing calculations.
+    corrected_date: Mapped[date | None] = mapped_column(Date)
+    date_corrected_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    date_corrected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

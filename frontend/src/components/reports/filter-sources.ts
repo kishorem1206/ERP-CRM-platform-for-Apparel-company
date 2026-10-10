@@ -33,6 +33,12 @@ export const useProductOptions = () =>
 export const useWarehouseOptions = () =>
   useOptions("filter-warehouses", "/master/warehouses", (w) => ({ value: String(w.id), label: String(w.name) }));
 
+export const useUnitOptions = () =>
+  useOptions("filter-units", "/master/units", (u) => ({
+    value: String(u.id),
+    label: `${String(u.name)} (${String(u.abbreviation ?? u.symbol ?? "")})`,
+  }));
+
 export const useCategoryOptions = () =>
   useOptions("filter-categories", "/master/categories", (c) => ({ value: String(c.id), label: String(c.name) }));
 

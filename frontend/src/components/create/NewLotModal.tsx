@@ -16,6 +16,7 @@ export function NewLotModal({ open, onClose }: Props) {
     lot_number: "",
     style_id: "",
     planned_qty: "",
+    colour_id: "",
     delivery_date: "",
     season: "",
     notes: "",
@@ -30,11 +31,17 @@ export function NewLotModal({ open, onClose }: Props) {
     },
     enabled: open,
   });
+  const colours = useQuery({
+    queryKey: ["master-colours"],
+    queryFn: async () => (await api.get("/master/colours")).data.data as { id: string; name: string }[],
+    enabled: open,
+  });
 
   const mut = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
         planned_qty: Number(form.planned_qty) || 1,
+        colour_id: form.colour_id,
         notes: form.notes || undefined,
       };
       if (form.lot_number.trim()) payload.lot_number = form.lot_number.trim();
@@ -46,7 +53,7 @@ export function NewLotModal({ open, onClose }: Props) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-lots"] });
       onClose();
-      setForm({ lot_number: "", style_id: "", planned_qty: "", delivery_date: "", season: "", notes: "" });
+      setForm({ lot_number: "", style_id: "", planned_qty: "", colour_id: "", delivery_date: "", season: "", notes: "" });
     },
     onError: (e: unknown) => {
       const msg = (e as { response?: { data?: { error?: { message?: string } } } })
@@ -65,7 +72,7 @@ export function NewLotModal({ open, onClose }: Props) {
       subtitle="Start a new lot linked to a style."
       footer={
         <form onSubmit={(e) => { e.preventDefault(); mut.mutate(); }}>
-          <ModalActions onClose={onClose} loading={mut.isPending} label="Create Lot" />
+          <ModalActions onClose={onClose} loading={mut.isPending} label="Create Lot" disabled={!form.colour_id} />
         </form>
       }
     >
@@ -106,6 +113,16 @@ export function NewLotModal({ open, onClose }: Props) {
             placeholder="e.g. 500"
             value={form.planned_qty}
             onChange={(e) => set("planned_qty", e.target.value)}
+          />
+        </Field>
+
+        <Field label="Colour" required>
+          <SearchableSelect
+            value={form.colour_id}
+            onChange={(v) => set("colour_id", v)}
+            placeholder="Select colour"
+            accent="#0049A7"
+            options={(colours.data ?? []).map((c) => ({ value: c.id, label: c.name }))}
           />
         </Field>
 

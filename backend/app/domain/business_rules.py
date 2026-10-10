@@ -10,9 +10,17 @@ class RuleResult:
 
 
 class BusinessRulesError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self, code: str, message: str,
+        available: Decimal | None = None, shortage: Decimal | None = None,
+    ):
         self.code = code
         self.message = message
+        # Populated for INSUFFICIENT_STOCK so the caller can show "available
+        # X, short by Y" instead of only a flat rejection message (Phase 10 —
+        # never silently issue less than requested, but never hide the gap either).
+        self.available = available
+        self.shortage = shortage
         super().__init__(message)
 
 

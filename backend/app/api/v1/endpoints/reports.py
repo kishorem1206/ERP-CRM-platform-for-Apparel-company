@@ -83,10 +83,10 @@ async def gst_summary(
 # ── Stock Ageing ──────────────────────────────────────────────────────────────
 
 @router.get("/stock-ageing")
-async def stock_ageing(db: DBSession, user: AuthUser):
+async def stock_ageing(db: DBSession, user: AuthUser, as_of: date | None = None):
     user.require("reports.view")
     svc = ReportsService(db)
-    rows = await svc.stock_ageing(user.company_id)
+    rows = await svc.stock_ageing(user.company_id, as_of=as_of)
     return ApiResponse(success=True, data=rows)
 
 

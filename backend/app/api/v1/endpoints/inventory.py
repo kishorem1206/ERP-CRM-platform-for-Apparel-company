@@ -17,6 +17,7 @@ from app.schemas.inventory import (
     IssueParams, StockOutRequest,
     ReceiveParams, StockInRequest,
     StockBalanceRow, TransactionOut,
+    TransactionDateCorrect,
     TransferParams, TransferRequest,
 )
 from app.services.inventory import InventoryService
@@ -196,6 +197,18 @@ async def list_transactions(
         data=data,
         meta=PaginatedMeta(page=page, page_size=page_size, total=total),
     )
+
+
+# ── Manual Date Correction (inventory ageing) ──────────────────────────────────
+
+@router.patch("/transactions/{transaction_id}/correct-date")
+async def correct_transaction_date(transaction_id: UUID, body: TransactionDateCorrect, db: DBSession, user: AuthUser):
+    user.require("inventory.correct_dates")
+    svc = InventoryService(db)
+    tx = await svc.correct_transaction_date(transaction_id, body.corrected_date, user.company_id, user.user_id)
+    if not tx:
+        raise HTTPException(404, "Transaction not found")
+    return ApiResponse(success=True, data=await _enrich(db, tx))
 
 
 # ── Stock Balance Report ───────────────────────────────────────────────────────

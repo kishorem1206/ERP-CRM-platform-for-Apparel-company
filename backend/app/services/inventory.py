@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -31,6 +31,51 @@ class InventoryService:
                   AND product_id = :product_id
                   AND warehouse_id = :warehouse_id
                   AND (CAST(:variant_id AS UUID) IS NULL OR variant_id = CAST(:variant_id AS UUID))
+            """),
+            {
+                "company_id": str(company_id),
+                "product_id": str(product_id),
+                "warehouse_id": str(warehouse_id),
+                "variant_id": str(variant_id) if variant_id else None,
+            },
+        )
+        return Decimal(result.scalar() or 0)
+
+    async def get_lot_balance(self, lot_id: UUID) -> Decimal:
+        """Remaining physical quantity of one specific InventoryLot batch,
+        across all warehouses — used by BOM (Phase 6) to show "available
+        stock" against a material requirement that's linked to a specific
+        received batch (StyleFabric/StyleTrim/StyleYarn.lot_id).
+        """
+        result = await self.db.execute(
+            text("SELECT COALESCE(SUM(quantity * direction), 0) FROM inventory_transactions WHERE lot_id = :lot_id"),
+            {"lot_id": str(lot_id)},
+        )
+        return Decimal(result.scalar() or 0)
+
+    async def get_weighted_avg_cost(
+        self,
+        company_id: UUID,
+        product_id: UUID,
+        warehouse_id: UUID,
+        variant_id: UUID | None = None,
+    ) -> Decimal:
+        """Weighted-average cost of this product's receipts into this warehouse
+        (stock_in/transfer_in), used to value stock leaving via issue/transfer-out
+        at its real cost instead of whatever price it's being sold for — see the
+        16-item request item #13 (finished-goods -> warehouse -> sold pricing).
+        Not true FIFO (reserved for item #10's cost-layer work); a defensible
+        simpler approximation in the meantime.
+        """
+        result = await self.db.execute(
+            text("""
+                SELECT COALESCE(SUM(quantity * unit_cost) / SUM(quantity), 0)
+                FROM inventory_transactions
+                WHERE company_id = :company_id
+                  AND product_id = :product_id
+                  AND warehouse_id = :warehouse_id
+                  AND (CAST(:variant_id AS UUID) IS NULL OR variant_id = CAST(:variant_id AS UUID))
+                  AND direction = 1
             """),
             {
                 "company_id": str(company_id),
@@ -101,7 +146,10 @@ class InventoryService:
         )
         result = business_rules.validate_stock_issue(available, params.quantity, negative_stock_allowed)
         if not result.valid:
-            raise BusinessRulesError("INSUFFICIENT_STOCK", result.reason)
+            raise BusinessRulesError(
+                "INSUFFICIENT_STOCK", result.reason,
+                available=available, shortage=max(params.quantity - available, Decimal("0")),
+            )
 
         tx = InventoryTransaction(
             company_id=params.company_id,
@@ -125,6 +173,108 @@ class InventoryService:
         self.db.add(tx)
         await self.db.flush()
         return tx
+
+    async def _get_fifo_layers(
+        self,
+        company_id: UUID,
+        product_id: UUID,
+        warehouse_id: UUID,
+        variant_id: UUID | None,
+    ) -> list[tuple[UUID, Decimal, Decimal]]:
+        """InventoryLot batches for this product with stock still remaining in
+        this warehouse, oldest first — the cost layers item #10 (FIFO issue
+        costing) draws from. Returns (lot_id, unit_cost, remaining_qty)."""
+        result = await self.db.execute(
+            text("""
+                SELECT l.id AS lot_id, l.unit_cost,
+                       COALESCE((
+                           SELECT SUM(t.quantity * t.direction) FROM inventory_transactions t
+                           WHERE t.lot_id = l.id AND t.warehouse_id = :warehouse_id
+                       ), 0) AS remaining_qty
+                FROM inventory_lots l
+                WHERE l.company_id = :company_id
+                  AND l.product_id = :product_id
+                  AND l.unit_cost IS NOT NULL
+                  AND (CAST(:variant_id AS UUID) IS NULL OR l.variant_id = CAST(:variant_id AS UUID))
+                ORDER BY COALESCE(l.invoice_date, l.created_at::date) ASC, l.created_at ASC
+            """),
+            {
+                "company_id": str(company_id),
+                "product_id": str(product_id),
+                "warehouse_id": str(warehouse_id),
+                "variant_id": str(variant_id) if variant_id else None,
+            },
+        )
+        return [
+            (row.lot_id, Decimal(row.unit_cost), Decimal(row.remaining_qty))
+            for row in result.fetchall()
+            if Decimal(row.remaining_qty) > 0
+        ]
+
+    async def issue_fifo(
+        self,
+        params: IssueParams,
+        user_id: UUID,
+        negative_stock_allowed: bool = False,
+    ) -> list[InventoryTransaction]:
+        """Like `issue`, but values the stock leaving at FIFO cost instead of
+        a single flat `params.unit_cost` — see 16-item request #10: "rates
+        determined based on FIFO... 10 of 100rs, 10 of 200rs, issue 15 ->
+        100rs for 10, 200rs for 5". Returns one transaction per cost layer
+        consumed (plus one more, at the weighted-average cost, for any
+        quantity that isn't tracked by a specific lot — e.g. stock received
+        through a GRN rather than the Add Yarn/Fabric/Trims flow).
+        """
+        available = await self.get_balance(
+            params.company_id, params.product_id, params.warehouse_id, params.variant_id
+        )
+        result = business_rules.validate_stock_issue(available, params.quantity, negative_stock_allowed)
+        if not result.valid:
+            raise BusinessRulesError(
+                "INSUFFICIENT_STOCK", result.reason,
+                available=available, shortage=max(params.quantity - available, Decimal("0")),
+            )
+
+        layers = await self._get_fifo_layers(
+            params.company_id, params.product_id, params.warehouse_id, params.variant_id
+        )
+        remaining = params.quantity
+        transactions: list[InventoryTransaction] = []
+        for lot_id, unit_cost, layer_qty in layers:
+            if remaining <= 0:
+                break
+            take = min(layer_qty, remaining)
+            tx = InventoryTransaction(
+                company_id=params.company_id, transaction_type="stock_out",
+                reference_type=params.reference_type, reference_id=params.reference_id,
+                material_type=params.material_type, product_id=params.product_id,
+                variant_id=params.variant_id, warehouse_id=params.warehouse_id,
+                lot_id=lot_id, quantity=take, unit_id=params.unit_id,
+                unit_cost=unit_cost, total_cost=take * unit_cost, direction=-1,
+                transaction_date=params.transaction_date, notes=params.notes, created_by=user_id,
+            )
+            self.db.add(tx)
+            transactions.append(tx)
+            remaining -= take
+
+        if remaining > 0:
+            fallback_cost = await self.get_weighted_avg_cost(
+                params.company_id, params.product_id, params.warehouse_id, params.variant_id
+            )
+            tx = InventoryTransaction(
+                company_id=params.company_id, transaction_type="stock_out",
+                reference_type=params.reference_type, reference_id=params.reference_id,
+                material_type=params.material_type, product_id=params.product_id,
+                variant_id=params.variant_id, warehouse_id=params.warehouse_id,
+                lot_id=params.lot_id, quantity=remaining, unit_id=params.unit_id,
+                unit_cost=fallback_cost, total_cost=remaining * fallback_cost, direction=-1,
+                transaction_date=params.transaction_date, notes=params.notes, created_by=user_id,
+            )
+            self.db.add(tx)
+            transactions.append(tx)
+
+        await self.db.flush()
+        return transactions
 
     async def transfer(
         self,
@@ -352,3 +502,24 @@ class InventoryService:
             },
         )
         return [dict(row._mapping) for row in result]
+
+    async def correct_transaction_date(
+        self, tx_id: UUID, corrected_date: date, company_id: UUID, user_id: UUID,
+    ) -> InventoryTransaction | None:
+        """Manual inventory-ageing date correction (Phase 10). Never
+        overwrites `transaction_date` itself — stores the override
+        separately with who/when, so ageing can use it while the original
+        transaction record stays an unaltered audit trail."""
+        result = await self.db.execute(
+            select(InventoryTransaction).where(
+                InventoryTransaction.id == tx_id, InventoryTransaction.company_id == company_id,
+            )
+        )
+        tx = result.scalar_one_or_none()
+        if not tx:
+            return None
+        tx.corrected_date = corrected_date
+        tx.date_corrected_by = user_id
+        tx.date_corrected_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        return tx

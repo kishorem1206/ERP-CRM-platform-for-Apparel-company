@@ -2,8 +2,8 @@ import {
   LayoutDashboard, Users, ShoppingCart, Package, Factory,
   BarChart3, Settings, Bot, Wallet, ShoppingBag, Scissors, Shield,
   FileText, Truck, Receipt, Building2, ClipboardList, PackageCheck,
-  Layers, BarChart2, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight,
-  SlidersHorizontal, Warehouse, CreditCard, Calculator, FileMinus, FilePlus,
+  Layers, BarChart2, ArrowLeftRight,
+  Warehouse, CreditCard, Calculator, FileMinus, FilePlus,
   TrendingUp, Ruler, PackageOpen, CheckSquare, Database, User,
   Target, ListChecks, MessageCircle, Mail, Star, ListTodo, Tag, Zap, Flame,
 } from "lucide-react";
@@ -49,8 +49,6 @@ export const MODULE_NAV: ModuleNavEntry[] = [
       { label: "Customers", href: "/crm/customers", icon: Users, group: "Contacts" },
       { label: "Persons", href: "/crm/persons", icon: User, group: "Contacts" },
       { label: "Organizations", href: "/crm/organizations", icon: Building2, group: "Contacts" },
-      { label: "Products", href: "/crm/products", icon: Package, group: "Sales" },
-      { label: "Quotes", href: "/crm/quotes", icon: FileText, group: "Sales" },
       { label: "Activities", href: "/crm/activities", icon: ListChecks, group: "Activity" },
       { label: "WhatsApp", href: "/crm/whatsapp", icon: MessageCircle, group: "Activity" },
       { label: "Automation", href: "/crm/whatsapp-automation", icon: Zap, group: "Activity" },
@@ -68,6 +66,7 @@ export const MODULE_NAV: ModuleNavEntry[] = [
       { label: "Quotations", href: "/sales/quotations", icon: FileText },
       { label: "Sales Orders", href: "/sales/orders", icon: ShoppingCart },
       { label: "Delivery Challans", href: "/sales/deliveries", icon: Truck },
+      { label: "Returns", href: "/sales/returns", icon: FileMinus },
       { label: "Invoices", href: "/sales/invoices", icon: Receipt },
       { label: "Price Lists", href: "/sales/price-lists", icon: Tag },
     ],
@@ -90,10 +89,7 @@ export const MODULE_NAV: ModuleNavEntry[] = [
     items: [
       { label: "Material Lots", href: "/inventory/lots", icon: Layers },
       { label: "Stock Balance", href: "/inventory/balance", icon: BarChart2 },
-      { label: "Stock In", href: "/inventory/stock-in", icon: ArrowDownToLine },
-      { label: "Stock Out", href: "/inventory/stock-out", icon: ArrowUpFromLine },
-      { label: "Stock Transfer", href: "/inventory/transfer", icon: ArrowLeftRight },
-      { label: "Adjustment", href: "/inventory/adjust", icon: SlidersHorizontal },
+      { label: "Stock Movement", href: "/inventory/stock-movement", icon: ArrowLeftRight },
       { label: "Products", href: "/inventory/products", icon: Package },
       { label: "Transaction Log", href: "/inventory/transactions", icon: Warehouse },
     ],
@@ -104,6 +100,7 @@ export const MODULE_NAV: ModuleNavEntry[] = [
     createPermission: "production.create",
     editPermission: "production.edit",
     items: [
+      { label: "Dashboard", href: "/production/dashboard", icon: BarChart3 },
       { label: "Styles", href: "/production/styles", icon: Ruler },
       { label: "Size Charts", href: "/production/size-charts", icon: Layers },
       { label: "Production Lots", href: "/production/lots", icon: Scissors },
@@ -165,7 +162,7 @@ export { Star as SavedFilterIcon };
  * have no module-level entry of their own. Undefined = no extra check.
  */
 export function requiredPathPermission(pathname: string): string | undefined {
-  if (/^\/inventory\/(stock-in|stock-out|transfer|adjust)$/.test(pathname)) return "inventory.create";
+  if (/^\/inventory\/stock-movement$/.test(pathname)) return "inventory.create";
   if (/^\/crm\/customers\/new$/.test(pathname)) return "sales.create";
   const mod = findActiveModule(pathname);
   if (/\/new(\/|$)/.test(pathname)) return mod.createPermission;

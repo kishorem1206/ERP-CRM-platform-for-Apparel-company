@@ -40,6 +40,7 @@ export function AddYarnModal({ open, onClose }: Props) {
     // Inventory booking
     warehouse_id: "",
     product_id: "",
+    brand_id: "",
     unit_id: "",
   });
   const [err, setErr] = useState<string | null>(null);
@@ -77,6 +78,12 @@ export function AddYarnModal({ open, onClose }: Props) {
       const r = await api.get("/products", { params: { page_size: 200, product_type: "yarn" } });
       return (r.data.data ?? []) as { id: string; name: string }[];
     },
+    enabled: open,
+  });
+
+  const brands = useQuery({
+    queryKey: ["master-brands"],
+    queryFn: async () => (await api.get("/master/brands")).data.data as { id: string; name: string }[],
     enabled: open,
   });
 
@@ -130,6 +137,7 @@ export function AddYarnModal({ open, onClose }: Props) {
         // Inventory booking
         warehouse_id: form.warehouse_id || undefined,
         product_id: form.product_id || undefined,
+        brand_id: form.brand_id || undefined,
         unit_id: form.unit_id || undefined,
       });
     },
@@ -179,6 +187,39 @@ export function AddYarnModal({ open, onClose }: Props) {
             <DatePicker value={form.invoice_date} onChange={(v) => set("invoice_date", v)} />
           </Field>
         </div>
+
+        <div className="h-px bg-border" />
+
+        {/* Catalog product — links this lot's category to the Products catalog so
+            Yarn/Fabric/Trim stays consistent everywhere, including Production. */}
+        <Field
+          label="Product (optional)"
+          hint="Links this lot to a product in your catalog, so its category stays consistent with Production and the rest of the app — instead of being typed separately here."
+        >
+          <SearchableSelect
+            value={form.product_id}
+            onChange={(v) => set("product_id", v)}
+            placeholder="— Not linked to a catalog product —"
+            accent="#A096F7"
+            options={(products.data ?? []).map((p) => ({
+              value: p.id,
+              label: p.name,
+            }))}
+          />
+        </Field>
+
+        <Field label="Brand (optional)">
+          <SearchableSelect
+            value={form.brand_id}
+            onChange={(v) => set("brand_id", v)}
+            placeholder="— Not specified —"
+            accent="#A096F7"
+            options={[
+              { value: "", label: "— Not specified —" },
+              ...(brands.data ?? []).map((b) => ({ value: b.id, label: b.name })),
+            ]}
+          />
+        </Field>
 
         <div className="h-px bg-border" />
 
@@ -332,32 +373,21 @@ export function AddYarnModal({ open, onClose }: Props) {
               ]}
             />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Product">
-              <SearchableSelect
-                value={form.product_id}
-                onChange={(v) => set("product_id", v)}
-                placeholder="— Select product —"
-                accent="#A096F7"
-                options={(products.data ?? []).map((p) => ({
-                  value: p.id,
-                  label: p.name,
-                }))}
-              />
-            </Field>
-            <Field label="Unit">
-              <SearchableSelect
-                value={form.unit_id}
-                onChange={(v) => set("unit_id", v)}
-                placeholder="— Unit —"
-                accent="#A096F7"
-                options={(units.data ?? []).map((u) => ({
-                  value: u.id,
-                  label: `${u.name} (${u.abbreviation})`,
-                }))}
-              />
-            </Field>
-          </div>
+          <Field label="Unit">
+            <SearchableSelect
+              value={form.unit_id}
+              onChange={(v) => set("unit_id", v)}
+              placeholder="— Unit —"
+              accent="#A096F7"
+              options={(units.data ?? []).map((u) => ({
+                value: u.id,
+                label: `${u.name} (${u.abbreviation})`,
+              }))}
+            />
+          </Field>
+          {!form.product_id && form.warehouse_id && (
+            <p className="text-xs text-amber-600">Pick a Product above to book this lot into inventory.</p>
+          )}
           {totalKg && form.warehouse_id && form.product_id && form.unit_id && (
             <p className="text-xs text-blue-600">Will book {totalKg} kg into inventory on save.</p>
           )}

@@ -69,6 +69,7 @@ class YarnCreate(BaseModel):
     kg_per_bag: Optional[Decimal] = None
     unit_cost: Optional[Decimal] = None         # rate per kg
     notes: Optional[str] = None
+    brand_id: Optional[UUID] = None
     # Inventory booking (optional)
     warehouse_id: Optional[UUID] = None
     product_id: Optional[UUID] = None
@@ -94,6 +95,7 @@ class FabricCreate(BaseModel):
     fabric_variants: list[FabricVariantIn] = []
     unit_cost: Optional[Decimal] = None
     notes: Optional[str] = None
+    brand_id: Optional[UUID] = None
     # Inventory booking (optional)
     warehouse_id: Optional[UUID] = None
     product_id: Optional[UUID] = None
@@ -116,6 +118,7 @@ class TrimCreate(BaseModel):
     trim_variants: list[TrimVariantIn] = []
     unit_cost: Optional[Decimal] = None
     notes: Optional[str] = None
+    brand_id: Optional[UUID] = None
     # Inventory booking (optional)
     warehouse_id: Optional[UUID] = None
     product_id: Optional[UUID] = None
@@ -143,6 +146,10 @@ class LotOut(BaseModel):
     company_id: UUID
     lot_number: str
     material_type: str
+    product_id: Optional[UUID] = None
+    product_name: Optional[str] = None
+    brand_id: Optional[UUID] = None
+    brand_name: Optional[str] = None
     supplier_id: Optional[UUID] = None
     invoice_number: Optional[str] = None
     invoice_date: Optional[date] = None

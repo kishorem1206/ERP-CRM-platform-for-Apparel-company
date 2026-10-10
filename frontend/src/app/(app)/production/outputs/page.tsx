@@ -1,15 +1,21 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
+import { formatIndianFull } from "@/lib/format";
 
 type ProductionOutput = Record<string, unknown> & {
   id: string;
   output_number: string;
   lot_number: string | null;
+  product_name: string | null;
+  warehouse_name: string | null;
   output_date: string;
   quantity: string;
+  rejected_qty: string | null;
+  unit_abbreviation: string | null;
   unit_cost: string;
   total_cost: string;
 };
@@ -17,21 +23,35 @@ type ProductionOutput = Record<string, unknown> & {
 const columns: Column<ProductionOutput>[] = [
   { key: "output_number", header: "Output No." },
   { key: "lot_number", header: "Lot No." },
+  { key: "product_name", header: "Product", render: (row) => row.product_name ?? "—" },
+  { key: "warehouse_name", header: "Warehouse", render: (row) => row.warehouse_name ?? "—" },
   { key: "output_date", header: "Date" },
-  { key: "quantity", header: "Qty" },
   {
-    key: "unit_cost",
-    header: "Unit Cost",
-    render: (row) => `₹${Number(row.unit_cost).toFixed(2)}`,
+    key: "quantity",
+    header: "Qty",
+    render: (row) => `${Number(row.quantity).toLocaleString("en-IN", { maximumFractionDigits: 4 })} ${row.unit_abbreviation ?? ""}`,
+  },
+  {
+    key: "rejected_qty",
+    header: "Rejected",
+    render: (row) =>
+      row.rejected_qty && Number(row.rejected_qty) > 0 ? (
+        <span className="font-semibold" style={{ color: "#B45309" }}>
+          {Number(row.rejected_qty).toLocaleString("en-IN", { maximumFractionDigits: 4 })} {row.unit_abbreviation ?? ""}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      ),
   },
   {
     key: "total_cost",
     header: "Total Cost",
-    render: (row) => `₹${Number(row.total_cost).toFixed(2)}`,
+    render: (row) => formatIndianFull(Number(row.total_cost)),
   },
 ];
 
 export default function ProductionOutputsPage() {
+  const router = useRouter();
   const { data, isLoading } = useQuery({
     queryKey: ["production-outputs"],
     queryFn: async () => {
@@ -59,7 +79,12 @@ export default function ProductionOutputsPage() {
             <p className="text-sm font-medium mt-0.5">All recorded production outputs</p>
           </div>
         </div>
-        <DataTable columns={columns} data={data ?? []} loading={isLoading} />
+        <DataTable
+          columns={columns}
+          data={data ?? []}
+          loading={isLoading}
+          onRowClick={(row) => router.push(`/production/outputs/${row.id as string}`)}
+        />
       </div>
     </div>
   );
