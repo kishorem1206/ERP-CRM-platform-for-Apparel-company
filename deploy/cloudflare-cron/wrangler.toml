@@ -4,6 +4,8 @@
 name = "apparel-erp-cron"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
+# Cron-only: no public *.workers.dev URL (and no subdomain to register).
+workers_dev = false
 
 [vars]
 # Your Render URL (or custom domain), no trailing slash.
