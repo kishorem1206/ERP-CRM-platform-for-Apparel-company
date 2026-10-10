@@ -280,7 +280,11 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                         ) : (
                           <SearchableSelect
                             value={it.product_id}
-                            onChange={(v) => updateItem(i, "product_id", v)}
+                            onChange={(v) => {
+                              updateItem(i, "product_id", v);
+                              const unit = (products ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === v)?.unit_id;
+                              if (unit) updateItem(i, "unit_id", unit);
+                            }}
                             placeholder="Select…"
                             accent={TEAL}
                             options={(products ?? []).map((p: { id: string; name: string }) => ({

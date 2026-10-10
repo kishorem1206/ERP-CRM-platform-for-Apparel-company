@@ -74,7 +74,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
   });
   const { data: products } = useQuery({
     queryKey: ["products-list"],
-    queryFn: async () => (await api.get("/products?page_size=200")).data.data as { id: string; name: string; product_type: string }[],
+    queryFn: async () => (await api.get("/products?page_size=200")).data.data as { id: string; name: string; product_type: string; unit_id: string | null }[],
   });
   const selectedVendor = (vendors ?? []).find((v) => v.id === vendorId);
   const availableProducts = selectedVendor?.supplies_product_types?.length
@@ -181,7 +181,11 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                       <td className="px-2 py-1 min-w-[160px]">
                         <SearchableSelect
                           value={it.product_id}
-                          onChange={(v) => updateItem(i, "product_id", v)}
+                          onChange={(v) => {
+                            updateItem(i, "product_id", v);
+                            const unit = (products ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === v)?.unit_id;
+                            if (unit) updateItem(i, "unit_id", unit);
+                          }}
                           placeholder="Select…"
                           accent={BLUE}
                           options={availableProducts.map((p) => ({

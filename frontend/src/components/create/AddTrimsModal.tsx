@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ModalShell, Field, Input, Textarea, SegControl, ModalActions, SearchableSelect } from "./ModalShell";
 import api from "@/lib/api";
@@ -12,6 +12,8 @@ interface Props {
 
 const TRIM_TYPES = ["Button", "Label", "Tag", "Zipper", "Thread", "Elastic", "Interlining", "Tape", "Other"];
 const TRIM_UNITS = ["Pieces", "Gross", "Dozen", "Metre", "Kilogram", "Yard"];
+// Inventory unit abbreviation for each trim unit (Yard has no master unit).
+const TRIM_UNIT_ABBR: Record<string, string> = { Pieces: "pcs", Gross: "grs", Dozen: "dzn", Metre: "m", Kilogram: "kg" };
 
 export function AddTrimsModal({ open, onClose }: Props) {
   const qc = useQueryClient();
@@ -67,7 +69,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
     queryKey: ["products-trims"],
     queryFn: async () => {
       const r = await api.get("/products", { params: { page_size: 200, product_type: "trim" } });
-      return (r.data.data ?? []) as { id: string; name: string }[];
+      return (r.data.data ?? []) as { id: string; name: string; unit_id: string | null }[];
     },
     enabled: open,
   });
@@ -77,6 +79,18 @@ export function AddTrimsModal({ open, onClose }: Props) {
     queryFn: async () => (await api.get("/master/brands")).data.data as { id: string; name: string }[],
     enabled: open,
   });
+
+
+  // Unit follows the selected product's unit (else a sensible default for
+  // this material) until the user picks one by hand.
+  const [unitTouched, setUnitTouched] = useState(false);
+  useEffect(() => {
+    if (unitTouched || !units.data) return;
+    const productUnit = products.data?.find((p) => p.id === form.product_id)?.unit_id;
+    const fallback = units.data.find((u) => u.abbreviation === TRIM_UNIT_ABBR[form.trim_unit])?.id;
+    const next = productUnit || fallback || "";
+    if (next !== form.unit_id) setForm((f) => ({ ...f, unit_id: next }));
+  }, [unitTouched, units.data, products.data, form.product_id, form.trim_unit, form.unit_id]);
 
   function set(k: string, v: unknown) { setForm((f) => ({ ...f, [k]: v })); setErr(null); }
 
@@ -279,7 +293,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
           <Field label="Unit">
             <SearchableSelect
               value={form.unit_id}
-              onChange={(v) => set("unit_id", v)}
+              onChange={(v) => { setUnitTouched(true); set("unit_id", v); }}
               placeholder="— Unit —"
               accent="#0F78FF"
               options={(units.data ?? []).map((u) => ({

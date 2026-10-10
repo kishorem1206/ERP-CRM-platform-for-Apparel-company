@@ -177,7 +177,8 @@ function AddSOModal({ onClose }: { onClose: () => void }) {
   // resolver. Never forces the value — only fills it while still at the "0"
   // default, so a price the user already edited is never clobbered.
   const handleProductChange = (i: number, productId: string) => {
-    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, product_id: productId, price_source: "", stock_check: null } : it)));
+    const unit = (products ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === productId)?.unit_id;
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, product_id: productId, unit_id: unit || it.unit_id, price_source: "", stock_check: null } : it)));
     if (!productId) return;
     api
       .get("/sales/price-lists/resolve", {

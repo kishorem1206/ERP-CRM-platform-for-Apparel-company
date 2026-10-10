@@ -106,6 +106,12 @@ function StockMovementForm() {
   const [message, setMessage] = useState("");
 
   const productOptions = useProductOptions();
+  // Same cached query the PO/SO/GRN forms use; used to pre-fill the unit from
+  // the chosen product's own unit.
+  const { data: productUnits } = useQuery({
+    queryKey: ["products-list"],
+    queryFn: async () => (await api.get("/products?page_size=200")).data.data ?? [],
+  });
   const warehouseOptions = useWarehouseOptions();
   const unitOptions = useUnitOptions();
 
@@ -261,7 +267,11 @@ function StockMovementForm() {
             <label className={labelClass}>Product</label>
             <SearchableSelect
               value={form.product_id}
-              onChange={(v) => set("product_id", v)}
+              onChange={(v) => {
+                set("product_id", v);
+                const unit = (productUnits ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === v)?.unit_id;
+                if (unit) set("unit_id", unit);
+              }}
               placeholder="— select product —"
               accent={accent}
               options={productOptions}
