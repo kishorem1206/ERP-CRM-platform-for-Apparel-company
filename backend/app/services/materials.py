@@ -3,10 +3,15 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.inventory import FabricRun, FabricVariant, InventoryLot, MaterialCompositionItem, TrimVariant
+from app.domain.business_rules import BusinessRulesError
+from app.models.inventory import FabricRun, FabricVariant, InventoryLot, InventoryTransaction, MaterialCompositionItem, TrimVariant
+from app.models.master import Product
+from app.models.production import MaterialIssueItem
+from app.models.purchase import PurchaseEntryItem
+from app.models.sales import DeliveryItem
 from app.schemas.inventory import ReceiveParams
 from app.schemas.materials import FabricCreate, FabricRunCreate, TrimCreate, YarnCreate
 from app.services.inventory import InventoryService
@@ -259,6 +264,44 @@ class MaterialsService:
         self.db.add(run)
         await self.db.flush()
         return run
+
+    async def lot_stock_product_ids(self, lot_id: UUID) -> list[UUID]:
+        """Products this lot's stock records are under. Each record keeps its
+        own product, independent of the lot's link."""
+        result = await self.db.execute(union(*(
+            select(model.product_id).where(model.lot_id == lot_id)
+            for model in (InventoryTransaction, MaterialIssueItem, PurchaseEntryItem, DeliveryItem)
+        )))
+        return list(result.scalars().all())
+
+    async def link_lot_product(self, lot_id: UUID, product_id: UUID | None, company_id: UUID) -> InventoryLot | None:
+        """Sets the catalog product a lot belongs to. Stock records are never
+        rewritten, so a lot that has any can only point at the product they
+        are under: _get_fifo_layers treats a lot as a cost layer of its linked
+        product, and a different one would issue this stock under that product."""
+        lot = (await self.db.execute(
+            select(InventoryLot).where(InventoryLot.id == lot_id, InventoryLot.company_id == company_id)
+        )).scalar_one_or_none()
+        if lot is None:
+            return None
+
+        if product_id is not None:
+            product = (await self.db.execute(
+                select(Product).where(Product.id == product_id, Product.company_id == company_id)
+            )).scalar_one_or_none()
+            if product is None or product.product_type != lot.material_type:
+                raise BusinessRulesError("INVALID_LOT_PRODUCT", f"Choose a {lot.material_type} product for this lot.")
+
+        stock_products = await self.lot_stock_product_ids(lot_id)
+        if stock_products and set(stock_products) != {product_id}:
+            raise BusinessRulesError(
+                "LOT_HAS_STOCK",
+                "This lot already has stock records, so it can only be linked to the product they are under.",
+            )
+
+        lot.product_id = product_id
+        await self.db.flush()
+        return lot
 
     async def list_lots(
         self, company_id: UUID, material_type: str | None = None,

@@ -139,6 +139,10 @@ class FabricRunCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class LotProductUpdate(BaseModel):
+    product_id: Optional[UUID] = None   # None removes the link
+
+
 # ── Output schemas ────────────────────────────────────────────────────────────
 
 class LotOut(BaseModel):
@@ -177,6 +181,7 @@ class LotOut(BaseModel):
     fabric_variants: list[FabricVariantOut] = []
     trim_variants: list[TrimVariantOut] = []
     stock_qty: Optional[Decimal] = None
+    stock_product_ids: list[UUID] = []   # products this lot's stock records are under; see lot_stock_product_ids
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 

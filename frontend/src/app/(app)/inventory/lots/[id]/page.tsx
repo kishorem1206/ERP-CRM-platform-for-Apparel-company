@@ -1,8 +1,11 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import api from "@/lib/api";
+import { parseApiError } from "@/lib/api-error";
+import { Can } from "@/lib/permissions";
+import { SearchableSelect } from "@/components/shared/searchable-select";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const BLUE     = "#0049A7";
@@ -55,6 +58,7 @@ interface Lot {
   material_type: string;
   product_id: string | null;
   product_name: string | null;
+  stock_product_ids: string[];
   yarn_count: string | null;
   ply: string | null;
   mill: string | null;
@@ -103,6 +107,51 @@ function SectionCard({ eyebrow, title, children }: { eyebrow: string; title: str
         {children}
       </div>
     </div>
+  );
+}
+
+// ── Linked fabric ─────────────────────────────────────────────────────────────
+function LinkedFabricCard({ lot }: { lot: Lot }) {
+  const qc = useQueryClient();
+  const fabrics = useQuery({
+    queryKey: ["products", "fabric", "ref"],
+    queryFn: async () => (await api.get("/products", { params: { product_type: "fabric", page_size: 200 } })).data.data as { id: string; name: string }[],
+  });
+  const link = useMutation({
+    mutationFn: (productId: string) => api.patch(`/materials/lots/${lot.id}/product`, { product_id: productId || null }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["material-lot", lot.id] });
+      qc.invalidateQueries({ queryKey: ["material-lots"] });
+    },
+  });
+  // Stock records stay under their own product, so a lot that has any can only
+  // link to that product; the server enforces the same rule.
+  const hasStock = lot.stock_product_ids.length > 0;
+  const options = hasStock
+    ? (fabrics.data ?? []).filter((f) => lot.stock_product_ids.includes(f.id))
+    : (fabrics.data ?? []);
+
+  return (
+    <SectionCard eyebrow="CATALOG LINK" title="Linked fabric">
+      <div className="space-y-2">
+        <SearchableSelect
+          value={lot.product_id ?? ""}
+          onChange={(v) => link.mutate(v)}
+          placeholder="Search and choose a fabric"
+          disabled={link.isPending || options.length === 0}
+          options={[
+            ...(hasStock ? [] : [{ value: "", label: "— Not linked —" }]),
+            ...options.map((f) => ({ value: f.id, label: f.name })),
+          ]}
+        />
+        <p className="text-xs text-muted-foreground">
+          {hasStock
+            ? "This lot already has stock records, so it can only be linked to the product they are under."
+            : "Linked lots are offered when this fabric is chosen on a Style."}
+        </p>
+        {link.isError && <p className="text-xs text-[#1D0DB0]">{parseApiError(link.error, "Could not save the link.")}</p>}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -172,6 +221,10 @@ export default function LotDetailPage({ params }: { params: { id: string } }) {
           )}
         </div>
       </div>
+
+      {lot.material_type === "fabric" && (
+        <Can perm="materials.update"><LinkedFabricCard lot={lot} /></Can>
+      )}
 
       {/* Yarn details */}
       {lot.material_type === "yarn" && (

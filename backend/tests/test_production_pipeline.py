@@ -24,12 +24,15 @@ from sqlalchemy import select
 
 from app.db.session import AsyncSessionLocal
 from app.domain.business_rules import BusinessRulesError
-from app.models.master import Colour, Size
+from app.models.master import Colour, Product, Size, Unit, Warehouse
+from app.models.inventory import InventoryLot
 from app.models.user import User
+from app.schemas.materials import FabricCreate
 from app.schemas.production import (
     LotSizeCreate, ProductionLotCreate, StageSizeUpdate,
-    StageUpdate, StyleColourIn, StyleCreate, StyleProcessIn, StyleSizeIn, StyleSubProcessIn,
+    StageUpdate, StyleColourIn, StyleCreate, StyleFabricIn, StyleProcessIn, StyleSizeIn, StyleSubProcessIn, StyleYarnIn,
 )
+from app.services.materials import MaterialsService
 from app.services.production import ProductionService, QuantityValidationError
 
 
@@ -208,6 +211,111 @@ def test_create_lot_response_does_not_crash_on_sizes_or_operations():
     r = asyncio.run(_run_create_lot_response_scenario())
     assert r["input_qty"] == 10
     assert r["operation_name"] == "Spreading"
+
+
+async def _run_gram_fabric_scenario():
+    """A Style's consumption can be in grams per piece, but a lot must carry it
+    as kg: yarn requirements are a share of that number and are themselves kg."""
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            colour = (await db.execute(select(Colour.id).where(Colour.company_id == company_id).limit(1))).scalar_one()
+            svc = ProductionService(db)
+            style = await svc.create_style(
+                StyleCreate(
+                    name=f"Test Style {uuid4().hex[:8]}", final_output_unit="Pieces",
+                    fabrics=[
+                        StyleFabricIn(fabric_name="Gram Fabric", consumption=200, unit="g", excess_pct=10),
+                        StyleFabricIn(fabric_name="Kg Fabric", consumption="0.5", unit="kg"),
+                        StyleFabricIn(fabric_name="Metre Fabric", consumption="1.5", unit="m"),
+                    ],
+                    yarns=[StyleYarnIn(yarn_name="Gram Fabric Yarn", fabric_index=0, consumption_pct=100, unit="kg")],
+                ),
+                company_id, user_id,
+            )
+            lot = await svc.create_lot(ProductionLotCreate(style_id=style.id, planned_qty=100, colour_id=colour), company_id, user_id)
+            lot = await svc.get_lot(lot.id, company_id)
+            return (
+                {f.fabric_name: (float(f.planned_qty), f.unit) for f in lot.lot_fabrics},
+                {y.yarn_name: (float(y.planned_qty), y.unit) for y in lot.lot_yarns},
+            )
+        finally:
+            await db.rollback()
+
+
+def test_gram_fabric_consumption_becomes_kg_on_the_lot():
+    fabrics, yarns = asyncio.run(_run_gram_fabric_scenario())
+    # 200 g x 100 pcs x 1.10 excess = 22 kg, not 22,000.
+    assert fabrics["Gram Fabric"] == (22.0, "kg")
+    assert yarns["Gram Fabric Yarn"] == (22.0, "kg")
+    # Other units pass through unchanged.
+    assert fabrics["Kg Fabric"] == (50.0, "kg")
+    assert fabrics["Metre Fabric"] == (150.0, "m")
+
+
+async def _run_lot_link_scenario():
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            fabric_a, fabric_b = (await db.execute(
+                select(Product.id).where(Product.company_id == company_id, Product.product_type == "fabric").limit(2)
+            )).scalars().all()
+            yarn = (await db.execute(
+                select(Product.id).where(Product.company_id == company_id, Product.product_type == "yarn").limit(1)
+            )).scalar_one()
+            warehouse = (await db.execute(select(Warehouse.id).where(Warehouse.company_id == company_id).limit(1))).scalar_one()
+            kg = (await db.execute(select(Unit.id).where(Unit.abbreviation == "kg", Unit.company_id == company_id).limit(1))).scalar_one()
+            svc = MaterialsService(db)
+
+            async def rejected(lot_id, product_id):
+                try:
+                    await svc.link_lot_product(lot_id, product_id, company_id)
+                except BusinessRulesError as e:
+                    return e.code
+                return None
+
+            empty = await svc.create_fabric(FabricCreate(lot_number=f"T-{uuid4().hex[:8]}"), company_id, user_id)
+            wrong_type = await rejected(empty.id, yarn)
+            await svc.link_lot_product(empty.id, fabric_a, company_id)
+            relinked = (await svc.link_lot_product(empty.id, fabric_b, company_id)).product_id
+            unlinked = (await svc.link_lot_product(empty.id, None, company_id)).product_id
+
+            # Stocked under fabric_a, but the lot itself left unlinked: the
+            # state an existing lot can be in.
+            stocked = await svc.create_fabric(
+                FabricCreate(
+                    lot_number=f"T-{uuid4().hex[:8]}", product_id=fabric_a, warehouse_id=warehouse,
+                    unit_id=kg, quantity=10, unit_cost=100,
+                ),
+                company_id, user_id,
+            )
+            stocked.product_id = None
+            await db.flush()
+            other_product = await rejected(stocked.id, fabric_b)
+            lot_after_reject = (await db.execute(select(InventoryLot.product_id).where(InventoryLot.id == stocked.id))).scalar_one()
+            await svc.link_lot_product(stocked.id, fabric_a, company_id)
+            unlink_stocked = await rejected(stocked.id, None)
+            layers = await svc.inv._get_fifo_layers(company_id, fabric_a, warehouse, None)
+            return {
+                "wrong_type": wrong_type, "relinked": relinked == fabric_b, "unlinked": unlinked,
+                "other_product": other_product, "lot_after_reject": lot_after_reject,
+                "unlink_stocked": unlink_stocked, "in_fifo": stocked.id in {l[0] for l in layers},
+            }
+        finally:
+            await db.rollback()
+
+
+def test_lot_product_link_keeps_stock_under_its_own_product():
+    r = asyncio.run(_run_lot_link_scenario())
+    # No stock records: free to link, change and remove.
+    assert r["wrong_type"] == "INVALID_LOT_PRODUCT"
+    assert r["relinked"] is True
+    assert r["unlinked"] is None
+    # Stock records: only the product they are under.
+    assert r["other_product"] == "LOT_HAS_STOCK"
+    assert r["lot_after_reject"] is None
+    assert r["unlink_stocked"] == "LOT_HAS_STOCK"
+    assert r["in_fifo"] is True
 
 
 async def _run_list_lots_response_scenario():

@@ -79,6 +79,15 @@ _LOT_FULL_LOADS = (
 )
 
 
+def _fabric_planned_in_kg(planned_qty: Decimal | None, unit: str | None) -> tuple[Decimal | None, str | None]:
+    """A Style can state fabric consumption in grams per piece, but lot
+    quantities are compared with stock in kg and yarn requirements are a
+    percentage of them, so a lot always carries gram fabric as kg."""
+    if (unit or "").strip().lower() not in ("g", "gm", "gram", "grams"):
+        return planned_qty, unit
+    return (planned_qty / 1000 if planned_qty is not None else None), "kg"
+
+
 def _stage_accepted_qty(stage: ProductionStage) -> int:
     """The stage's actual accepted output — what flows to the next stage's
     planned_qty. Outsourced stages (vendor/internal_worker) use the job-work
@@ -1570,10 +1579,11 @@ class ProductionService:
                 if base_qty is not None:
                     excess_mult = 1 + float(fb.excess_pct) / 100 if fb.excess_pct is not None else 1
                     planned_qty = Decimal(str(base_qty * excess_mult))
+                planned_qty, lot_unit = _fabric_planned_in_kg(planned_qty, fb.unit)
                 lf = LotFabric(
                     production_lot_id=lot.id, style_fabric_id=fb.id, fabric_name=fb.fabric_name,
                     style_part_id=fb.style_part_id, colour_id=fb.colour_id, source_type=fb.source_type,
-                    unit=fb.unit, planned_qty=planned_qty, created_at=now,
+                    unit=lot_unit, planned_qty=planned_qty, created_at=now,
                 )
                 self.db.add(lf)
                 await self.db.flush()

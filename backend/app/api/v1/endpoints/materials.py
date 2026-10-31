@@ -1,7 +1,7 @@
 """Materials endpoints: yarn, fabric, trims, fabric runs, lots."""
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
 from app.api.v1.deps import AuthUser, DBSession
@@ -10,7 +10,7 @@ from app.models.master import Brand, Product
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.materials import (
     FabricCreate, FabricRunCreate, FabricRunOut,
-    LotOut, TrimCreate, YarnCreate,
+    LotOut, LotProductUpdate, TrimCreate, YarnCreate,
 )
 from app.services.materials import MaterialsService
 
@@ -155,11 +155,27 @@ async def get_lot(lot_id: UUID, db: DBSession, user: AuthUser):
     )
     lot = result.scalar_one_or_none()
     if not lot:
-        from fastapi import HTTPException
         raise HTTPException(404, "Lot not found")
     out = LotOut.model_validate(lot)
     out.product_name = await _resolve_product_name(db, lot.product_id)
     out.brand_name = await _resolve_brand_name(db, lot.brand_id)
+    out.stock_product_ids = await MaterialsService(db).lot_stock_product_ids(lot.id)
+    return ApiResponse(success=True, data=out)
+
+
+@router.patch("/lots/{lot_id}/product")
+async def link_lot_product(lot_id: UUID, body: LotProductUpdate, db: DBSession, user: AuthUser):
+    user.require("materials.update")
+    svc = MaterialsService(db)
+    lot = await svc.link_lot_product(lot_id, body.product_id, user.company_id)
+    if not lot:
+        raise HTTPException(404, "Lot not found")
+    await db.commit()
+    await db.refresh(lot)
+    out = LotOut.model_validate(lot)
+    out.product_name = await _resolve_product_name(db, lot.product_id)
+    out.brand_name = await _resolve_brand_name(db, lot.brand_id)
+    out.stock_product_ids = await svc.lot_stock_product_ids(lot.id)
     return ApiResponse(success=True, data=out)
 
 

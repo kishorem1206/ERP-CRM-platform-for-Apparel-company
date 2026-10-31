@@ -9,6 +9,7 @@ import { SearchableSelect } from "@/components/shared/searchable-select";
 
 const INDIGO = "#0049A7";
 const FINAL_OUTPUT_UNITS = ["Pieces", "Dozen", "Sets", "Boxes"];
+const FABRIC_UNITS = [{ value: "kg", label: "Kg" }, { value: "g", label: "Gram" }, { value: "m", label: "Metre" }];
 const TRIM_CATEGORIES = ["Sizable", "Non-Sizable"];
 
 let rowSeq = 0;
@@ -209,7 +210,11 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   });
   const fabricLots = useQuery({
     queryKey: ["material-lots", "fabric", "ref"],
-    queryFn: async () => (await api.get("/materials/lots", { params: { material_type: "fabric", page_size: 200 } })).data.data as { id: string; lot_number: string; construction: string | null; colour: string | null }[],
+    queryFn: async () => (await api.get("/materials/lots", { params: { material_type: "fabric", page_size: 200 } })).data.data as { id: string; lot_number: string; construction: string | null; colour: string | null; product_name: string | null }[],
+  });
+  const fabricProducts = useQuery({
+    queryKey: ["products", "fabric", "ref"],
+    queryFn: async () => (await api.get("/products", { params: { product_type: "fabric", page_size: 200 } })).data.data as { id: string; name: string }[],
   });
   const trimLots = useQuery({
     queryKey: ["material-lots", "trim", "ref"],
@@ -504,6 +509,25 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   }
   function updateFabric(key: string, patch: Partial<FabricRow>) {
     setFabrics((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+  function linkedFabricLots(fabricName: string) {
+    return (fabricLots.data ?? []).filter((l) => l.product_name === fabricName);
+  }
+  // Choosing a fabric drops any lot from the previous fabric; a fabric with a
+  // single linked lot has nothing to choose, so that lot is picked for you.
+  function selectFabric(key: string, fabricName: string) {
+    const linked = linkedFabricLots(fabricName);
+    updateFabric(key, { fabric_name: fabricName, lot_id: linked.length === 1 ? linked[0].id : "" });
+  }
+  function fabricLotOptions(f: FabricRow) {
+    if (!f.fabric_name) return [];
+    // A name from before the fabric dropdown has no link to go by, so it keeps
+    // the full list. The saved lot stays listed even if it isn't linked.
+    const inMaster = (fabricProducts.data ?? []).some((p) => p.name === f.fabric_name);
+    const lots = !fabricProducts.data || inMaster
+      ? (fabricLots.data ?? []).filter((l) => l.product_name === f.fabric_name || l.id === f.lot_id)
+      : fabricLots.data ?? [];
+    return lots.map((l) => ({ value: l.id, label: l.lot_number, meta: [l.construction, l.colour].filter(Boolean).join(" · ") || undefined }));
   }
   function removeFabric(key: string) {
     setFabrics((r) => r.filter((row) => row.key !== key));
@@ -1194,10 +1218,26 @@ export function StyleForm({ styleId }: { styleId?: string }) {
         {/* 5. Fabric */}
         <Section n={fabricSource === "yarn" ? 4 : 3} title="Fabric Requirements" subtitle={fabricSource === "yarn" ? "References the Fabric Master — consumption, unit, excess % per style" : "Fabric is purchased directly (no yarn process) — link the purchased fabric lot, consumption and excess % per style"}>
           <div className="space-y-3">
-            {fabrics.map((f) => (
+            {fabrics.map((f) => {
+              const lotOptions = fabricLotOptions(f);
+              return (
               <div key={f.key} className="p-3 rounded-xl border border-border bg-background space-y-2">
                 <div className="flex items-start gap-2">
-                  <Input value={f.fabric_name} onChange={(e) => updateFabric(f.key, { fabric_name: e.target.value })} placeholder="Fabric name, e.g. 30sVL-S/J-Pink-30" className="flex-1" />
+                  <div className="flex-1 min-w-0">
+                    <SearchableSelect
+                      value={f.fabric_name}
+                      onChange={(v) => selectFabric(f.key, v)}
+                      placeholder="Search and choose a fabric"
+                      accent={INDIGO}
+                      disabled={fabricLots.isLoading}
+                      options={[
+                        ...(f.fabric_name && !(fabricProducts.data ?? []).some((p) => p.name === f.fabric_name)
+                          ? [{ value: f.fabric_name, label: f.fabric_name }]
+                          : []),
+                        ...(fabricProducts.data ?? []).map((p) => ({ value: p.name, label: p.name })),
+                      ]}
+                    />
+                  </div>
                   <RemoveRowButton onClick={() => removeFabric(f.key)} />
                 </div>
                 <div className="grid grid-cols-3 gap-2">
@@ -1237,12 +1277,22 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   <SearchableSelect
                     value={f.lot_id}
                     onChange={(v) => updateFabric(f.key, { lot_id: v })}
-                    placeholder="Link fabric lot (optional)"
+                    placeholder={!f.fabric_name ? "Pick fabric first" : lotOptions.length ? "Fabric lot" : "No linked lots"}
                     accent={INDIGO}
-                    options={(fabricLots.data ?? []).map((l) => ({ value: l.id, label: l.lot_number, meta: [l.construction, l.colour].filter(Boolean).join(" · ") || undefined }))}
+                    disabled={lotOptions.length === 0}
+                    options={lotOptions.length ? [{ value: "", label: "— No lot —" }, ...lotOptions] : []}
                   />
                   <Input type="number" step="0.0001" value={f.consumption} onChange={(e) => updateFabric(f.key, { consumption: e.target.value })} placeholder="Consumption" />
-                  {unitOptionsInput(f.unit, (v) => updateFabric(f.key, { unit: v }), "Unit")}
+                  <SearchableSelect
+                    value={f.unit}
+                    onChange={(v) => updateFabric(f.key, { unit: v })}
+                    placeholder="Unit"
+                    accent={INDIGO}
+                    options={[
+                      ...FABRIC_UNITS,
+                      ...(f.unit && !FABRIC_UNITS.some((u) => u.value === f.unit) ? [{ value: f.unit, label: f.unit }] : []),
+                    ]}
+                  />
                   <Input type="number" step="0.01" value={f.excess_pct} onChange={(e) => updateFabric(f.key, { excess_pct: e.target.value })} placeholder="Wastage %" />
                   <Input type="number" step="0.01" value={f.gsm} onChange={(e) => updateFabric(f.key, { gsm: e.target.value })} placeholder="GSM" />
                 </div>
@@ -1252,6 +1302,11 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   <Input type="number" step="0.01" value={f.knit_dia} onChange={(e) => updateFabric(f.key, { knit_dia: e.target.value })} placeholder="Knit Dia" />
                   <Input type="number" step="0.01" value={f.finish_dia} onChange={(e) => updateFabric(f.key, { finish_dia: e.target.value })} placeholder="Finish Dia" />
                 </div>
+                {f.fabric_name && lotOptions.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    No lots are linked to this fabric yet. Choose this fabric as the Product when you add a fabric lot.
+                  </p>
+                )}
                 {sizeIds.length > 0 && (
                   <div className="pt-1">
                     <p className="text-[11px] text-muted-foreground mb-1.5">
@@ -1274,7 +1329,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
             <AddRowButton onClick={addFabric} label="Add Fabric" />
           </div>
         </Section>
@@ -1354,11 +1410,11 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                     <p className="text-xs font-medium text-foreground mb-1.5">Sub-processes</p>
                     <div className="space-y-1.5">
                       {p.sub_processes.map((sp) => (
-                        <div key={sp.key} className="flex items-center gap-2">
-                          <Input value={sp.name} onChange={(e) => updateSubProcess(p.key, sp.key, { name: e.target.value })} placeholder="e.g. Power Table" className="flex-1 !py-1.5" />
-                          <Input type="number" step="0.01" value={sp.min_rate} onChange={(e) => updateSubProcess(p.key, sp.key, { min_rate: e.target.value })} placeholder="Min ₹" className="w-24 !py-1.5" />
-                          <Input type="number" step="0.01" value={sp.max_rate} onChange={(e) => updateSubProcess(p.key, sp.key, { max_rate: e.target.value })} placeholder="Max ₹" className="w-24 !py-1.5" />
-                          <Input type="number" step="0.01" value={sp.planned_rate} onChange={(e) => updateSubProcess(p.key, sp.key, { planned_rate: e.target.value })} placeholder="Planned ₹" className="w-28 !py-1.5" />
+                        <div key={sp.key} className="grid grid-cols-[minmax(0,2fr)_repeat(3,minmax(0,1fr))_auto] items-center gap-2">
+                          <Input value={sp.name} onChange={(e) => updateSubProcess(p.key, sp.key, { name: e.target.value })} placeholder="Sub-process name, e.g. Power Table" className="!py-1.5" />
+                          <Input type="number" step="0.01" value={sp.min_rate} onChange={(e) => updateSubProcess(p.key, sp.key, { min_rate: e.target.value })} placeholder="Min ₹" className="!py-1.5" />
+                          <Input type="number" step="0.01" value={sp.max_rate} onChange={(e) => updateSubProcess(p.key, sp.key, { max_rate: e.target.value })} placeholder="Max ₹" className="!py-1.5" />
+                          <Input type="number" step="0.01" value={sp.planned_rate} onChange={(e) => updateSubProcess(p.key, sp.key, { planned_rate: e.target.value })} placeholder="Planned ₹" className="!py-1.5" />
                           <RemoveRowButton onClick={() => removeSubProcess(p.key, sp.key)} />
                         </div>
                       ))}
