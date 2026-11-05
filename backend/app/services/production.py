@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.business_rules import BusinessRulesError, business_rules
-from app.models.master import Product, ProductVariant
+from app.models.inventory import InventoryLot
+from app.models.master import Product, ProductVariant, Unit
 from app.models.production import (
-    FabricProcessingEntry, InternalWorker, LotAdditionalCost, LotFabric, LotPackingMaterial, LotPartColour, LotPartSize,
+    FabricProcessingEntry, InternalWorker, LotAdditionalCost, LotFabric, LotMaterial, LotPackingMaterial, LotPartColour, LotPartSize,
     LotTrim, LotYarn, MaterialIssue, MaterialIssueItem, ProductionMistakeLog,
     ProcessMaster, ProductionAuditLog, ProductionLot, ProductionLotSize, ProductionOutput,
     ProductionStage, ProductionStageChallan, ProductionStageEntry, ProductionStageSize, SizeChart, SizeChartItem, Style, StyleAdditionalCost,
@@ -24,6 +25,7 @@ from app.schemas.production import (
     InternalWorkerCreate,
     LotAdditionalCostCreate, LotAdditionalCostUpdate, LotCostComponentOut, LotCostSummaryOut,
     LotFabricActualUpdate, LotYarnActualUpdate,
+    LotMaterialCreate, LotMaterialUpdate,
     LotPackingActualUpdate, LotTrimActualUpdate,
     MaterialIssueCreate, MISItemCreate, MISItemReturnUpdate, MistakeLogCreate,
     ProductionLotCreate, ProductionLotUpdate,
@@ -1664,6 +1666,7 @@ class ProductionService:
             # to the selectinload below (and to any other query), not just
             # stale-cached.
             await self.db.flush()
+        await self.fill_lot_materials_from_style(lot.id, company_id)
         result = await self.db.execute(
             select(ProductionLot).where(ProductionLot.id == lot.id).options(*_LOT_FULL_LOADS)
         )
@@ -1921,12 +1924,18 @@ class ProductionService:
     async def add_stage_entry(
         self, stage_id: UUID, body: StageEntryCreate, user_id: UUID,
     ) -> ProductionStageEntry:
-        if body.pieces_in > 0:
-            stage_lot_id = (await self.db.execute(
-                select(ProductionStage.production_lot_id).where(ProductionStage.id == stage_id)
-            )).scalar_one_or_none()
-            if stage_lot_id:
-                await self._require_fabric_ready(stage_lot_id)
+        stage_res = await self.db.execute(
+            select(ProductionStage).where(ProductionStage.id == stage_id)
+            .options(selectinload(ProductionStage.challans))
+        )
+        stage = stage_res.scalar_one_or_none()
+        pieces_in = body.pieces_in
+        if stage is not None and stage.stage_type == "cutting":
+            # Cutting takes fabric in by weight and gives pieces out, so its
+            # pieces "in" are simply the pieces it cut: good plus rejected.
+            pieces_in = body.pieces_out + body.rejected
+        if pieces_in > 0 and stage is not None:
+            await self._require_fabric_ready(stage.production_lot_id)
         now = datetime.now(timezone.utc)
         if body.input_weight_kg is not None and body.output_weight_kg is not None:
             remainder = body.input_weight_kg - body.output_weight_kg
@@ -1938,7 +1947,7 @@ class ProductionService:
                 )
         entry = ProductionStageEntry(
             stage_id=stage_id, entry_date=body.entry_date,
-            pieces_in=body.pieces_in, pieces_out=body.pieces_out, rejected=body.rejected,
+            pieces_in=pieces_in, pieces_out=body.pieces_out, rejected=body.rejected,
             input_weight_kg=body.input_weight_kg, output_weight_kg=body.output_weight_kg,
             wastage_kg=body.wastage_kg, recoverable_kg=body.recoverable_kg,
             operator=body.operator, machine=body.machine, notes=body.notes,
@@ -1948,13 +1957,8 @@ class ProductionService:
         await self.db.flush()
 
         # Roll up to stage totals
-        stage_res = await self.db.execute(
-            select(ProductionStage).where(ProductionStage.id == stage_id)
-            .options(selectinload(ProductionStage.challans))
-        )
-        stage = stage_res.scalar_one_or_none()
         if stage:
-            new_input = stage.input_qty + body.pieces_in
+            new_input = stage.input_qty + pieces_in
             new_output = stage.output_qty + body.pieces_out
             if new_output > new_input:
                 raise QuantityValidationError(
@@ -1973,7 +1977,7 @@ class ProductionService:
             if body.recoverable_kg is not None:
                 stage.recoverable_kg = (stage.recoverable_kg or Decimal("0")) + body.recoverable_kg
             stage.updated_at = now
-            if stage.status == "pending" and body.pieces_in > 0:
+            if stage.status == "pending" and pieces_in > 0:
                 stage.status = "in_progress"
                 stage.started_at = now
             if stage.rate_per_pc is not None or any(c.bill_amount for c in stage.challans):
@@ -2407,6 +2411,199 @@ class ProductionService:
         return packing
 
     # ── Material Issues (MIS) ──────────────────────────────────────────────
+
+    # ── Lot materials ──────────────────────────────────────────────────────
+
+    async def _get_company_lot(self, lot_id: UUID, company_id: UUID) -> ProductionLot | None:
+        return (await self.db.execute(
+            select(ProductionLot).where(ProductionLot.id == lot_id, ProductionLot.company_id == company_id)
+        )).scalar_one_or_none()
+
+    async def _issued_by_product(self, lot_id: UUID) -> dict[UUID, Decimal]:
+        """Net quantity issued to the lot per product: issued less returned."""
+        rows = await self.db.execute(
+            select(
+                MaterialIssueItem.product_id,
+                func.sum(MaterialIssueItem.issued_qty - func.coalesce(MaterialIssueItem.returned_qty, 0)),
+            )
+            .join(MaterialIssue, MaterialIssue.id == MaterialIssueItem.material_issue_id)
+            .where(MaterialIssue.production_lot_id == lot_id, MaterialIssue.status != "cancelled")
+            .group_by(MaterialIssueItem.product_id)
+        )
+        return {product_id: qty for product_id, qty in rows.all()}
+
+    async def list_lot_materials(self, lot_id: UUID, company_id: UUID) -> list[dict] | None:
+        if not await self._get_company_lot(lot_id, company_id):
+            return None
+        materials = (await self.db.execute(
+            select(LotMaterial).where(LotMaterial.production_lot_id == lot_id)
+            .options(selectinload(LotMaterial.product), selectinload(LotMaterial.unit))
+            .order_by(LotMaterial.sort_order, LotMaterial.created_at)
+        )).scalars().all()
+        issued = await self._issued_by_product(lot_id)
+        out = []
+        for m in materials:
+            issued_qty = issued.get(m.product_id, Decimal("0"))
+            out.append({
+                "id": m.id, "product_id": m.product_id, "product_name": m.product.name,
+                "product_code": m.product.code, "product_type": m.product.product_type,
+                "unit_id": m.unit_id, "unit_abbreviation": m.unit.abbreviation if m.unit else None,
+                "planned_qty": m.planned_qty, "issued_qty": issued_qty,
+                "balance_qty": m.planned_qty - issued_qty if m.planned_qty is not None else None,
+                "notes": m.notes,
+            })
+        return out
+
+    async def add_lot_material(self, lot_id: UUID, body: LotMaterialCreate, company_id: UUID) -> LotMaterial | None:
+        if not await self._get_company_lot(lot_id, company_id):
+            return None
+        product = (await self.db.execute(
+            select(Product).where(Product.id == body.product_id, Product.company_id == company_id)
+        )).scalar_one_or_none()
+        if not product:
+            raise BusinessRulesError("INVALID_PRODUCT", "Choose a product from this company's catalog.")
+        existing = (await self.db.execute(
+            select(LotMaterial.id).where(LotMaterial.production_lot_id == lot_id, LotMaterial.product_id == body.product_id)
+        )).scalar_one_or_none()
+        if existing:
+            raise BusinessRulesError("DUPLICATE_MATERIAL", f"{product.name} is already on this lot's list — change its quantity instead.")
+        count = (await self.db.execute(
+            select(func.count(LotMaterial.id)).where(LotMaterial.production_lot_id == lot_id)
+        )).scalar_one()
+        material = LotMaterial(
+            production_lot_id=lot_id, product_id=body.product_id,
+            unit_id=body.unit_id or product.unit_id, planned_qty=body.planned_qty,
+            notes=body.notes, sort_order=count, created_at=datetime.now(timezone.utc),
+        )
+        self.db.add(material)
+        await self.db.flush()
+        return material
+
+    async def _get_company_lot_material(self, material_id: UUID, company_id: UUID) -> LotMaterial | None:
+        return (await self.db.execute(
+            select(LotMaterial)
+            .join(ProductionLot, ProductionLot.id == LotMaterial.production_lot_id)
+            .where(LotMaterial.id == material_id, ProductionLot.company_id == company_id)
+        )).scalar_one_or_none()
+
+    async def update_lot_material(self, material_id: UUID, body: LotMaterialUpdate, company_id: UUID) -> LotMaterial | None:
+        material = await self._get_company_lot_material(material_id, company_id)
+        if not material:
+            return None
+        for field, value in body.model_dump(exclude_unset=True).items():
+            setattr(material, field, value)
+        await self.db.flush()
+        return material
+
+    async def delete_lot_material(self, material_id: UUID, company_id: UUID) -> bool:
+        material = await self._get_company_lot_material(material_id, company_id)
+        if not material:
+            return False
+        issued = (await self._issued_by_product(material.production_lot_id)).get(material.product_id, Decimal("0"))
+        if issued > 0:
+            raise BusinessRulesError(
+                "MATERIAL_ISSUED", "Material has already been issued against this line, so it can't be removed.",
+            )
+        await self.db.delete(material)
+        await self.db.flush()
+        return True
+
+    async def fill_lot_materials_from_style(self, lot_id: UUID, company_id: UUID) -> int | None:
+        """Add the lot's BOM lines that map to a catalog product and aren't on
+        its material list yet, then anything already issued to the lot that
+        still isn't (with no planned quantity); returns how many were added.
+
+        A BOM line names its material, so the product is found through the
+        material batch chosen on the Style (that batch's product), else by an
+        exact product name of the same material type. Fabric made from yarn
+        is skipped — its yarn is what gets issued. Lines that map to no
+        product are left for the user to add by hand.
+        """
+        lot = await self._get_company_lot(lot_id, company_id)
+        if not lot:
+            return None
+        style = (await self.db.execute(select(Style).where(Style.id == lot.style_id))).scalar_one_or_none() if lot.style_id else None
+
+        async def rows(model):
+            return (await self.db.execute(select(model).where(model.production_lot_id == lot_id))).scalars().all()
+
+        fabrics, yarns, trims, packing = await rows(LotFabric), await rows(LotYarn), await rows(LotTrim), await rows(LotPackingMaterial)
+
+        # Style row -> chosen material batch -> that batch's product.
+        batch_by_style_row: dict[UUID, UUID] = {}
+        if style:
+            for model in (StyleFabric, StyleYarn, StyleTrim):
+                for row_id, batch_id in (await self.db.execute(
+                    select(model.id, model.lot_id).where(model.style_id == style.id, model.lot_id.is_not(None))
+                )).all():
+                    batch_by_style_row[row_id] = batch_id
+        product_by_batch: dict[UUID, UUID] = {}
+        if batch_by_style_row:
+            product_by_batch = {
+                batch_id: product_id for batch_id, product_id in (await self.db.execute(
+                    select(InventoryLot.id, InventoryLot.product_id)
+                    .where(InventoryLot.id.in_(set(batch_by_style_row.values())), InventoryLot.product_id.is_not(None))
+                )).all()
+            }
+
+        products = (await self.db.execute(
+            select(Product).where(Product.company_id == company_id, Product.product_type.in_(("fabric", "yarn", "trim", "packing")))
+        )).scalars().all()
+        product_by_id = {p.id: p for p in products}
+        product_by_name = {(p.product_type, p.name.strip().lower()): p.id for p in products}
+        unit_by_abbr = {
+            abbr.strip().lower(): unit_id for unit_id, abbr in (await self.db.execute(
+                select(Unit.id, Unit.abbreviation).where(Unit.company_id == company_id)
+            )).all()
+        }
+
+        def resolve(material_type: str, name: str, style_row_id: UUID | None) -> UUID | None:
+            batch = batch_by_style_row.get(style_row_id) if style_row_id else None
+            return product_by_batch.get(batch) if batch else product_by_name.get((material_type, name.strip().lower()))
+
+        needed: dict[UUID, list] = {}   # product_id -> [planned_qty, unit text]
+
+        def need(product_id: UUID | None, qty: Decimal | None, unit: str | None) -> None:
+            if not product_id or product_id not in product_by_id:
+                return
+            if product_id in needed:
+                current = needed[product_id][0]
+                needed[product_id][0] = qty if current is None else current + (qty or 0)
+            else:
+                needed[product_id] = [qty, unit]
+
+        default_source = style.fabric_source if style else "yarn"
+        for fb in fabrics:
+            if (fb.source_type or default_source) == "yarn":
+                continue
+            need(resolve("fabric", fb.fabric_name, fb.style_fabric_id), fb.planned_qty, fb.unit)
+        for yn in yarns:
+            need(resolve("yarn", yn.yarn_name, yn.style_yarn_id), yn.planned_qty, yn.unit)
+        for tr in trims:
+            need(resolve("trim", tr.trim_name, tr.style_trim_id), tr.planned_qty, tr.unit)
+        for pm in packing:
+            need(pm.product_id or product_by_name.get(("packing", pm.material_name.strip().lower())), pm.planned_qty, pm.unit)
+
+        for product_id in await self._issued_by_product(lot_id):
+            if product_id not in needed:
+                need(product_id, None, None)
+
+        already = set((await self.db.execute(
+            select(LotMaterial.product_id).where(LotMaterial.production_lot_id == lot_id)
+        )).scalars().all())
+        now = datetime.now(timezone.utc)
+        added = 0
+        for product_id, (qty, unit) in needed.items():
+            if product_id in already:
+                continue
+            unit_id = unit_by_abbr.get((unit or "").strip().lower()) or product_by_id[product_id].unit_id
+            self.db.add(LotMaterial(
+                production_lot_id=lot_id, product_id=product_id, unit_id=unit_id, planned_qty=qty,
+                sort_order=len(already) + added, created_at=now,
+            ))
+            added += 1
+        await self.db.flush()
+        return added
 
     async def list_mis(
         self, company_id: UUID, lot_id: UUID | None = None,

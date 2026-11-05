@@ -348,6 +348,8 @@ class PurchaseService:
 
         total_taxable = Decimal("0")
         total_amount = Decimal("0")
+        # One GRN can receive lines from several POs of the same vendor.
+        received_po_ids = {body.purchase_order_id} if body.purchase_order_id else set()
 
         for item_data in body.items:
             item_total = (item_data.accepted_qty * item_data.unit_price).quantize(Decimal("0.01"))
@@ -388,6 +390,7 @@ class PurchaseService:
                     new_cumulative = old_cumulative + item_data.accepted_qty
                     excess_qty = max(Decimal("0"), new_cumulative - po_item.ordered_qty) - max(Decimal("0"), old_cumulative - po_item.ordered_qty)
                     po_item.received_qty = new_cumulative
+                    received_po_ids.add(po_item.purchase_order_id)
 
             entry_item = PurchaseEntryItem(
                 purchase_entry_id=entry.id,
@@ -414,19 +417,19 @@ class PurchaseService:
         await self.db.flush()
 
         # Update PO status if applicable
-        if body.purchase_order_id:
+        if received_po_ids:
             po_result = await self.db.execute(
                 select(PurchaseOrder)
-                .where(PurchaseOrder.id == body.purchase_order_id)
+                .where(PurchaseOrder.id.in_(received_po_ids))
                 .options(selectinload(PurchaseOrder.items))
             )
-            po = po_result.scalar_one_or_none()
-            if po and po.status in ("approved", "partial"):
-                fully_received = all(
-                    item.received_qty >= item.ordered_qty for item in po.items
-                )
-                po.status = "received" if fully_received else "partial"
-                po.updated_at = now
+            for po in po_result.scalars().all():
+                if po.status in ("approved", "partial"):
+                    fully_received = all(
+                        item.received_qty >= item.ordered_qty for item in po.items
+                    )
+                    po.status = "received" if fully_received else "partial"
+                    po.updated_at = now
 
         await self.db.flush()
 

@@ -22,7 +22,7 @@ export function money(v: unknown) {
 }
 
 export function PdfDocumentPage({
-  title, number, status, backHref, pdfPath, downloadName, facts, loading, error, extra,
+  title, number, status, backHref, pdfPath, downloadName, facts, loading, error, extra, actions,
 }: {
   title: string;
   number?: string;
@@ -35,6 +35,8 @@ export function PdfDocumentPage({
   error: boolean;
   /** Optional content rendered after the facts grid and before the PDF preview. */
   extra?: React.ReactNode;
+  /** Optional buttons shown beside Download PDF, e.g. Approve. */
+  actions?: React.ReactNode;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [pdfFailed, setPdfFailed] = useState(false);
@@ -75,6 +77,8 @@ export function PdfDocumentPage({
             <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold uppercase text-indigo-700">{status}</span>
           )}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+        {actions}
         <a
           href={src ?? undefined}
           download={downloadName}
@@ -84,6 +88,7 @@ export function PdfDocumentPage({
         >
           <Download className="h-4 w-4" /> Download PDF
         </a>
+        </div>
       </div>
 
       {error ? (

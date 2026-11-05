@@ -6,6 +6,8 @@ import { Plus, Trash2, GripVertical } from "lucide-react";
 import api from "@/lib/api";
 import { Field, Input, Textarea, SegControl } from "@/components/create/ModalShell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { useCreateMaster } from "@/lib/use-create-master";
+import { parseApiError } from "@/lib/api-error";
 
 const INDIGO = "#0049A7";
 const FINAL_OUTPUT_UNITS = ["Pieces", "Dozen", "Sets", "Boxes"];
@@ -161,9 +163,10 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   const [sizeChartBySize, setSizeChartBySize] = useState<Record<string, string>>({});
   const [loadChartId, setLoadChartId] = useState("");
   const [partColours, setPartColours] = useState<PartColourRow[]>([]);
-  const [showAddPart, setShowAddPart] = useState(false);
   const [factorCalcKey, setFactorCalcKey] = useState<string | null>(null);
-  const [newPartName, setNewPartName] = useState("");
+  const [newColourName, setNewColourName] = useState("");
+  const [newColourError, setNewColourError] = useState("");
+  const [addingColour, setAddingColour] = useState(false);
 
   // ── Section 4 & 5: Yarn / Fabric ───────────────────────────────────────────
   const [yarns, setYarns] = useState<YarnRow[]>([]);
@@ -188,18 +191,17 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     queryKey: ["master-sizes"],
     queryFn: async () => (await api.get("/master/sizes")).data.data as { id: string; name: string }[],
   });
+  const createStylePart = useCreateMaster("stylePart");
   const styleParts = useQuery({
     queryKey: ["master-style-parts"],
     queryFn: async () => (await api.get("/master/style-parts")).data.data as { id: string; name: string }[],
   });
-  const createPartMut = useMutation({
-    mutationFn: (name: string) => api.post("/master/style-parts", { name }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["master-style-parts"] }),
-  });
+  const createBrand = useCreateMaster("brand");
   const brands = useQuery({
     queryKey: ["master-brands"],
     queryFn: async () => (await api.get("/master/brands")).data.data as { id: string; name: string }[],
   });
+  const createColour = useCreateMaster("colour");
   const colours = useQuery({
     queryKey: ["master-colours"],
     queryFn: async () => (await api.get("/master/colours")).data.data as { id: string; name: string; hex_code: string | null }[],
@@ -383,6 +385,28 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   }
   function toggleColour(id: string) {
     setColourIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+  // Saves a new colour to the Colour Master and ticks it for this style.
+  async function addColour() {
+    const name = newColourName.trim();
+    if (!name || !createColour || addingColour) return;
+    const existing = (colours.data ?? []).find((c) => c.name.trim().toLowerCase() === name.toLowerCase());
+    if (existing) {
+      setColourIds((prev) => (prev.includes(existing.id) ? prev : [...prev, existing.id]));
+      setNewColourName("");
+      return;
+    }
+    setAddingColour(true);
+    setNewColourError("");
+    try {
+      const id = await createColour(name);
+      setColourIds((prev) => [...prev, id]);
+      setNewColourName("");
+    } catch (e) {
+      setNewColourError(parseApiError(e, "Could not add this colour."));
+    } finally {
+      setAddingColour(false);
+    }
   }
   function updateSizeQuantity(sizeId: string, qty: string) {
     setSizeQuantities((prev) => ({ ...prev, [sizeId]: qty }));
@@ -782,6 +806,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           onChange={(v) => updateTrim(t.key, { style_part_id: v })}
           placeholder="— Part (optional) —"
           accent={INDIGO}
+          onCreate={createStylePart}
+          createNoun="style part"
           options={[
             { value: "", label: "— Part (optional) —" },
             ...(styleParts.data ?? []).map((sp) => ({ value: sp.id, label: sp.name })),
@@ -792,6 +818,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           onChange={(v) => updateTrim(t.key, { colour_id: v })}
           placeholder="— Trim Colour (optional) —"
           accent={INDIGO}
+          onCreate={createColour}
+          createNoun="colour"
           options={[
             { value: "", label: "— Trim Colour (optional) —" },
             ...(colours.data ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -906,6 +934,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                 onChange={setBrandId}
                 placeholder="— Not specified —"
                 accent={INDIGO}
+                onCreate={createBrand}
+                createNoun="brand"
                 options={[
                   { value: "", label: "— Not specified —" },
                   ...(brands.data ?? []).map((b) => ({ value: b.id, label: b.name })),
@@ -1050,7 +1080,28 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   {c.name}
                 </button>
               ))}
+              {createColour && (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-48">
+                    <Input
+                      value={newColourName}
+                      onChange={(e) => { setNewColourName(e.target.value); setNewColourError(""); }}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addColour(); } }}
+                      placeholder="New colour, e.g. Maroon"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addColour}
+                    disabled={!newColourName.trim() || addingColour}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-dashed border-border text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> {addingColour ? "Adding…" : "Add"}
+                  </button>
+                </div>
+              )}
             </div>
+            {newColourError && <p className="mt-1 text-xs text-destructive">{newColourError}</p>}
           </Field>
           <Field
             label="Style Parts (optional)"
@@ -1066,6 +1117,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                         onChange={(v) => updatePartColour(p.key, { style_part_id: v })}
                         placeholder="Select Style Part"
                         accent={INDIGO}
+                        onCreate={createStylePart}
+                        createNoun="style part"
                         options={(styleParts.data ?? []).map((sp) => ({ value: sp.id, label: sp.name }))}
                       />
                     </div>
@@ -1075,6 +1128,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                         onChange={(v) => updatePartColour(p.key, { colour_id: v })}
                         placeholder="— Colour (optional) —"
                         accent={INDIGO}
+                        onCreate={createColour}
+                        createNoun="colour"
                         options={[
                           { value: "", label: "— Colour (optional) —" },
                           ...(colours.data ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -1101,38 +1156,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   )}
                 </div>
               ))}
-              <div className="flex items-center gap-3">
+              <div>
                 <AddRowButton onClick={addPartColour} label="Add Style Part" />
-                {!showAddPart ? (
-                  <button type="button" onClick={() => setShowAddPart(true)} className="text-xs font-semibold" style={{ color: INDIGO }}>
-                    + New Style Part
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      value={newPartName}
-                      onChange={(e) => setNewPartName(e.target.value)}
-                      placeholder="e.g. Collar"
-                      className="w-40"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!newPartName.trim()) return;
-                        createPartMut.mutate(newPartName.trim());
-                        setNewPartName("");
-                        setShowAddPart(false);
-                      }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
-                      style={{ background: INDIGO }}
-                    >
-                      Add
-                    </button>
-                    <button type="button" onClick={() => { setShowAddPart(false); setNewPartName(""); }} className="text-xs text-muted-foreground px-2">
-                      Cancel
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
           </Field>
@@ -1194,6 +1219,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                     onChange={(v) => updateYarn(y.key, { colour_id: v })}
                     placeholder="— Colour (optional) —"
                     accent={INDIGO}
+                    onCreate={createColour}
+                    createNoun="colour"
                     options={[
                       { value: "", label: "— Colour (optional) —" },
                       ...(colours.data ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -1246,6 +1273,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                     onChange={(v) => updateFabric(f.key, { style_part_id: v })}
                     placeholder="— Part / Body Part (optional) —"
                     accent={INDIGO}
+                    onCreate={createStylePart}
+                    createNoun="style part"
                     options={[
                       { value: "", label: "— Part / Body Part (optional) —" },
                       ...(styleParts.data ?? []).map((sp) => ({ value: sp.id, label: sp.name })),
@@ -1256,6 +1285,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                     onChange={(v) => updateFabric(f.key, { colour_id: v })}
                     placeholder="— Fabric Colour (optional) —"
                     accent={INDIGO}
+                    onCreate={createColour}
+                    createNoun="colour"
                     options={[
                       { value: "", label: "— Fabric Colour (optional) —" },
                       ...(colours.data ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -1374,6 +1405,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                         onChange={(v) => updateProcess(p.key, { style_part_id: v })}
                         placeholder="— Whole style —"
                         accent={INDIGO}
+                        onCreate={createStylePart}
+                        createNoun="style part"
                         options={[
                           { value: "", label: "— Whole style —" },
                           ...(styleParts.data ?? []).map((sp) => ({ value: sp.id, label: sp.name })),

@@ -7,6 +7,7 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
 
@@ -113,6 +114,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
     queryKey: ["customers-list"],
     queryFn: async () => (await api.get("/sales/customers?page_size=200")).data.data ?? [],
   });
+  const createColour = useCreateMaster("colour");
   const { data: colours } = useQuery({
     queryKey: ["master-colours"],
     queryFn: async () => (await api.get("/master/colours")).data.data as { id: string; name: string; hex_code: string | null }[],
@@ -125,7 +127,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         customer_id: customerId || null,
         order_ref: orderRef || null,
         planned_qty: parseInt(plannedQty) || 0,
-        colour_id: colourId,
+        colour_id: colourId || null,
         planned_weight_kg: plannedWeightKg ? Number(plannedWeightKg) : undefined,
         delivery_date: deliveryDate || null,
         season: season || null,
@@ -224,14 +226,19 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Colour *</label>
+              <label className="text-xs font-medium text-muted-foreground">Colour (optional)</label>
               <div className="mt-1">
                 <SearchableSelect
                   value={colourId}
                   onChange={setColourId}
-                  placeholder="Select colour"
+                  placeholder="— No colour —"
                   accent={INDIGO}
-                  options={(colours ?? []).map((c) => ({ value: c.id, label: c.name }))}
+                  onCreate={createColour}
+                  createNoun="colour"
+                  options={[
+                    { value: "", label: "— No colour —" },
+                    ...(colours ?? []).map((c) => ({ value: c.id, label: c.name })),
+                  ]}
                 />
               </div>
             </div>
@@ -321,7 +328,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose}
               className="px-4 py-1.5 rounded border border-input text-sm hover:bg-muted">Cancel</button>
-            <button type="submit" disabled={mut.isPending || !colourId}
+            <button type="submit" disabled={mut.isPending}
               className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-60">
               {mut.isPending ? "Saving…" : "Create Lot"}
             </button>

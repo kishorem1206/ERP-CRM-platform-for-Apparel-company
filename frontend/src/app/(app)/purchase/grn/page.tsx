@@ -24,7 +24,17 @@ interface PurchaseEntry {
   items?: { excess_qty: string | null }[];
 }
 
+interface POLine {
+  id: string;
+  product_id: string;
+  unit_id: string;
+  ordered_qty: string;
+  received_qty: string;
+  unit_price: string;
+}
+
 interface GRNItem {
+  purchase_order_id?: string;
   po_item_id?: string;
   product_id: string;
   unit_id: string;
@@ -72,6 +82,20 @@ const columns: Column<Record<string, unknown>>[] = [
 
 const emptyItem = (): GRNItem => ({ product_id: "", unit_id: "", received_qty: "1", accepted_qty: "1", unit_price: "0" });
 
+const pendingQty = (line: POLine) => Math.max(Number(line.ordered_qty) - Number(line.received_qty), 0);
+
+const poLineToItem = (purchaseOrderId: string, line: POLine): GRNItem => ({
+  purchase_order_id: purchaseOrderId,
+  po_item_id: line.id,
+  product_id: line.product_id,
+  unit_id: line.unit_id,
+  received_qty: String(pendingQty(line)),
+  accepted_qty: String(pendingQty(line)),
+  unit_price: line.unit_price,
+  ordered_qty: Number(line.ordered_qty),
+  received_so_far: Number(line.received_qty),
+});
+
 function AddGRNModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
@@ -82,6 +106,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
   const [invoiceDate, setInvoiceDate] = useState("");
   const [notes, setNotes] = useState("");
   const [purchaseOrderId, setPurchaseOrderId] = useState("");
+  const [onlyPOItems, setOnlyPOItems] = useState(false);
   const [items, setItems] = useState<GRNItem[]>([emptyItem()]);
   const [error, setError] = useState("");
 
@@ -96,14 +121,14 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
         api.get("/purchase/orders", { params: { vendor_id: vendorId, status: "approved", page_size: 100 } }),
         api.get("/purchase/orders", { params: { vendor_id: vendorId, status: "partial", page_size: 100 } }),
       ]);
-      return [...(approved.data.data ?? []), ...(partial.data.data ?? [])] as { id: string; po_number: string }[];
+      return [...(approved.data.data ?? []), ...(partial.data.data ?? [])] as { id: string; po_number: string; items: POLine[] }[];
     },
     enabled: !!vendorId,
   });
   const { data: selectedPO } = useQuery({
     queryKey: ["purchase-order-detail-for-grn", purchaseOrderId],
     queryFn: async () => (await api.get(`/purchase/orders/${purchaseOrderId}`)).data.data as {
-      items: { id: string; product_id: string; unit_id: string; ordered_qty: string; received_qty: string; unit_price: string }[];
+      items: POLine[];
     },
     enabled: !!purchaseOrderId,
   });
@@ -120,10 +145,16 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
     queryFn: async () => (await api.get("/master/units")).data.data ?? [],
   });
 
+  // A GRN can draw on several POs; the header only names one when it's the only one.
+  const rowPOs = new Set(items.flatMap((it) => (it.purchase_order_id ? [it.purchase_order_id] : [])));
+  const openPOLines = (vendorPOs ?? []).flatMap((po) =>
+    po.items.filter((line) => pendingQty(line) > 0).map((line) => ({ po, line })),
+  );
+
   const mut = useMutation({
     mutationFn: () =>
       api.post("/purchase/entries", {
-        purchase_order_id: purchaseOrderId || null,
+        purchase_order_id: purchaseOrderId || (rowPOs.size === 1 ? [...rowPOs][0] : null),
         vendor_id: vendorId,
         warehouse_id: warehouseId,
         entry_date: entryDate,
@@ -153,26 +184,24 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
   const updateItem = (i: number, k: keyof GRNItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
 
+  const pickPOLine = (i: number, lineId: string) => {
+    const picked = openPOLines.find(({ line }) => line.id === lineId);
+    if (picked) setItems((prev) => prev.map((it, idx) => (idx === i ? poLineToItem(picked.po.id, picked.line) : it)));
+  };
+
   useEffect(() => {
     setPurchaseOrderId("");
+    // PO lines belong to the previous vendor.
+    setItems((prev) => {
+      const manual = prev.filter((it) => !it.po_item_id);
+      return manual.length ? manual : [emptyItem()];
+    });
   }, [vendorId]);
 
   useEffect(() => {
     if (!selectedPO) return;
-    setItems(selectedPO.items.map((poItem) => {
-      const remaining = Number(poItem.ordered_qty) - Number(poItem.received_qty);
-      const qty = remaining > 0 ? String(remaining) : "0";
-      return {
-        po_item_id: poItem.id,
-        product_id: poItem.product_id,
-        unit_id: poItem.unit_id,
-        received_qty: qty,
-        accepted_qty: qty,
-        unit_price: poItem.unit_price,
-        ordered_qty: Number(poItem.ordered_qty),
-        received_so_far: Number(poItem.received_qty),
-      };
-    }));
+    setItems(selectedPO.items.map((poItem) => poLineToItem(purchaseOrderId, poItem)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPO]);
 
   return (
@@ -247,11 +276,23 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-xs font-medium text-muted-foreground">Items Received *</span>
+              {vendorId && (
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer mr-auto">
+                  <input type="checkbox" checked={onlyPOItems} onChange={(e) => setOnlyPOItems(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-border accent-primary" />
+                  Show only products from this vendor&apos;s open POs
+                </label>
+              )}
               <button type="button" onClick={() => setItems((p) => [...p, emptyItem()])}
                 className="text-xs text-primary hover:underline">+ Add item</button>
             </div>
+            {vendorId && onlyPOItems && vendorPOs && openPOLines.length === 0 && (
+              <p className="text-xs text-muted-foreground mb-2">
+                This vendor has no open POs with quantity pending. A PO is open once it&apos;s approved, until everything has arrived.
+              </p>
+            )}
             <div className="border rounded overflow-hidden">
               <table className="w-full text-xs">
                 <thead className="bg-muted/50">
@@ -277,6 +318,21 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                           <div className="px-2 py-1.5 text-xs text-muted-foreground" title="Locked to the Purchase Order's line item">
                             {(products ?? []).find((p: { id: string; name: string }) => p.id === it.product_id)?.name ?? "—"}
                           </div>
+                        ) : onlyPOItems && !it.product_id ? (
+                          <SearchableSelect
+                            value=""
+                            onChange={(lineId) => pickPOLine(i, lineId)}
+                            placeholder={openPOLines.length ? "Select…" : "No open POs"}
+                            accent={TEAL}
+                            disabled={openPOLines.length === 0}
+                            options={openPOLines
+                              .filter(({ line }) => !items.some((row) => row.po_item_id === line.id))
+                              .map(({ po, line }) => ({
+                                value: line.id,
+                                label: (products ?? []).find((p: { id: string; name: string }) => p.id === line.product_id)?.name ?? "—",
+                                meta: `${po.po_number} · ${pendingQty(line)} pending`,
+                              }))}
+                          />
                         ) : (
                           <SearchableSelect
                             value={it.product_id}

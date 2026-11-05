@@ -7,6 +7,7 @@ import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { useCreateMaster } from "@/lib/use-create-master";
 import { Can } from "@/lib/permissions";
 
 const INDIGO   = "#0049A7";
@@ -140,10 +141,12 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
 
+  const createCategory = useCreateMaster("category");
   const { data: categories } = useQuery<MasterItem[]>({
     queryKey: ["master-categories"],
     queryFn: async () => (await api.get("/master/categories")).data.data,
   });
+  const createBrand = useCreateMaster("brand");
   const { data: brands } = useQuery<MasterItem[]>({
     queryKey: ["master-brands"],
     queryFn: async () => (await api.get("/master/brands")).data.data,
@@ -258,6 +261,8 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                 onChange={(v) => set("category_id", v)}
                 placeholder="— select —"
                 accent="#0F78FF"
+                onCreate={createCategory}
+                createNoun="category"
                 options={[
                   { value: "", label: "— select —" },
                   ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -303,6 +308,8 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
                 onChange={(v) => set("brand_id", v)}
                 placeholder="— select —"
                 accent="#0F78FF"
+                onCreate={createBrand}
+                createNoun="brand"
                 options={[
                   { value: "", label: "— select —" },
                   ...(brands ?? []).map((b) => ({ value: b.id, label: b.name })),
@@ -443,10 +450,12 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
     queryFn: async () => (await api.get(`/products/${productId}`)).data.data,
   });
 
+  const createCategory = useCreateMaster("category");
   const { data: categories } = useQuery<MasterItem[]>({
     queryKey: ["master-categories"],
     queryFn: async () => (await api.get("/master/categories")).data.data,
   });
+  const createBrand = useCreateMaster("brand");
   const { data: brands } = useQuery<MasterItem[]>({
     queryKey: ["master-brands"],
     queryFn: async () => (await api.get("/master/brands")).data.data,
@@ -571,6 +580,8 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
                 onChange={(v) => set("category_id", v)}
                 placeholder="— select —"
                 accent="#0F78FF"
+                onCreate={createCategory}
+                createNoun="category"
                 options={[
                   { value: "", label: "— select —" },
                   ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
@@ -616,6 +627,8 @@ function EditProductModal({ productId, onClose }: { productId: string; onClose: 
                 onChange={(v) => set("brand_id", v)}
                 placeholder="— select —"
                 accent="#0F78FF"
+                onCreate={createBrand}
+                createNoun="brand"
                 options={[
                   { value: "", label: "— select —" },
                   ...(brands ?? []).map((b) => ({ value: b.id, label: b.name })),

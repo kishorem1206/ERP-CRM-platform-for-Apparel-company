@@ -18,6 +18,8 @@ assertion failure. Every test passes individually and the actual
 assertions all run and pass before that teardown noise appears.
 """
 import asyncio
+from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -29,8 +31,9 @@ from app.models.inventory import InventoryLot
 from app.models.user import User
 from app.schemas.materials import FabricCreate
 from app.schemas.production import (
-    LotSizeCreate, ProductionLotCreate, StageSizeUpdate,
-    StageUpdate, StyleColourIn, StyleCreate, StyleFabricIn, StyleProcessIn, StyleSizeIn, StyleSubProcessIn, StyleYarnIn,
+    LotMaterialCreate, LotMaterialUpdate, LotSizeCreate, ProductionLotCreate, StageEntryCreate, StageSizeUpdate,
+    StageUpdate, StyleColourIn, StyleCreate, StyleFabricIn, StylePackingMaterialIn, StyleProcessIn, StyleSizeIn,
+    StyleSubProcessIn, StyleTrimIn, StyleYarnIn,
 )
 from app.services.materials import MaterialsService
 from app.services.production import ProductionService, QuantityValidationError
@@ -337,3 +340,114 @@ async def _run_list_lots_response_scenario():
 def test_list_lots_response_does_not_crash():
     numbers = asyncio.run(_run_list_lots_response_scenario())
     assert isinstance(numbers, list)
+
+
+async def _run_cutting_entry_scenario():
+    """Cutting is logged as fabric kg in and pieces out: its pieces "in" are the
+    pieces it cut, and what it passes on becomes the next stage's plan. A lot
+    with no colour must be creatable too."""
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            svc = ProductionService(db)
+            # No style, so the generic stages apply (Cutting then Making) and
+            # there is no fabric gate to satisfy first.
+            lot = await svc.create_lot(ProductionLotCreate(planned_qty=100), company_id, user_id)
+            lot = await svc.get_lot(lot.id, company_id)
+            cutting = next(s for s in lot.stages if s.stage_name == "Cutting")
+            stitching = next(s for s in lot.stages if s.stage_name == "Making")
+
+            entry = await svc.add_stage_entry(
+                cutting.id,
+                StageEntryCreate(entry_date=date.today(), pieces_in=0, pieces_out=95, rejected=3, input_weight_kg=Decimal("24.5")),
+                user_id,
+            )
+            lot = await svc.get_lot(lot.id, company_id)
+            cutting = next(s for s in lot.stages if s.id == cutting.id)
+            stitching = next(s for s in lot.stages if s.id == stitching.id)
+            return {
+                "lot_colour": lot.colour_id, "entry_in": entry.pieces_in,
+                "cut_in": cutting.input_qty, "cut_out": cutting.output_qty, "cut_status": cutting.status,
+                "cut_kg": float(cutting.input_weight_kg), "stitching_planned": stitching.planned_qty,
+            }
+        finally:
+            await db.rollback()
+
+
+def test_cutting_entry_counts_pieces_cut_and_feeds_the_next_stage():
+    r = asyncio.run(_run_cutting_entry_scenario())
+    assert r["lot_colour"] is None
+    assert r["entry_in"] == 98            # 95 good + 3 rejected
+    assert (r["cut_in"], r["cut_out"]) == (98, 95)
+    assert r["cut_status"] == "in_progress"
+    assert r["cut_kg"] == 24.5
+    assert r["stitching_planned"] == 95
+
+
+
+async def _run_lot_materials_scenario():
+    """A new lot's material list is filled from its style: purchased fabric and
+    trims by product name, packing by its product, fabric made from yarn
+    skipped, unknown names left out. Lines can be added, edited and removed."""
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+
+            async def product(kind):
+                return (await db.execute(
+                    select(Product).where(Product.company_id == company_id, Product.product_type == kind).limit(1)
+                )).scalar_one()
+
+            fabric, trim, packing, yarn = await product("fabric"), await product("trim"), await product("packing"), await product("yarn")
+            svc = ProductionService(db)
+            style = await svc.create_style(
+                StyleCreate(
+                    name=f"Test Style {uuid4().hex[:8]}", final_output_unit="Pieces", fabric_source="purchased",
+                    fabrics=[
+                        StyleFabricIn(fabric_name=fabric.name, consumption="0.25", unit="kg"),
+                        StyleFabricIn(fabric_name="Knitted In House", consumption="0.1", unit="kg", source_type="yarn"),
+                        StyleFabricIn(fabric_name="No Such Fabric", consumption="0.1", unit="kg"),
+                    ],
+                    trims=[StyleTrimIn(trim_name=trim.name.upper(), quantity=2, unit="pcs")],
+                    packing_materials=[StylePackingMaterialIn(material_name="Poly bag", product_id=packing.id, quantity=1)],
+                ),
+                company_id, user_id,
+            )
+            lot = await svc.create_lot(ProductionLotCreate(style_id=style.id, planned_qty=100), company_id, user_id)
+            filled = {m["product_id"]: m for m in await svc.list_lot_materials(lot.id, company_id)}
+
+            refill_added = await svc.fill_lot_materials_from_style(lot.id, company_id)
+
+            duplicate_error = None
+            try:
+                await svc.add_lot_material(lot.id, LotMaterialCreate(product_id=trim.id), company_id)
+            except BusinessRulesError as e:
+                duplicate_error = e.code
+
+            added = await svc.add_lot_material(lot.id, LotMaterialCreate(product_id=yarn.id, planned_qty=Decimal("12.5")), company_id)
+            await svc.update_lot_material(added.id, LotMaterialUpdate(planned_qty=Decimal("15")), company_id)
+            after_edit = {m["product_id"]: m for m in await svc.list_lot_materials(lot.id, company_id)}
+            await svc.delete_lot_material(added.id, company_id)
+            after_delete = {m["product_id"] for m in await svc.list_lot_materials(lot.id, company_id)}
+            return {
+                "fabric": fabric.id, "trim": trim.id, "packing": packing.id, "yarn": yarn.id,
+                "filled": filled, "refill_added": refill_added, "duplicate_error": duplicate_error,
+                "after_edit": after_edit, "after_delete": after_delete,
+            }
+        finally:
+            await db.rollback()
+
+
+def test_lot_materials_are_filled_from_the_style_and_editable():
+    r = asyncio.run(_run_lot_materials_scenario())
+    filled = r["filled"]
+    # Purchased fabric, trim (name matched case-insensitively) and packing only.
+    assert set(filled) == {r["fabric"], r["trim"], r["packing"]}
+    assert float(filled[r["fabric"]]["planned_qty"]) == 25.0     # 0.25 kg x 100 pcs
+    assert float(filled[r["trim"]]["planned_qty"]) == 200.0      # 2 x 100 pcs
+    assert float(filled[r["fabric"]]["issued_qty"]) == 0
+    assert float(filled[r["fabric"]]["balance_qty"]) == 25.0
+    assert r["refill_added"] == 0                                # nothing missing the second time
+    assert r["duplicate_error"] == "DUPLICATE_MATERIAL"
+    assert float(r["after_edit"][r["yarn"]]["planned_qty"]) == 15.0
+    assert r["after_delete"] == {r["fabric"], r["trim"], r["packing"]}

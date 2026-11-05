@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import { ModalShell, Field, Input, Textarea, SegControl, ModalActions, SearchableSelect } from "./ModalShell";
 import api from "@/lib/api";
+import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
 
 interface Comp { fibre_name: string; percentage: string }
@@ -81,6 +82,7 @@ export function AddFabricModal({ open, onClose }: Props) {
     enabled: open,
   });
 
+  const createBrand = useCreateMaster("brand");
   const brands = useQuery({
     queryKey: ["master-brands"],
     queryFn: async () => (await api.get("/master/brands")).data.data as { id: string; name: string }[],
@@ -225,6 +227,8 @@ export function AddFabricModal({ open, onClose }: Props) {
             onChange={(v) => set("brand_id", v)}
             placeholder="— Not specified —"
             accent="#0049A7"
+            onCreate={createBrand}
+            createNoun="brand"
             options={[
               { value: "", label: "— Not specified —" },
               ...(brands.data ?? []).map((b) => ({ value: b.id, label: b.name })),

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ModalShell, Field, Input, Textarea, ModalActions, SearchableSelect } from "./ModalShell";
 import api from "@/lib/api";
+import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
 
 interface Props {
@@ -31,6 +32,7 @@ export function NewLotModal({ open, onClose }: Props) {
     },
     enabled: open,
   });
+  const createColour = useCreateMaster("colour");
   const colours = useQuery({
     queryKey: ["master-colours"],
     queryFn: async () => (await api.get("/master/colours")).data.data as { id: string; name: string }[],
@@ -41,7 +43,7 @@ export function NewLotModal({ open, onClose }: Props) {
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
         planned_qty: Number(form.planned_qty) || 1,
-        colour_id: form.colour_id,
+        colour_id: form.colour_id || null,
         notes: form.notes || undefined,
       };
       if (form.lot_number.trim()) payload.lot_number = form.lot_number.trim();
@@ -72,7 +74,7 @@ export function NewLotModal({ open, onClose }: Props) {
       subtitle="Start a new lot linked to a style."
       footer={
         <form onSubmit={(e) => { e.preventDefault(); mut.mutate(); }}>
-          <ModalActions onClose={onClose} loading={mut.isPending} label="Create Lot" disabled={!form.colour_id} />
+          <ModalActions onClose={onClose} loading={mut.isPending} label="Create Lot" />
         </form>
       }
     >
@@ -116,13 +118,18 @@ export function NewLotModal({ open, onClose }: Props) {
           />
         </Field>
 
-        <Field label="Colour" required>
+        <Field label="Colour (optional)">
           <SearchableSelect
             value={form.colour_id}
             onChange={(v) => set("colour_id", v)}
-            placeholder="Select colour"
+            placeholder="— No colour —"
             accent="#0049A7"
-            options={(colours.data ?? []).map((c) => ({ value: c.id, label: c.name }))}
+            onCreate={createColour}
+            createNoun="colour"
+            options={[
+              { value: "", label: "— No colour —" },
+              ...(colours.data ?? []).map((c) => ({ value: c.id, label: c.name })),
+            ]}
           />
         </Field>
 

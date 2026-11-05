@@ -21,6 +21,7 @@ from app.schemas.production import (
     InternalWorkerCreate, InternalWorkerOut,
     LotAdditionalCostCreate, LotAdditionalCostOut, LotAdditionalCostUpdate,
     LotFabricActualUpdate, LotFabricOut, LotYarnActualUpdate, LotYarnOut,
+    LotMaterialCreate, LotMaterialOut, LotMaterialUpdate,
     ProductionAuditLogOut, ProductionDashboardOut, ProductionDashboardRow, ProductionDashboardTotals,
     LotPackingActualUpdate, LotPackingMaterialOut, LotTrimActualUpdate, LotTrimOut,
     MaterialIssueCreate, MaterialIssueOut, MISItemOut, MISItemReturnUpdate,
@@ -863,6 +864,61 @@ def _mistake_log_out(log) -> MistakeLogOut:
     out.stage_name = log.stage.stage_name if log.stage else None
     out.resolved_staff_name = (log.staff.name if log.staff else None) or log.staff_name
     return out
+
+
+# ── Lot materials (planned at the start, issued against) ───────────────────────
+
+async def _lot_materials_response(svc: ProductionService, lot_id: UUID, company_id: UUID) -> ApiResponse:
+    materials = await svc.list_lot_materials(lot_id, company_id)
+    if materials is None:
+        raise HTTPException(404, "Production lot not found")
+    return ApiResponse(success=True, data=[LotMaterialOut(**m) for m in materials])
+
+
+@router.get("/lots/{lot_id}/materials")
+async def list_lot_materials(lot_id: UUID, db: DBSession, user: AuthUser):
+    user.require("production.view")
+    return await _lot_materials_response(ProductionService(db), lot_id, user.company_id)
+
+
+@router.post("/lots/{lot_id}/materials", status_code=201)
+async def add_lot_material(lot_id: UUID, body: LotMaterialCreate, db: DBSession, user: AuthUser):
+    user.require("production.edit")
+    svc = ProductionService(db)
+    if not await svc.add_lot_material(lot_id, body, user.company_id):
+        raise HTTPException(404, "Production lot not found")
+    return await _lot_materials_response(svc, lot_id, user.company_id)
+
+
+@router.post("/lots/{lot_id}/materials/fill-from-style")
+async def fill_lot_materials_from_style(lot_id: UUID, db: DBSession, user: AuthUser):
+    user.require("production.edit")
+    svc = ProductionService(db)
+    added = await svc.fill_lot_materials_from_style(lot_id, user.company_id)
+    if added is None:
+        raise HTTPException(404, "Production lot not found")
+    response = await _lot_materials_response(svc, lot_id, user.company_id)
+    response.message = f"{added} material{'s' if added != 1 else ''} added"
+    return response
+
+
+@router.patch("/lot-materials/{material_id}")
+async def update_lot_material(material_id: UUID, body: LotMaterialUpdate, db: DBSession, user: AuthUser):
+    user.require("production.edit")
+    svc = ProductionService(db)
+    material = await svc.update_lot_material(material_id, body, user.company_id)
+    if not material:
+        raise HTTPException(404, "Lot material not found")
+    return await _lot_materials_response(svc, material.production_lot_id, user.company_id)
+
+
+@router.delete("/lot-materials/{material_id}")
+async def delete_lot_material(material_id: UUID, db: DBSession, user: AuthUser):
+    user.require("production.edit")
+    svc = ProductionService(db)
+    if not await svc.delete_lot_material(material_id, user.company_id):
+        raise HTTPException(404, "Lot material not found")
+    return ApiResponse(success=True, data=None, message="Material removed from the lot")
 
 
 @router.get("/lots/{lot_id}/mistake-logs")

@@ -880,6 +880,27 @@ class LotPackingMaterial(Base):
     product: Mapped[Optional["Product"]] = relationship()
 
 
+class LotMaterial(Base):
+    """A material a LOT needs, planned at its start: pre-filled from the
+    Style's BOM, then edited by hand. Material is issued against this list.
+    How much has been issued is read from the LOT's Material Issue Slips,
+    never stored here, so the two can't drift apart.
+    """
+    __tablename__ = "lot_materials"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    production_lot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("production_lots.id", ondelete="CASCADE"), nullable=False)
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    unit_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("units.id"))
+    planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    product: Mapped["Product"] = relationship()
+    unit: Mapped[Optional["Unit"]] = relationship()
+
+
 class MaterialIssue(Base):
     """Material Issue Slip (MIS) — issues raw material from warehouse to production."""
     __tablename__ = "material_issues"

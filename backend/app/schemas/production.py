@@ -537,7 +537,7 @@ class ProductionLotCreate(BaseModel):
     sales_order_id: UUID | None = None
     order_ref: str | None = None
     planned_qty: int
-    colour_id: UUID
+    colour_id: UUID | None = None
     planned_weight_kg: Decimal | None = None
     delivery_date: date | None = None
     season: str | None = None
@@ -910,6 +910,35 @@ class LotPackingMaterialOut(BaseModel):
 class LotPackingActualUpdate(BaseModel):
     actual_qty: Decimal | None = None
     notes: str | None = None
+
+
+# ── Lot materials (planned at the start, issued against) ─────────────────────
+
+class LotMaterialCreate(BaseModel):
+    product_id: UUID
+    unit_id: UUID | None = None   # defaults to the product's own unit
+    planned_qty: Decimal | None = None
+    notes: str | None = None
+
+
+class LotMaterialUpdate(BaseModel):
+    unit_id: UUID | None = None
+    planned_qty: Decimal | None = None
+    notes: str | None = None
+
+
+class LotMaterialOut(BaseModel):
+    id: UUID
+    product_id: UUID
+    product_name: str
+    product_code: str | None = None
+    product_type: str
+    unit_id: UUID | None
+    unit_abbreviation: str | None = None
+    planned_qty: Decimal | None
+    issued_qty: Decimal          # issued on this lot's slips, less returns
+    balance_qty: Decimal | None  # planned - issued; None when nothing is planned
+    notes: str | None
 
 
 # ── Fabric Processing (dyeing/printing) ──────────────────────────────────────

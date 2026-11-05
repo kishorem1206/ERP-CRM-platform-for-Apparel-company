@@ -1,7 +1,8 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronUp, Check } from "lucide-react";
+import { ChevronDown, ChevronUp, Check, Plus } from "lucide-react";
+import { parseApiError } from "@/lib/api-error";
 
 export interface SelectOption {
   value: string;
@@ -17,6 +18,11 @@ interface Props {
   placeholder?: string;
   accent?: string;
   disabled?: boolean;
+  /** Lets the user add a new master record from the search text. Return the
+   *  new record's value and it is selected; throw to show the error. */
+  onCreate?: (label: string) => Promise<string>;
+  /** Noun used in the add row, e.g. "colour" → "Type a new colour name". */
+  createNoun?: string;
 }
 
 const DEFAULT_ACCENT = "#0049A7";
@@ -29,10 +35,14 @@ export function SearchableSelect({
   placeholder = "Select…",
   accent = DEFAULT_ACCENT,
   disabled = false,
+  onCreate,
+  createNoun = "entry",
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [hovered, setHovered] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
   const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -47,6 +57,25 @@ export function SearchableSelect({
         (o.meta ?? "").toLowerCase().includes(query.toLowerCase())
       )
     : options;
+
+  const typed = query.trim();
+  const canCreate = !!onCreate && !!typed &&
+    !options.some((o) => o.label.trim().toLowerCase() === typed.toLowerCase());
+
+  async function create() {
+    if (!onCreate || !canCreate || creating) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      const newValue = await onCreate(typed);
+      onChange(newValue);
+      close();
+    } catch (e) {
+      setCreateError(parseApiError(e, `Could not add this ${createNoun}.`));
+    } finally {
+      setCreating(false);
+    }
+  }
 
   // Close on outside click (trigger or portaled dropdown)
   useEffect(() => {
@@ -108,6 +137,7 @@ export function SearchableSelect({
     setOpen(false);
     setQuery("");
     setHovered(null);
+    setCreateError("");
   }
 
   function select(opt: SelectOption) {
@@ -162,7 +192,14 @@ export function SearchableSelect({
           placeholder={open ? "Type to search…" : placeholder}
           readOnly={!open}
           disabled={disabled}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { setQuery(e.target.value); setCreateError(""); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && open) {
+              e.preventDefault();
+              if (filtered.length === 1 && !canCreate) select(filtered[0]);
+              else if (canCreate && filtered.length === 0) create();
+            }
+          }}
           onFocus={openDropdown}
           className={[
             "flex-1 bg-transparent px-3 py-2.5 text-sm outline-none min-w-0",
@@ -193,7 +230,7 @@ export function SearchableSelect({
           style={{ top: coords.top, left: coords.left, width: coords.width, minWidth: "200px" }}
         >
           <div className="max-h-60 overflow-y-auto py-1.5">
-            {filtered.length === 0 ? (
+            {filtered.length === 0 && onCreate ? null : filtered.length === 0 ? (
               <p className="px-4 py-3 text-sm text-muted-foreground text-center">
                 No results for &ldquo;{query}&rdquo;
               </p>
@@ -242,6 +279,29 @@ export function SearchableSelect({
               })
             )}
           </div>
+          {onCreate && (
+            <div className="border-t border-border">
+              <button
+                type="button"
+                disabled={!canCreate || creating}
+                onClick={create}
+                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left font-semibold disabled:font-normal disabled:cursor-default transition-colors hover:bg-muted/60 disabled:hover:bg-transparent"
+                style={{ color: canCreate ? accent : "hsl(var(--muted-foreground))" }}
+              >
+                <Plus className="h-4 w-4 flex-shrink-0" />
+                <span className="truncate">
+                  {creating
+                    ? "Adding…"
+                    : canCreate
+                    ? <>Add &ldquo;{typed}&rdquo;</>
+                    : typed
+                    ? `“${typed}” already exists`
+                    : `Type a new ${createNoun} name to add it`}
+                </span>
+              </button>
+              {createError && <p className="px-4 pb-2.5 text-xs text-destructive">{createError}</p>}
+            </div>
+          )}
         </div>,
         document.body
       )}

@@ -9,6 +9,7 @@ import {
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
 
@@ -143,6 +144,11 @@ interface MISItem {
   used_qty: number | null; returned_qty: number | null; wastage_qty: number | null; return_notes: string | null;
 }
 interface MISRow { id: string; issue_number: string; issue_date: string; status: string; items: MISItem[] }
+interface LotMaterial {
+  id: string; product_id: string; product_name: string; product_code: string | null; product_type: string;
+  unit_id: string | null; unit_abbreviation: string | null;
+  planned_qty: string | null; issued_qty: string; balance_qty: string | null; notes: string | null;
+}
 interface OutputRow { id: string; output_number: string; output_date: string; quantity: number; rejected_qty: number | null; unit_cost: number; total_cost: number }
 interface MistakeLog {
   id: string; stage_id: string | null; stage_name: string | null; process_name: string | null;
@@ -567,6 +573,7 @@ function RecordMISReturnModal({ item, lotId, onClose }: { item: MISItem; lotId: 
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
+      qc.invalidateQueries({ queryKey: ["lot-materials", lotId] });
       onClose();
     },
     onError: (e: unknown) => setError(parseApiError(e, "Failed to record return")),
@@ -690,11 +697,18 @@ function RecordActualQtyModal({
 }
 
 // ── Add Stage Entry Modal ─────────────────────────────────────────────────────
-function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string; onClose: () => void }) {
+function AddEntryModal({ stage, prevStage, lotId, onClose }: {
+  stage: Stage; prevStage: Stage | null; lotId: string; onClose: () => void;
+}) {
   const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
+  // Cutting turns fabric (kg) into pieces, so it has no pieces-in of its own.
+  const isCutting = stage.stage_type === "cutting";
+  // What the previous stage has passed on that this stage hasn't logged yet.
+  const prevOut = prevStage ? (prevStage.assignment_type ? prevStage.received_qty : prevStage.output_qty) : null;
+  const suggestedIn = prevOut !== null ? Math.max(prevOut - stage.input_qty, 0) : 0;
   const [entryDate, setEntryDate] = useState(today);
-  const [piecesIn, setPiecesIn] = useState("0");
+  const [piecesIn, setPiecesIn] = useState(String(suggestedIn));
   const [piecesOut, setPiecesOut] = useState("0");
   const [rejected, setRejected] = useState("0");
   const [inputWeightKg, setInputWeightKg] = useState("");
@@ -705,11 +719,19 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
   const [machine, setMachine] = useState("");
   const [error, setError] = useState("");
 
+  const workers = useQuery({
+    queryKey: ["production-workers"],
+    queryFn: async () => (await api.get("/production/workers")).data.data as Worker[],
+  });
+  const createWorker = useCreateMaster("worker");
+  // Operator is saved as the worker's name, so a new worker is selected by name.
+  const createOperator = createWorker && (async (name: string) => { await createWorker(name); return name; });
+
   const mut = useMutation({
     mutationFn: () =>
       api.post(`/production/stages/${stage.id}/entries`, {
         entry_date: entryDate,
-        pieces_in: Number(piecesIn) || 0,
+        pieces_in: isCutting ? 0 : Number(piecesIn) || 0,
         pieces_out: Number(piecesOut) || 0,
         rejected: Number(rejected) || 0,
         input_weight_kg: inputWeightKg ? Number(inputWeightKg) : undefined,
@@ -727,7 +749,7 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
   });
 
   return (
-    <ModalShell maxWidth="max-w-sm" onClose={onClose}>
+    <ModalShell maxWidth="max-w-md" onClose={onClose}>
       <div className="flex items-center justify-between p-6 border-b">
         <h2 className="text-lg font-semibold">Log Entry — {stage.stage_name}</h2>
         <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
@@ -740,10 +762,17 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
           <DatePicker value={entryDate} onChange={(v) => setEntryDate(v)} />
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Pieces In</label>
-            <input type="number" className={inputCls} value={piecesIn} onChange={(e) => setPiecesIn(e.target.value)} />
-          </div>
+          {isCutting ? (
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Fabric In (kg)</label>
+              <input type="number" step="0.001" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Pieces In</label>
+              <input type="number" className={inputCls} value={piecesIn} onChange={(e) => setPiecesIn(e.target.value)} />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Pieces Out</label>
             <input type="number" className={inputCls} value={piecesOut} onChange={(e) => setPiecesOut(e.target.value)} />
@@ -753,10 +782,18 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
             <input type="number" className={inputCls} value={rejected} onChange={(e) => setRejected(e.target.value)} />
           </div>
         </div>
+        {!isCutting && prevStage && (
+          <p className="-mt-2 text-[11px] text-muted-foreground">
+            Pieces In is filled from {prevStage.stage_name}&apos;s output ({prevOut} out
+            {stage.input_qty > 0 ? `, ${stage.input_qty} already logged here` : ""}). Change it if needed.
+          </p>
+        )}
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-1.5">Weight Tracking (kg, optional)</p>
           <div className="grid grid-cols-2 gap-3">
-            <input type="number" step="0.001" placeholder="Input weight" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
+            {!isCutting && (
+              <input type="number" step="0.001" placeholder="Input weight" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
+            )}
             <input type="number" step="0.001" placeholder="Output weight" className={inputCls} value={outputWeightKg} onChange={(e) => setOutputWeightKg(e.target.value)} />
             <input type="number" step="0.001" placeholder="Wastage" className={inputCls} value={wastageKg} onChange={(e) => setWastageKg(e.target.value)} />
             <input type="number" step="0.001" placeholder="Recoverable / Resale" className={inputCls} value={recoverableKg} onChange={(e) => setRecoverableKg(e.target.value)} />
@@ -766,7 +803,18 @@ function AddEntryModal({ stage, lotId, onClose }: { stage: Stage; lotId: string;
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Operator</label>
-            <input className={inputCls} value={operator} onChange={(e) => setOperator(e.target.value)} />
+            <SearchableSelect
+              value={operator}
+              onChange={setOperator}
+              placeholder="Select worker"
+              accent={INDIGO}
+              onCreate={createOperator}
+              createNoun="worker"
+              options={[
+                { value: "", label: "— None —" },
+                ...(workers.data ?? []).map((w) => ({ value: w.name, label: w.name, meta: w.role_title ?? undefined })),
+              ]}
+            />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Machine</label>
@@ -841,6 +889,7 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
     enabled: assignmentType === "vendor",
   });
+  const createWorker = useCreateMaster("worker");
   const workers = useQuery({
     queryKey: ["production-workers"],
     queryFn: async () => (await api.get("/production/workers")).data.data as Worker[],
@@ -898,6 +947,8 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
               onChange={setWorkerId}
               placeholder="Select internal worker"
               accent={INDIGO}
+              onCreate={createWorker}
+              createNoun="worker"
               options={(workers.data ?? []).map((w) => ({ value: w.id, label: w.name, meta: w.role_title ?? undefined }))}
             />
           </div>
@@ -969,6 +1020,7 @@ function AddStageModal({ lotId, onClose }: { lotId: string; onClose: () => void 
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
     enabled: assignmentType === "vendor",
   });
+  const createWorker = useCreateMaster("worker");
   const workers = useQuery({
     queryKey: ["production-workers"],
     queryFn: async () => (await api.get("/production/workers")).data.data as Worker[],
@@ -1064,6 +1116,8 @@ function AddStageModal({ lotId, onClose }: { lotId: string; onClose: () => void 
               onChange={setWorkerId}
               placeholder="Start typing a worker"
               accent={INDIGO}
+              onCreate={createWorker}
+              createNoun="worker"
               options={(workers.data ?? []).map((w) => ({ value: w.id, label: w.name, meta: w.role_title ?? undefined }))}
             />
           )}
@@ -1456,6 +1510,232 @@ function EditFabricProcessingModal({ entry, lotId, onClose }: { entry: FabricPro
 }
 
 // ── Issue Material Modal (MIS create — one or more line items) ────────────────
+const qtyFmt = (v: string | number | null) =>
+  v === null || v === "" ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 });
+
+function useLotMaterials(lotId: string) {
+  return useQuery({
+    queryKey: ["lot-materials", lotId],
+    queryFn: async () => (await api.get(`/production/lots/${lotId}/materials`)).data.data as LotMaterial[],
+  });
+}
+
+// Adds a material to the lot's list, or edits one already on it.
+function LotMaterialModal({ lotId, material, existingProductIds, onClose }: {
+  lotId: string; material: LotMaterial | null; existingProductIds: string[]; onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [productId, setProductId] = useState(material?.product_id ?? "");
+  const [plannedQty, setPlannedQty] = useState(material?.planned_qty != null ? String(Number(material.planned_qty)) : "");
+  const [unitId, setUnitId] = useState(material?.unit_id ?? "");
+  const [notes, setNotes] = useState(material?.notes ?? "");
+  const [error, setError] = useState("");
+
+  const products = useQuery({
+    queryKey: ["products", "all-ref"],
+    queryFn: async () => (await api.get("/products", { params: { page_size: 500 } })).data.data as { id: string; name: string; code: string; product_type: string; unit_id: string | null }[],
+    enabled: !material,
+  });
+  const units = useQuery({
+    queryKey: ["master-units"],
+    queryFn: async () => (await api.get("/master/units")).data.data as { id: string; name: string; abbreviation: string }[],
+  });
+
+  const save = useMutation({
+    mutationFn: () => {
+      const body = { planned_qty: plannedQty ? Number(plannedQty) : null, unit_id: unitId || null, notes: notes || null };
+      return material
+        ? api.patch(`/production/lot-materials/${material.id}`, body)
+        : api.post(`/production/lots/${lotId}/materials`, { ...body, product_id: productId });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lot-materials", lotId] });
+      onClose();
+    },
+    onError: (e: unknown) => setError(parseApiError(e, "Could not save this material.")),
+  });
+
+  return (
+    <ModalShell maxWidth="max-w-md" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">{material ? `Edit ${material.product_name}` : "Add Material"}</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        {!material && (
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Material</label>
+            <SearchableSelect
+              value={productId}
+              onChange={(v) => {
+                setProductId(v);
+                const unit = (products.data ?? []).find((p) => p.id === v)?.unit_id;
+                if (unit) setUnitId(unit);
+              }}
+              placeholder="Search fabric, yarn, trims, packing…"
+              accent={INDIGO}
+              options={(products.data ?? [])
+                .filter((p) => p.product_type !== "finished_good" && !existingProductIds.includes(p.id))
+                .map((p) => ({ value: p.id, label: p.name, meta: `${p.product_type} · ${p.code}` }))}
+            />
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Planned Qty</label>
+            <input type="number" step="0.001" min="0" className={inputCls} value={plannedQty} onChange={(e) => setPlannedQty(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Unit</label>
+            <SearchableSelect
+              value={unitId}
+              onChange={setUnitId}
+              placeholder="Unit"
+              accent={INDIGO}
+              options={(units.data ?? []).map((u) => ({ value: u.id, label: u.abbreviation || u.name }))}
+            />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
+          <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">
+          Cancel
+        </button>
+        <button
+          onClick={() => { setError(""); save.mutate(); }}
+          disabled={save.isPending || (!material && !productId)}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: INDIGO }}
+        >
+          {save.isPending ? "Saving…" : material ? "Save" : "Add to Lot"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// The materials this lot needs, set at its start. Material is issued
+// against this list, and each line shows how much has gone out so far.
+function LotMaterialsCard({ lot }: { lot: LotDetail }) {
+  const qc = useQueryClient();
+  const materials = useLotMaterials(lot.id);
+  const [editing, setEditing] = useState<LotMaterial | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [message, setMessage] = useState("");
+  const open = !["completed", "cancelled"].includes(lot.status);
+
+  const fill = useMutation({
+    mutationFn: () => api.post(`/production/lots/${lot.id}/materials/fill-from-style`),
+    onSuccess: (res) => {
+      setMessage(res.data.message ?? "");
+      qc.invalidateQueries({ queryKey: ["lot-materials", lot.id] });
+    },
+    onError: (e: unknown) => setMessage(parseApiError(e, "Could not fill from the style.")),
+  });
+  const remove = useMutation({
+    mutationFn: (materialId: string) => api.delete(`/production/lot-materials/${materialId}`),
+    onSuccess: () => {
+      setMessage("");
+      qc.invalidateQueries({ queryKey: ["lot-materials", lot.id] });
+    },
+    onError: (e: unknown) => setMessage(parseApiError(e, "Could not remove this material.")),
+  });
+
+  const rows = materials.data ?? [];
+  return (
+    <Card
+      title="Materials for this Lot"
+      subtitle="Everything this lot needs, planned at the start — Issue Material picks from this list"
+      action={open && (
+        <Can perm="production.edit">
+          <div className="flex items-center gap-3">
+            <button onClick={() => fill.mutate()} disabled={fill.isPending}
+              title="Adds the style's fabric, yarn, trims and packing, and anything already issued to this lot"
+              className="text-xs font-semibold text-muted-foreground hover:text-foreground disabled:opacity-50">
+              {fill.isPending ? "Filling…" : "Auto-fill"}
+            </button>
+            <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+              <Plus className="h-3.5 w-3.5" /> Add Material
+            </button>
+          </div>
+        </Can>
+      )}
+    >
+      {message && <p className="mb-3 text-xs text-muted-foreground">{message}</p>}
+      {materials.isLoading ? (
+        <Empty text="Loading…" />
+      ) : rows.length === 0 ? (
+        <Empty text="No materials planned yet. Auto-fill brings in the style's fabric, yarn, trims and packing plus anything already issued to this lot, or add them one by one." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-muted-foreground border-b border-border">
+                <th className="py-2 pr-3 font-medium">Material</th>
+                <th className="py-2 px-3 font-medium text-right">Planned</th>
+                <th className="py-2 px-3 font-medium text-right">Issued</th>
+                <th className="py-2 px-3 font-medium text-right">Balance</th>
+                <th className="py-2 pl-3 w-16"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((m) => {
+                const unit = m.unit_abbreviation ?? "";
+                const balance = m.balance_qty != null ? Number(m.balance_qty) : null;
+                return (
+                  <tr key={m.id} className="border-b border-border last:border-0">
+                    <td className="py-2 pr-3">
+                      <p className="font-medium">{m.product_name}</p>
+                      <p className="text-[11px] text-muted-foreground capitalize">{[m.product_type, m.notes].filter(Boolean).join(" · ")}</p>
+                    </td>
+                    <td className="py-2 px-3 text-right tabular-nums">{qtyFmt(m.planned_qty)} {m.planned_qty != null ? unit : ""}</td>
+                    <td className="py-2 px-3 text-right tabular-nums">{qtyFmt(m.issued_qty)} {unit}</td>
+                    <td className={`py-2 px-3 text-right tabular-nums font-semibold ${balance != null && balance < 0 ? "text-[#1D0DB0]" : ""}`}>
+                      {balance == null ? "—" : balance < 0 ? `${qtyFmt(-balance)} ${unit} over` : `${qtyFmt(balance)} ${unit}`}
+                    </td>
+                    <td className="py-2 pl-3">
+                      {open && (
+                        <Can perm="production.edit">
+                          <div className="flex justify-end gap-1">
+                            <button onClick={() => setEditing(m)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Edit">
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                            {Number(m.issued_qty) <= 0 && (
+                              <button onClick={() => remove.mutate(m.id)} disabled={remove.isPending}
+                                className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Remove">
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                        </Can>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {(adding || editing) && (
+        <LotMaterialModal
+          lotId={lot.id}
+          material={editing}
+          existingProductIds={rows.map((m) => m.product_id)}
+          onClose={() => { setAdding(false); setEditing(null); }}
+        />
+      )}
+    </Card>
+  );
+}
+
 interface MISItemRow { key: string; productId: string; quantity: string; unitId: string }
 let misRowSeq = 0;
 function newMisRowId() {
@@ -1494,10 +1774,12 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
     queryKey: ["master-units"],
     queryFn: async () => (await api.get("/master/units")).data.data as { id: string; name: string; abbreviation: string }[],
   });
+  // Only what's on the lot's material list can be issued to it.
+  const materials = useLotMaterials(lotId);
+  const materialByProduct = new Map((materials.data ?? []).map((m) => [m.product_id, m]));
   const selectedWarehouse = (warehouses.data ?? []).find((w) => w.id === warehouseId);
-  const availableProducts = selectedWarehouse?.material_type
-    ? (products.data ?? []).filter((p) => p.product_type === selectedWarehouse.material_type)
-    : (products.data ?? []);
+  const availableProducts = (products.data ?? []).filter((p) =>
+    materialByProduct.has(p.id) && (!selectedWarehouse?.material_type || p.product_type === selectedWarehouse.material_type));
 
   function addItem() {
     setItems((r) => [...r, { key: newMisRowId(), productId: "", quantity: "", unitId: "" }]);
@@ -1528,6 +1810,7 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-mis", "lot", lotId] });
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
+      qc.invalidateQueries({ queryKey: ["lot-materials", lotId] });
       onClose();
     },
     onError: (e: unknown) => {
@@ -1566,8 +1849,13 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
 
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-2">Items</p>
+          {materials.isSuccess && materials.data.length === 0 && (
+            <p className="text-xs mb-2 px-3 py-2 rounded-lg" style={{ background: "#8174F518", color: "#6D5FE0" }}>
+              This lot has no materials planned yet. Add them under Materials for this Lot first — only materials on that list can be issued.
+            </p>
+          )}
           <p className="text-[11px] text-muted-foreground mb-2">
-            Rate is costed automatically on save, oldest purchased stock first (FIFO) — if a quantity spans more than one purchase batch, it's split into separate lines at their own rates.
+            Only materials on this lot&apos;s list are offered, with the quantity still to issue filled in. Rate is costed automatically on save, oldest purchased stock first (FIFO) — if a quantity spans more than one purchase batch, it's split into separate lines at their own rates.
           </p>
           <div className="space-y-2">
             {items.map((it) => (
@@ -1578,13 +1866,26 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
                       value={it.productId}
                       onChange={(v) => {
                         const picked = availableProducts.find((p) => p.id === v);
-                        updateItem(it.key, { productId: v, unitId: picked?.unit_id || it.unitId });
+                        const planned = materialByProduct.get(v);
+                        const balance = planned?.balance_qty != null ? Number(planned.balance_qty) : 0;
+                        updateItem(it.key, {
+                          productId: v,
+                          unitId: planned?.unit_id || picked?.unit_id || it.unitId,
+                          quantity: it.quantity || (balance > 0 ? String(balance) : ""),
+                        });
                       }}
                       placeholder={selectedWarehouse?.material_type ? `Select ${selectedWarehouse.material_type}` : "Select material"}
                       accent={INDIGO}
-                      options={availableProducts
-                        .filter((p) => p.product_type !== "finished_good")
-                        .map((p) => ({ value: p.id, label: p.name, meta: `${p.product_type} · ${p.code}` }))}
+                      options={availableProducts.map((p) => {
+                        const m = materialByProduct.get(p.id)!;
+                        const unit = m.unit_abbreviation ? ` ${m.unit_abbreviation}` : "";
+                        return {
+                          value: p.id, label: p.name,
+                          meta: m.planned_qty != null
+                            ? `Planned ${qtyFmt(m.planned_qty)}${unit} · Issued ${qtyFmt(m.issued_qty)} · Balance ${qtyFmt(m.balance_qty)}${unit}`
+                            : `${p.product_type} · Issued ${qtyFmt(m.issued_qty)}${unit}`,
+                        };
+                      })}
                     />
                   </div>
                   <div className="col-span-2">
@@ -1670,6 +1971,7 @@ function AddMistakeLogModal({ lotId, stages, onClose }: { lotId: string; stages:
   const [actionTaken, setActionTaken] = useState("");
   const [error, setError] = useState("");
 
+  const createWorker = useCreateMaster("worker");
   const workers = useQuery({
     queryKey: ["production-workers"],
     queryFn: async () => (await api.get("/production/workers")).data.data as { id: string; name: string; role_title: string | null }[],
@@ -1737,6 +2039,8 @@ function AddMistakeLogModal({ lotId, stages, onClose }: { lotId: string; stages:
               onChange={setStaffId}
               placeholder="— Not listed below —"
               accent={INDIGO}
+              onCreate={createWorker}
+              createNoun="worker"
               options={[
                 { value: "", label: "— Not listed below —" },
                 ...(workers.data ?? []).map((w) => ({ value: w.id, label: w.name, meta: w.role_title ?? undefined })),
@@ -2300,7 +2604,12 @@ function StageCard({
             {sortedEntries.map((e) => (
               <div key={e.id} className="flex items-center justify-between text-xs px-3 py-1.5 rounded-lg bg-muted/30">
                 <span className="text-muted-foreground">{e.entry_date}</span>
-                <span>In {e.pieces_in} · Out {e.pieces_out} · Rej {e.rejected}</span>
+                <span>
+                  {stage.stage_type === "cutting"
+                    ? `${e.input_weight_kg != null ? `Fabric ${Number(e.input_weight_kg)} kg · ` : ""}Out ${e.pieces_out}`
+                    : `In ${e.pieces_in} · Out ${e.pieces_out}`}
+                  {" · "}Rej {e.rejected}
+                </span>
                 <span className="text-muted-foreground">{[e.operator, e.machine].filter(Boolean).join(" · ") || "—"}</span>
               </div>
             ))}
@@ -2865,6 +3174,65 @@ export default function LotDetailPage() {
         </Card>
       )}
 
+      <LotMaterialsCard lot={lot} />
+
+      <Card
+        title="Material Issues"
+        subtitle="Raw material issued from warehouse to this lot"
+        action={
+          !["completed", "cancelled"].includes(lot.status) && (
+            <Can perm="production.create"><button onClick={() => setShowIssueMaterial(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
+              <Plus className="h-3.5 w-3.5" /> Issue Material
+            </button></Can>
+          )
+        }
+      >
+        {(misQuery.data ?? []).length === 0 ? (
+          <Empty text="No material issued yet." />
+        ) : (
+          <div className="space-y-3">
+            {(misQuery.data ?? []).map((m) => {
+              const hasExcess = m.items.some((it) => it.excess_qty != null && Number(it.excess_qty) > 0);
+              return (
+                <div key={m.id} className="rounded-xl border border-border overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-muted/30 text-sm">
+                    <span className="font-medium">{m.issue_number}</span>
+                    <span className="text-muted-foreground">{m.issue_date}</span>
+                    <StatusBadge status={m.status} />
+                    {hasExcess && (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: "#A096F718", color: "#A096F7" }}>
+                        Excess
+                      </span>
+                    )}
+                    <span className="font-medium">{INR(m.items.reduce((s, it) => s + Number(it.total_cost ?? 0), 0))}</span>
+                  </div>
+                  <div className="divide-y divide-border">
+                    {m.items.map((it) => (
+                      <div key={it.id} className="flex items-center justify-between px-4 py-2 text-xs flex-wrap gap-2">
+                        <span className="font-medium">{it.product_name ?? "—"}</span>
+                        <span className="text-muted-foreground">
+                          Issued {it.issued_qty} {it.unit_abbreviation ?? ""}
+                          {it.used_qty != null && <> · Used {it.used_qty}</>}
+                          {it.returned_qty != null && <> · Returned {it.returned_qty}</>}
+                          {it.wastage_qty != null && <> · Wastage {it.wastage_qty}</>}
+                        </span>
+                        <Can perm="production.edit"><button
+                          onClick={() => setMisReturnItem(it)}
+                          className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors"
+                          title="Record Return"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button></Can>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
       <Card
         title="Fabric Processing"
         subtitle="Dyeing / printing — precedes cutting; a weight gain or loss is expected, not an error"
@@ -3290,63 +3658,6 @@ export default function LotDetailPage() {
       </Card>
 
       <Card
-        title="Material Issues"
-        subtitle="Raw material issued from warehouse to this lot"
-        action={
-          !["completed", "cancelled"].includes(lot.status) && (
-            <Can perm="production.create"><button onClick={() => setShowIssueMaterial(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
-              <Plus className="h-3.5 w-3.5" /> Issue Material
-            </button></Can>
-          )
-        }
-      >
-        {(misQuery.data ?? []).length === 0 ? (
-          <Empty text="No material issued yet." />
-        ) : (
-          <div className="space-y-3">
-            {(misQuery.data ?? []).map((m) => {
-              const hasExcess = m.items.some((it) => it.excess_qty != null && Number(it.excess_qty) > 0);
-              return (
-                <div key={m.id} className="rounded-xl border border-border overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-muted/30 text-sm">
-                    <span className="font-medium">{m.issue_number}</span>
-                    <span className="text-muted-foreground">{m.issue_date}</span>
-                    <StatusBadge status={m.status} />
-                    {hasExcess && (
-                      <span className="px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: "#A096F718", color: "#A096F7" }}>
-                        Excess
-                      </span>
-                    )}
-                    <span className="font-medium">{INR(m.items.reduce((s, it) => s + Number(it.total_cost ?? 0), 0))}</span>
-                  </div>
-                  <div className="divide-y divide-border">
-                    {m.items.map((it) => (
-                      <div key={it.id} className="flex items-center justify-between px-4 py-2 text-xs flex-wrap gap-2">
-                        <span className="font-medium">{it.product_name ?? "—"}</span>
-                        <span className="text-muted-foreground">
-                          Issued {it.issued_qty} {it.unit_abbreviation ?? ""}
-                          {it.used_qty != null && <> · Used {it.used_qty}</>}
-                          {it.returned_qty != null && <> · Returned {it.returned_qty}</>}
-                          {it.wastage_qty != null && <> · Wastage {it.wastage_qty}</>}
-                        </span>
-                        <Can perm="production.edit"><button
-                          onClick={() => setMisReturnItem(it)}
-                          className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors"
-                          title="Record Return"
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </button></Can>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-
-      <Card
         title="Production Outputs"
         subtitle="Finished goods received into the warehouse from this lot"
         action={
@@ -3377,7 +3688,14 @@ export default function LotDetailPage() {
       {showEdit && <EditLotModal lot={lot} onClose={() => setShowEdit(false)} />}
       {showEditPrice && <EditSellingPriceModal lot={lot} onClose={() => setShowEditPrice(false)} />}
       {rateStage && <EditStageModal stage={rateStage} lotId={lot.id} onClose={() => setRateStage(null)} />}
-      {entryStage && <AddEntryModal stage={entryStage} lotId={lot.id} onClose={() => setEntryStage(null)} />}
+      {entryStage && (
+        <AddEntryModal
+          stage={entryStage}
+          prevStage={lot.stages[lot.stages.findIndex((s) => s.id === entryStage.id) - 1] ?? null}
+          lotId={lot.id}
+          onClose={() => setEntryStage(null)}
+        />
+      )}
       {showAddCost && <AddLotCostModal lotId={lot.id} onClose={() => setShowAddCost(false)} />}
       {actualCost && <RecordActualCostModal cost={actualCost} lotId={lot.id} onClose={() => setActualCost(null)} />}
       {actualTrim && (

@@ -2,14 +2,15 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, X } from "lucide-react";
+import { CheckCircle2, Plus, Trash2, X } from "lucide-react";
 import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { DatePicker } from "@/components/shared/date-picker";
-import { Can } from "@/lib/permissions";
+import { Can, usePermissions } from "@/lib/permissions";
+import { parseApiError } from "@/lib/api-error";
 
 const BLUE = "#0049A7";
 
@@ -40,7 +41,7 @@ const STATUS_FILTERS = [
   { label: "Cancelled", value: "cancelled" },
 ];
 
-const columns: Column<Record<string, unknown>>[] = [
+const baseColumns: Column<Record<string, unknown>>[] = [
   { key: "po_number", header: "PO Number", sortable: true },
   { key: "vendor_name", header: "Vendor", sortable: true, render: (row) => (row.vendor_name as string) || "—" },
   { key: "order_date", header: "Order Date", sortable: true },
@@ -57,6 +58,10 @@ const columns: Column<Record<string, unknown>>[] = [
 
 const emptyLine = (): LineItem => ({ product_id: "", unit_id: "", ordered_qty: "1", unit_price: "0", gst_rate: "0" });
 
+const inr = (v: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(v);
+const lineAmount = (it: LineItem) =>
+  (parseFloat(it.ordered_qty) || 0) * (parseFloat(it.unit_price) || 0) * (1 + (parseFloat(it.gst_rate) || 0) / 100);
+
 function AddPOModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
@@ -67,6 +72,8 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
   const [intrastate, setIntrastate] = useState(true);
   const [items, setItems] = useState<LineItem[]>([emptyLine()]);
   const [error, setError] = useState("");
+  const { can } = usePermissions();
+  const canApprove = can("purchase.approve");
 
   const { data: vendors } = useQuery({
     queryKey: ["vendors-list"],
@@ -85,9 +92,11 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
     queryFn: async () => (await api.get("/master/units")).data.data ?? [],
   });
 
+  // A PO starts as a draft; GRNs can only be booked against an approved one,
+  // so "Create & Approve" saves the extra trip to the PO page.
   const mut = useMutation({
-    mutationFn: () =>
-      api.post("/purchase/orders", {
+    mutationFn: async (approve: boolean) => {
+      const res = await api.post("/purchase/orders", {
         vendor_id: vendorId,
         order_date: orderDate,
         expected_date: expectedDate || null,
@@ -100,16 +109,19 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
           unit_price: parseFloat(it.unit_price),
           gst_rate: parseFloat(it.gst_rate),
         })),
-      }),
+      });
+      if (approve) await api.post(`/purchase/orders/${res.data.data.id}/approve`);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["purchase-orders"] });
       onClose();
     },
     onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(typeof msg === "string" ? msg : "Failed to create purchase order");
+      qc.invalidateQueries({ queryKey: ["purchase-orders"] });
+      setError(parseApiError(e, "Failed to create purchase order"));
     },
   });
+  const orderTotal = items.reduce((sum, it) => sum + lineAmount(it), 0);
 
   const updateItem = (i: number, k: keyof LineItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
@@ -117,14 +129,19 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
   return (
     <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
-      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto ">
+      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <h2 className="font-semibold text-base">New Purchase Order</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
         </div>
         <form
           className="overflow-y-auto p-5 space-y-4"
-          onSubmit={(e) => { e.preventDefault(); setError(""); mut.mutate(); }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            setError("");
+            const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+            mut.mutate(submitter?.value === "approve");
+          }}
         >
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
@@ -163,8 +180,8 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
               <button type="button" onClick={() => setItems((p) => [...p, emptyLine()])}
                 className="text-xs text-primary hover:underline">+ Add item</button>
             </div>
-            <div className="border rounded overflow-hidden">
-              <table className="w-full text-xs">
+            <div className="border rounded overflow-x-auto">
+              <table className="w-full min-w-[760px] text-xs">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="text-left px-2 py-1.5 font-medium">Product</th>
@@ -172,13 +189,14 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                     <th className="text-right px-2 py-1.5 font-medium">Qty</th>
                     <th className="text-right px-2 py-1.5 font-medium">Price</th>
                     <th className="text-right px-2 py-1.5 font-medium">GST%</th>
+                    <th className="text-right px-2 py-1.5 font-medium">Amount</th>
                     <th className="w-6"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((it, i) => (
                     <tr key={i} className="border-t">
-                      <td className="px-2 py-1 min-w-[160px]">
+                      <td className="px-2 py-1 min-w-[220px]">
                         <SearchableSelect
                           value={it.product_id}
                           onChange={(v) => {
@@ -221,6 +239,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                           onChange={(e) => updateItem(i, "gst_rate", e.target.value)}
                           className="w-16 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
                       </td>
+                      <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{inr(lineAmount(it))}</td>
                       <td className="px-1 py-1">
                         {items.length > 1 && (
                           <button type="button" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))}
@@ -232,6 +251,13 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="border-t bg-muted/30">
+                    <td colSpan={5} className="px-2 py-1.5 text-right font-medium">Total (incl. GST)</td>
+                    <td className="px-2 py-1.5 text-right font-semibold tabular-nums whitespace-nowrap">{inr(orderTotal)}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
@@ -245,10 +271,18 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose}
               className="px-4 py-1.5 rounded border border-input text-sm hover:bg-muted">Cancel</button>
-            <button type="submit" disabled={mut.isPending}
-              className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-60">
-              {mut.isPending ? "Saving…" : "Create PO"}
+            <button type="submit" value="draft" disabled={mut.isPending}
+              className={canApprove
+                ? "px-4 py-1.5 rounded border border-input text-sm hover:bg-muted disabled:opacity-60"
+                : "px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-60"}>
+              {mut.isPending ? "Saving…" : canApprove ? "Save as Draft" : "Create PO"}
             </button>
+            {canApprove && (
+              <button type="submit" value="approve" disabled={mut.isPending}
+                className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-60">
+                {mut.isPending ? "Saving…" : "Create & Approve"}
+              </button>
+            )}
           </div>
         </form>
       </div>
@@ -262,6 +296,40 @@ export default function PurchaseOrdersPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
+  const [approveError, setApproveError] = useState("");
+  const qc = useQueryClient();
+  const { can } = usePermissions();
+
+  const approve = useMutation({
+    mutationFn: (id: string) => api.post(`/purchase/orders/${id}/approve`),
+    onSuccess: () => {
+      setApproveError("");
+      qc.invalidateQueries({ queryKey: ["purchase-orders"] });
+    },
+    onError: (e: unknown) => setApproveError(parseApiError(e, "Could not approve this PO.")),
+  });
+
+  const columns: Column<Record<string, unknown>>[] = can("purchase.approve")
+    ? [
+        ...baseColumns,
+        {
+          key: "actions",
+          header: "",
+          className: "text-right",
+          render: (row) =>
+            row.status === "draft" ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); approve.mutate(row.id as string); }}
+                disabled={approve.isPending}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-border hover:bg-muted disabled:opacity-50"
+                style={{ color: BLUE }}
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" /> Approve
+              </button>
+            ) : null,
+        },
+      ]
+    : baseColumns;
 
   const { data, isLoading } = useQuery({
     queryKey: ["purchase-orders", statusFilter, page],
@@ -321,6 +389,7 @@ export default function PurchaseOrdersPage() {
             <p className="text-sm font-medium mt-0.5">{total} orders total</p>
           </div>
         </div>
+        {approveError && <p className="px-6 py-2 text-xs text-destructive border-b border-border">{approveError}</p>}
         <DataTable
           columns={columns}
           data={orders as unknown as Record<string, unknown>[]}
