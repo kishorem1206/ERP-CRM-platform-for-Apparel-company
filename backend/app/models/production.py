@@ -348,6 +348,7 @@ class StyleTrim(Base):
     quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     unit: Mapped[Optional[str]] = mapped_column(String(30))
     category: Mapped[Optional[str]] = mapped_column(String(30))   # Sizable / Non-Sizable
+    trim_type: Mapped[Optional[str]] = mapped_column(String(50))  # Elastic, Thread / Cone, Label, ...
     # seq of the StyleProcess this trim is consumed in (processes are rebuilt on
     # every style update, so the stable seq is stored rather than an FK); NULL = general trim
     process_seq: Mapped[Optional[int]] = mapped_column(SmallInteger)
@@ -712,6 +713,10 @@ class ProductionStageEntry(Base):
     pieces_out: Mapped[int] = mapped_column(Integer, default=0)
     rejected: Mapped[int] = mapped_column(Integer, default=0)
     missing: Mapped[int] = mapped_column(Integer, default=0)
+    # Cutting: fabric left over, and whether it went back to the warehouse
+    # ("returned") or was thrown away ("waste").
+    balance_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    balance_action: Mapped[Optional[str]] = mapped_column(String(10))
     # Weight-based cutting (spec §9) - opt-in per entry; piece-only entries
     # leave these None. wastage_kg/recoverable_kg classify the remainder
     # (input - output) rather than losing track of the balance.
@@ -798,12 +803,16 @@ class LotTrim(Base):
     trim_name: Mapped[str] = mapped_column(String(200), nullable=False)
     unit: Mapped[Optional[str]] = mapped_column(String(30))
     category: Mapped[Optional[str]] = mapped_column(String(30))
+    trim_type: Mapped[Optional[str]] = mapped_column(String(50))
+    # The lot stage this trim is used in (from the style trim's process).
+    stage_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("production_stages.id", ondelete="SET NULL"))
     planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     actual_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     production_lot: Mapped["ProductionLot"] = relationship(back_populates="trims")
+    stage: Mapped[Optional["ProductionStage"]] = relationship()
 
 
 class LotFabric(Base):
@@ -898,6 +907,7 @@ class LotMaterial(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     unit_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("units.id"))
     planned_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    per_piece_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 6))   # planned = per piece x lot pieces
     notes: Mapped[Optional[str]] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

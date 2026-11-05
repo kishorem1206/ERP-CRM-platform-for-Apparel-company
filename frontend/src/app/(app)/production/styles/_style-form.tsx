@@ -8,6 +8,7 @@ import { Field, Input, Textarea, SegControl } from "@/components/create/ModalShe
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { parseApiError } from "@/lib/api-error";
+import { TRIM_TYPES, guessTrimType } from "@/lib/trim-types";
 
 const INDIGO = "#0049A7";
 const FINAL_OUTPUT_UNITS = ["Pieces", "Dozen", "Sets", "Boxes"];
@@ -34,7 +35,7 @@ interface ProcessRow {
   min_rate: string; max_rate: string; planned_rate: string; notes: string;
   sub_processes: SubProcessRow[];
 }
-interface TrimRow { key: string; process_key: string; trim_name: string; lot_id: string; style_part_id: string; colour_id: string; quantity: string; unit: string; category: string; excess_pct: string; notes: string; size_breakdown: Record<string, string> }
+interface TrimRow { key: string; process_key: string; trim_name: string; trim_type: string; lot_id: string; style_part_id: string; colour_id: string; quantity: string; unit: string; category: string; excess_pct: string; notes: string; size_breakdown: Record<string, string> }
 interface PartColourRow { key: string; style_part_id: string; colour_id: string; sizeQty: Record<string, string> }
 interface PackingRow { key: string; material_name: string; product_id: string; quantity: string; unit: string; excess_pct: string; consumption_stage: string; notes: string }
 interface AdditionalCostRow { key: string; cost_type: "additional" | "agent_commission"; description: string; amount: string; basis: string; party_vendor_id: string; notes: string }
@@ -276,7 +277,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
       min_rate: number | null; max_rate: number | null; planned_rate: number | null; notes: string | null;
       sub_processes: { seq: number; name: string; min_rate: number | null; max_rate: number | null; planned_rate: number | null }[];
     }[];
-    trims: { process_seq: number | null; trim_name: string; lot_id: string | null; style_part_id: string | null; colour_id: string | null; quantity: number | null; unit: string | null; category: string | null; excess_pct: number | null; notes: string | null; size_breakdown: { size_id: string; quantity: number }[] }[];
+    trims: { process_seq: number | null; trim_name: string; trim_type: string | null; lot_id: string | null; style_part_id: string | null; colour_id: string | null; quantity: number | null; unit: string | null; category: string | null; excess_pct: number | null; notes: string | null; size_breakdown: { size_id: string; quantity: number }[] }[];
     packing_materials: { material_name: string; product_id: string | null; quantity: number | null; unit: string | null; excess_pct: number | null; consumption_stage: string | null; notes: string | null }[];
     additional_costs: { cost_type: string; description: string; amount: number | null; basis: string | null; party_vendor_id: string | null; notes: string | null }[];
   }
@@ -346,7 +347,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     } as ProcessRow }));
     setProcesses(loadedProcesses.map((lp) => lp.row));
     setTrims(d.trims.map((t) => ({
-      key: newId(), process_key: loadedProcesses.find((lp) => lp.seq === t.process_seq)?.row.key ?? "", trim_name: t.trim_name, lot_id: t.lot_id ?? "",
+      key: newId(), process_key: loadedProcesses.find((lp) => lp.seq === t.process_seq)?.row.key ?? "", trim_name: t.trim_name, trim_type: t.trim_type ?? "", lot_id: t.lot_id ?? "",
       style_part_id: t.style_part_id ?? "", colour_id: t.colour_id ?? "",
       quantity: t.quantity != null ? String(t.quantity) : "", unit: t.unit ?? "",
       category: t.category ?? "Sizable", excess_pct: t.excess_pct != null ? String(t.excess_pct) : "", notes: t.notes ?? "",
@@ -618,7 +619,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
 
   // ── Trim rows ────────────────────────────────────────────────────────────
   function addTrim(processKey = "") {
-    setTrims((r) => [...r, { key: newId(), process_key: processKey, trim_name: "", lot_id: "", style_part_id: "", colour_id: "", quantity: "", unit: "Nos", category: "Sizable", excess_pct: "", notes: "", size_breakdown: {} }]);
+    setTrims((r) => [...r, { key: newId(), process_key: processKey, trim_name: "", trim_type: "", lot_id: "", style_part_id: "", colour_id: "", quantity: "", unit: "Nos", category: "Sizable", excess_pct: "", notes: "", size_breakdown: {} }]);
   }
   function updateTrim(key: string, patch: Partial<TrimRow>) {
     setTrims((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -741,6 +742,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           quantity: t.quantity ? Number(t.quantity) : undefined,
           unit: t.unit || undefined,
           category: t.category || undefined,
+          trim_type: t.trim_type || undefined,
           process_seq: (() => {
             const named = processes.filter((p) => p.process_name.trim());
             const idx = named.findIndex((p) => p.key === t.process_key);
@@ -794,9 +796,44 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   const renderTrim = (t: TrimRow) => (
     <div key={t.key} className="p-3 rounded-xl border border-border bg-card space-y-2">
       <div className="flex items-start gap-2">
-        <Input value={t.trim_name} onChange={(e) => updateTrim(t.key, { trim_name: e.target.value })} placeholder="Trim name, e.g. Elastic-25mm-White" className="flex-1" />
+        <Input
+          value={t.trim_name}
+          onChange={(e) => {
+            const name = e.target.value;
+            // Suggest the type from the name until one is picked by hand.
+            const guessed = guessTrimType(name);
+            updateTrim(t.key, t.trim_type && t.trim_type !== guessTrimType(t.trim_name)
+              ? { trim_name: name }
+              : { trim_name: name, trim_type: guessed });
+          }}
+          placeholder="Trim name, e.g. Elastic-25mm-White"
+          className="flex-1"
+        />
+        <div className="w-44 shrink-0">
+          <SearchableSelect
+            value={t.trim_type}
+            onChange={(v) => updateTrim(t.key, { trim_type: v })}
+            placeholder="Trim type"
+            accent={INDIGO}
+            options={TRIM_TYPES.map((tt) => ({ value: tt, label: tt }))}
+          />
+        </div>
         <RemoveRowButton onClick={() => removeTrim(t.key)} />
       </div>
+      {!t.process_key && (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground whitespace-nowrap">Used in process:</span>
+          <div className="w-60">
+            <SearchableSelect
+              value=""
+              onChange={(v) => updateTrim(t.key, { process_key: v })}
+              placeholder="Pick the process"
+              accent={INDIGO}
+              options={processes.filter((pr) => pr.process_name.trim()).map((pr) => ({ value: pr.key, label: pr.process_name }))}
+            />
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-2">
         <SearchableSelect
           value={t.style_part_id}
@@ -1450,7 +1487,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
         </Section>
 
         {trims.some((t) => !t.process_key) && (
-          <Section n={fabricSource === "yarn" ? 6 : 5} title="General Trims" subtitle="Trims not tied to a specific process — assign them to a process above by re-adding there, or keep as general requirements">
+          <Section n={fabricSource === "yarn" ? 6 : 5} title="Trims without a process" subtitle="Trims are planned per process — pick the process each of these is used in so it shows on that stage of every lot">
             <div className="space-y-2">
               {trims.filter((t) => !t.process_key).map((t) => renderTrim(t))}
             </div>

@@ -5,13 +5,13 @@ import { ModalShell, Field, Input, Textarea, SegControl, ModalActions, Searchabl
 import api from "@/lib/api";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
+import { TRIM_TYPES } from "@/lib/trim-types";
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
-const TRIM_TYPES = ["Button", "Label", "Tag", "Zipper", "Thread", "Elastic", "Interlining", "Tape", "Other"];
 const TRIM_UNITS = ["Pieces", "Gross", "Dozen", "Metre", "Kilogram", "Yard"];
 // Inventory unit abbreviation for each trim unit (Yard has no master unit).
 const TRIM_UNIT_ABBR: Record<string, string> = { Pieces: "pcs", Gross: "grs", Dozen: "dzn", Metre: "m", Kilogram: "kg" };

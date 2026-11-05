@@ -18,7 +18,7 @@ interface ProcessOut {
   min_rate: string | null; max_rate: string | null; planned_rate: string | null; notes: string | null;
   sub_processes: SubProcessOut[];
 }
-interface TrimOut { id: string; trim_name: string; lot_id: string | null; quantity: string | null; unit: string | null; category: string | null; excess_pct: string | null; notes: string | null }
+interface TrimOut { id: string; trim_name: string; trim_type: string | null; process_seq: number | null; lot_id: string | null; quantity: string | null; unit: string | null; category: string | null; excess_pct: string | null; notes: string | null }
 interface PackingOut { id: string; material_name: string; quantity: string | null; unit: string | null; excess_pct: string | null; consumption_stage: string | null; notes: string | null }
 interface AdditionalCostOut {
   id: string; cost_type: string; description: string; amount: string | null;
@@ -323,15 +323,29 @@ export default function StyleDetailPage() {
         )}
       </Card>
 
-      <Card title="Trim Planning">
+      <Card title="Trim Planning" subtitle="Trims per process — each lot shows them on that process's stage">
         {style.trims.length === 0 ? <Empty text="No trim requirements configured." /> : (
-          <div className="space-y-2">
-            {style.trims.map((t) => (
-              <div key={t.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
-                <span className="font-medium">{t.trim_name}</span>
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  {t.category && <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{t.category}</span>}
-                  <span>{t.quantity ? `${Number(t.quantity)} ${t.unit ?? ""}` : "—"}</span>
+          <div className="space-y-4">
+            {[
+              ...style.processes.map((p) => ({ key: p.id, title: `${p.seq}. ${p.process_name}`, trims: style.trims.filter((t) => t.process_seq === p.seq) })),
+              {
+                key: "none", title: "Not linked to a process",
+                trims: style.trims.filter((t) => t.process_seq == null || !style.processes.some((p) => p.seq === t.process_seq)),
+              },
+            ].filter((g) => g.trims.length > 0).map((g) => (
+              <div key={g.key}>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">{g.title}</p>
+                <div className="space-y-2">
+                  {g.trims.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
+                      <span className="font-medium">{t.trim_name}</span>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        {t.trim_type && <span className="text-[11px] px-2 py-0.5 rounded" style={{ background: "#0049A714", color: "#0049A7" }}>{t.trim_type}</span>}
+                        {t.category && <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{t.category}</span>}
+                        <span>{t.quantity ? `${Number(t.quantity)} ${t.unit ?? ""}/pc` : "—"}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}

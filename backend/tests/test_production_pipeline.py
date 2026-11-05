@@ -589,3 +589,114 @@ async def _run_style_code_matches_product_scenario():
 def test_style_code_already_a_product_links_to_it():
     linked, existing = asyncio.run(_run_style_code_matches_product_scenario())
     assert linked == existing
+
+
+async def _run_cutting_leftover_scenario():
+    """Leftover fabric after cutting either goes back to the warehouse (a
+    return against the lot's fabric issue, so stock rises again) or is
+    written off as waste; what was used is fabric in minus leftover."""
+    from app.models.master import Warehouse as WarehouseModel
+    from app.schemas.inventory import ReceiveParams
+    from app.schemas.production import MaterialIssueCreate, MISItemCreate
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            kg = (await db.execute(select(Unit.id).where(Unit.company_id == company_id, Unit.abbreviation.ilike("kg")).limit(1))).scalar_one()
+            fabric = (await db.execute(
+                select(Product.id).where(Product.company_id == company_id, Product.product_type == "fabric").limit(1)
+            )).scalar_one()
+            store = WarehouseModel(company_id=company_id, name="Leftover check store")
+            db.add(store)
+            await db.flush()
+            svc = ProductionService(db)
+            await svc.inv.receive(ReceiveParams(
+                company_id=company_id, product_id=fabric, warehouse_id=store.id, quantity=Decimal("100"),
+                unit_id=kg, unit_cost=Decimal("200"), material_type="raw_material", transaction_date=date.today(),
+            ), user_id)
+
+            lot = await svc.create_lot(ProductionLotCreate(planned_qty=200), company_id, user_id)
+            lot = await svc.get_lot(lot.id, company_id)
+            cutting = next(s for s in lot.stages if s.stage_type == "cutting")
+            await svc.create_mis(MaterialIssueCreate(
+                production_lot_id=lot.id, warehouse_id=store.id, issue_date=date.today(),
+                items=[MISItemCreate(product_id=fabric, issued_qty=Decimal("60"), unit_id=kg)],
+            ), company_id, user_id)
+            stock_after_issue = await svc.inv.get_balance(company_id, fabric, store.id)
+
+            returned = await svc.add_stage_entry(cutting.id, StageEntryCreate(
+                entry_date=date.today(), pieces_out=180, input_weight_kg=Decimal("50"),
+                balance_kg=Decimal("4.5"), balance_action="return",
+            ), user_id)
+            stock_after_return = await svc.inv.get_balance(company_id, fabric, store.id)
+            wasted = await svc.add_stage_entry(cutting.id, StageEntryCreate(
+                entry_date=date.today(), pieces_out=20, input_weight_kg=Decimal("10"),
+                balance_kg=Decimal("1.2"), balance_action="waste",
+            ), user_id)
+            too_much = None
+            try:
+                await svc.add_stage_entry(cutting.id, StageEntryCreate(
+                    entry_date=date.today(), pieces_out=1, input_weight_kg=Decimal("100"),
+                    balance_kg=Decimal("90"), balance_action="return",
+                ), user_id)
+            except QuantityValidationError as e:
+                too_much = str(e)
+            issued_net = (await svc._issued_by_product(lot.id))[fabric]
+            return {
+                "stock_after_issue": stock_after_issue, "stock_after_return": stock_after_return,
+                "returned": (returned.output_weight_kg, returned.balance_action), "wasted": (wasted.output_weight_kg, wasted.wastage_kg),
+                "too_much": too_much, "issued_net": issued_net,
+            }
+        finally:
+            await db.rollback()
+
+
+def test_cutting_leftover_fabric_returns_to_stock_or_is_wasted():
+    r = asyncio.run(_run_cutting_leftover_scenario())
+    assert r["stock_after_issue"] == Decimal("40")
+    assert r["stock_after_return"] == Decimal("44.5")
+    assert r["returned"] == (Decimal("45.5"), "return")
+    assert r["wasted"] == (Decimal("8.8"), Decimal("1.2"))
+    assert r["too_much"] and "can't go back to the warehouse" in r["too_much"]
+    assert r["issued_net"] == Decimal("55.5")      # 60 issued - 4.5 returned
+
+
+async def _run_trims_follow_their_stage_scenario():
+    """A style trim used in a process lands on that process's stage in the lot,
+    with its trim type; the lot's material per piece follows its plan."""
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            svc = ProductionService(db)
+            style = await svc.create_style(StyleCreate(
+                name=f"Test Style {uuid4().hex[:8]}", final_output_unit="Pieces",
+                processes=[StyleProcessIn(seq=1, process_name="Cutting"), StyleProcessIn(seq=2, process_name="Stitching")],
+                trims=[StyleTrimIn(trim_name="Waist elastic 25mm", trim_type="Elastic", quantity=1, unit="m", process_seq=2)],
+            ), company_id, user_id)
+            lot = await svc.create_lot(ProductionLotCreate(style_id=style.id, planned_qty=0, sizes=[]), company_id, user_id)
+            lot = await svc.get_lot(lot.id, company_id)
+            stitching = next(s for s in lot.stages if s.stage_name == "Stitching")
+            trim = lot.trims[0]
+
+            yarn = (await db.execute(select(Product).where(Product.company_id == company_id, Product.product_type == "yarn").limit(1))).scalar_one()
+            lot2 = await svc.create_lot(ProductionLotCreate(planned_qty=0, sizes=[
+                LotSizeCreate(size_id=(await db.execute(select(Size.id).where(Size.company_id == company_id).limit(1))).scalar_one(), planned_qty=40),
+            ]), company_id, user_id)
+            m = await svc.add_lot_material(lot2.id, LotMaterialCreate(product_id=yarn.id, per_piece_qty=Decimal("0.25")), company_id)
+            planned_from_per_piece = m.planned_qty
+            await svc.update_lot_material(m.id, LotMaterialUpdate(planned_qty=Decimal("20")), company_id)
+            return {
+                "trim_stage_ok": trim.stage_id == stitching.id, "trim_type": trim.trim_type,
+                "lot2_planned": lot2.planned_qty, "planned_from_per_piece": planned_from_per_piece,
+                "per_piece_after_edit": m.per_piece_qty,
+            }
+        finally:
+            await db.rollback()
+
+
+def test_trims_follow_their_stage_and_materials_scale_per_piece():
+    r = asyncio.run(_run_trims_follow_their_stage_scenario())
+    assert r["trim_stage_ok"] and r["trim_type"] == "Elastic"
+    assert r["lot2_planned"] == 40                      # total of the sizes
+    assert r["planned_from_per_piece"] == Decimal("10")  # 0.25 x 40
+    assert r["per_piece_after_edit"] == Decimal("0.5")   # 20 / 40

@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -65,6 +65,7 @@ interface Size { id: string; name: string }
 interface LotSize { id: string; size_id: string; planned_qty: number; cut_qty: number; sewn_qty: number; finished_qty: number }
 interface StageEntry {
   id: string; entry_date: string; pieces_in: number; pieces_out: number; rejected: number; missing: number;
+  balance_kg: number | null; balance_action: "return" | "waste" | null;
   input_weight_kg: number | null; output_weight_kg: number | null; wastage_kg: number | null; recoverable_kg: number | null;
   operator: string | null; machine: string | null; notes: string | null;
 }
@@ -103,7 +104,7 @@ interface LotAdditionalCost {
   basis: string | null; party_vendor_id: string | null; notes: string | null;
 }
 interface LotTrim {
-  id: string; trim_name: string; category: string | null; unit: string | null;
+  id: string; trim_name: string; category: string | null; trim_type: string | null; stage_id: string | null; unit: string | null;
   planned_qty: number | null; actual_qty: number | null; notes: string | null;
 }
 interface LotPackingMaterial {
@@ -156,7 +157,7 @@ interface MISRow { id: string; issue_number: string; issue_date: string; status:
 interface LotMaterial {
   id: string; product_id: string; product_name: string; product_code: string | null; product_type: string;
   unit_id: string | null; unit_abbreviation: string | null;
-  planned_qty: string | null; issued_qty: string; balance_qty: string | null; notes: string | null;
+  planned_qty: string | null; per_piece_qty: string | null; issued_qty: string; balance_qty: string | null; notes: string | null;
 }
 interface OutputRow { id: string; output_number: string; output_date: string; quantity: number; rejected_qty: number | null; unit_cost: number; total_cost: number }
 interface MistakeLog {
@@ -722,6 +723,23 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
   const [rejected, setRejected] = useState("0");
   const [missing, setMissing] = useState("0");
   const [inputWeightKg, setInputWeightKg] = useState("");
+  const [inputTouched, setInputTouched] = useState(false);
+  const [balanceKg, setBalanceKg] = useState("");
+  const [balanceAction, setBalanceAction] = useState<"return" | "waste">("return");
+  // Fabric In for cutting starts from what's been issued to the lot (in kg)
+  // and not yet cut; leftover returned to the warehouse no longer counts as cut.
+  const lotMaterials = useLotMaterials(lotId);
+  const issuedFabricKg = (lotMaterials.data ?? [])
+    .filter((m) => m.product_type === "fabric" && ["kg", "kgs"].includes((m.unit_abbreviation ?? "").toLowerCase()))
+    .reduce((sum, m) => sum + Number(m.issued_qty), 0);
+  const returnedKg = stage.entries.reduce((sum, e) => sum + (e.balance_action === "return" ? Number(e.balance_kg ?? 0) : 0), 0);
+  const alreadyCutKg = Number(stage.input_weight_kg ?? 0) - returnedKg;
+  const fabricLeftKg = Math.max(Math.round((issuedFabricKg - alreadyCutKg) * 1000) / 1000, 0);
+  useEffect(() => {
+    if (isCutting && !inputTouched && lotMaterials.isSuccess && fabricLeftKg > 0) setInputWeightKg(String(fabricLeftKg));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lotMaterials.isSuccess, fabricLeftKg]);
+  const usedKg = (Number(inputWeightKg) || 0) - (Number(balanceKg) || 0);
   const [outputWeightKg, setOutputWeightKg] = useState("");
   const [wastageKg, setWastageKg] = useState("");
   const [recoverableKg, setRecoverableKg] = useState("");
@@ -746,14 +764,21 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
         rejected: Number(rejected) || 0,
         missing: Number(missing) || 0,
         input_weight_kg: inputWeightKg ? Number(inputWeightKg) : undefined,
-        output_weight_kg: outputWeightKg ? Number(outputWeightKg) : undefined,
-        wastage_kg: wastageKg ? Number(wastageKg) : undefined,
-        recoverable_kg: recoverableKg ? Number(recoverableKg) : undefined,
+        ...(isCutting
+          ? (Number(balanceKg) > 0 ? { balance_kg: Number(balanceKg), balance_action: balanceAction } : {})
+          : {
+              output_weight_kg: outputWeightKg ? Number(outputWeightKg) : undefined,
+              wastage_kg: wastageKg ? Number(wastageKg) : undefined,
+              recoverable_kg: recoverableKg ? Number(recoverableKg) : undefined,
+            }),
         operator: operator || undefined,
         machine: machine || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
+      // A returned leftover changes what's issued and what's in stock.
+      qc.invalidateQueries({ queryKey: ["lot-materials", lotId] });
+      qc.invalidateQueries({ queryKey: ["production-mis", "lot", lotId] });
       onClose();
     },
     onError: (e: unknown) => setError(parseApiError(e, "Failed to log entry")),
@@ -776,7 +801,8 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
           {isCutting ? (
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Fabric In (kg)</label>
-              <input type="number" step="0.001" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
+              <input type="number" step="0.001" className={inputCls} value={inputWeightKg}
+                onChange={(e) => { setInputTouched(true); setInputWeightKg(e.target.value); }} />
             </div>
           ) : (
             <div>
@@ -797,24 +823,57 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
             <input type="number" min="0" className={inputCls} value={missing} onChange={(e) => setMissing(e.target.value)} />
           </div>
         </div>
+        {isCutting && lotMaterials.isSuccess && (
+          <p className="-mt-2 text-[11px] text-muted-foreground">
+            {issuedFabricKg <= 0
+              ? "No fabric (in kg) has been issued to this lot yet — issue it under Material Issues, or type the weight."
+              : fabricLeftKg > 0
+                ? `Fabric In is filled from the fabric issued to this lot: ${qtyFmt(issuedFabricKg)} kg issued${alreadyCutKg > 0 ? `, ${qtyFmt(alreadyCutKg)} kg already cut` : ""}. Change it if needed.`
+                : `All ${qtyFmt(issuedFabricKg)} kg issued to this lot has already been cut — issue more fabric, or type the weight.`}
+          </p>
+        )}
         {!isCutting && prevStage && (
           <p className="-mt-2 text-[11px] text-muted-foreground">
             Pieces In is filled from {prevStage.stage_name}&apos;s output ({prevOut} out
             {stage.input_qty > 0 ? `, ${stage.input_qty} already logged here` : ""}). Change it if needed.
           </p>
         )}
+        {isCutting ? (
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1.5">Leftover fabric (kg)</p>
+            <div className="flex items-center gap-3">
+              <input type="number" step="0.001" min="0" placeholder="0" className={`${inputCls} max-w-[9rem]`} value={balanceKg} onChange={(e) => setBalanceKg(e.target.value)} />
+              <div className="inline-flex rounded-lg border border-border p-0.5 text-xs font-semibold">
+                {([["return", "Return to warehouse"], ["waste", "Waste"]] as const).map(([v, label]) => (
+                  <button key={v} type="button" onClick={() => setBalanceAction(v)}
+                    className="px-2.5 py-1.5 rounded-md transition-colors"
+                    style={balanceAction === v ? { background: INDIGO, color: "#fff" } : undefined}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {Number(balanceKg) > 0
+                ? balanceAction === "return"
+                  ? `${qtyFmt(Number(balanceKg))} kg goes back into stock for future lots.`
+                  : `${qtyFmt(Number(balanceKg))} kg is written off as waste.`
+                : "Fabric left after cutting, if any."}
+              {Number(inputWeightKg) > 0 && ` Used: ${qtyFmt(usedKg)} kg${Number(piecesOut) > 0 ? ` · ${qtyFmt(usedKg / Number(piecesOut))} kg per piece` : ""}.`}
+            </p>
+          </div>
+        ) : (
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-1.5">Weight Tracking (kg, optional)</p>
           <div className="grid grid-cols-2 gap-3">
-            {!isCutting && (
-              <input type="number" step="0.001" placeholder="Input weight" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
-            )}
+            <input type="number" step="0.001" placeholder="Input weight" className={inputCls} value={inputWeightKg} onChange={(e) => setInputWeightKg(e.target.value)} />
             <input type="number" step="0.001" placeholder="Output weight" className={inputCls} value={outputWeightKg} onChange={(e) => setOutputWeightKg(e.target.value)} />
             <input type="number" step="0.001" placeholder="Wastage" className={inputCls} value={wastageKg} onChange={(e) => setWastageKg(e.target.value)} />
             <input type="number" step="0.001" placeholder="Recoverable / Resale" className={inputCls} value={recoverableKg} onChange={(e) => setRecoverableKg(e.target.value)} />
           </div>
           <p className="text-[11px] text-muted-foreground mt-1">Wastage + Recoverable can't exceed Input − Output.</p>
         </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Operator</label>
@@ -1612,12 +1671,23 @@ function useLotMaterials(lotId: string) {
 }
 
 // Adds a material to the lot's list, or edits one already on it.
-function LotMaterialModal({ lotId, material, existingProductIds, onClose }: {
-  lotId: string; material: LotMaterial | null; existingProductIds: string[]; onClose: () => void;
+function LotMaterialModal({ lotId, lotPieces, material, existingProductIds, onClose }: {
+  lotId: string; lotPieces: number; material: LotMaterial | null; existingProductIds: string[]; onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [productId, setProductId] = useState(material?.product_id ?? "");
   const [plannedQty, setPlannedQty] = useState(material?.planned_qty != null ? String(Number(material.planned_qty)) : "");
+  const [perPiece, setPerPiece] = useState(material?.per_piece_qty != null ? String(Number(material.per_piece_qty)) : "");
+  const round = (v: number, dp: number) => String(Math.round(v * 10 ** dp) / 10 ** dp);
+  // Per piece and planned move together: planned = per piece x the lot's pieces.
+  const onPerPiece = (v: string) => {
+    setPerPiece(v);
+    if (lotPieces > 0) setPlannedQty(v ? round(Number(v) * lotPieces, 4) : "");
+  };
+  const onPlanned = (v: string) => {
+    setPlannedQty(v);
+    if (lotPieces > 0) setPerPiece(v ? round(Number(v) / lotPieces, 6) : "");
+  };
   const [unitId, setUnitId] = useState(material?.unit_id ?? "");
   const [notes, setNotes] = useState(material?.notes ?? "");
   const [error, setError] = useState("");
@@ -1634,7 +1704,11 @@ function LotMaterialModal({ lotId, material, existingProductIds, onClose }: {
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { planned_qty: plannedQty ? Number(plannedQty) : null, unit_id: unitId || null, notes: notes || null };
+      const body = {
+        planned_qty: plannedQty ? Number(plannedQty) : null,
+        per_piece_qty: perPiece ? Number(perPiece) : null,
+        unit_id: unitId || null, notes: notes || null,
+      };
       return material
         ? api.patch(`/production/lot-materials/${material.id}`, body)
         : api.post(`/production/lots/${lotId}/materials`, { ...body, product_id: productId });
@@ -1673,10 +1747,14 @@ function LotMaterialModal({ lotId, material, existingProductIds, onClose }: {
             />
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Planned Qty</label>
-            <input type="number" step="0.001" min="0" className={inputCls} value={plannedQty} onChange={(e) => setPlannedQty(e.target.value)} />
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Per Piece</label>
+            <input type="number" step="0.000001" min="0" className={inputCls} value={perPiece} onChange={(e) => onPerPiece(e.target.value)} placeholder="e.g. 0.25" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Planned Qty{lotPieces > 0 ? ` (${lotPieces} pcs)` : ""}</label>
+            <input type="number" step="0.001" min="0" className={inputCls} value={plannedQty} onChange={(e) => onPlanned(e.target.value)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Unit</label>
@@ -1770,6 +1848,7 @@ function LotMaterialsCard({ lot }: { lot: LotDetail }) {
             <thead>
               <tr className="text-left text-muted-foreground border-b border-border">
                 <th className="py-2 pr-3 font-medium">Material</th>
+                <th className="py-2 px-3 font-medium text-right">Per Piece</th>
                 <th className="py-2 px-3 font-medium text-right">Planned</th>
                 <th className="py-2 px-3 font-medium text-right">Issued</th>
                 <th className="py-2 px-3 font-medium text-right">Balance</th>
@@ -1786,6 +1865,7 @@ function LotMaterialsCard({ lot }: { lot: LotDetail }) {
                       <p className="font-medium">{m.product_name}</p>
                       <p className="text-[11px] text-muted-foreground capitalize">{[m.product_type, m.notes].filter(Boolean).join(" · ")}</p>
                     </td>
+                    <td className="py-2 px-3 text-right tabular-nums text-muted-foreground">{m.per_piece_qty != null ? `${Number(m.per_piece_qty).toLocaleString("en-IN", { maximumFractionDigits: 6 })} ${unit}` : "—"}</td>
                     <td className="py-2 px-3 text-right tabular-nums">{qtyFmt(m.planned_qty)} {m.planned_qty != null ? unit : ""}</td>
                     <td className="py-2 px-3 text-right tabular-nums">{qtyFmt(m.issued_qty)} {unit}</td>
                     <td className={`py-2 px-3 text-right tabular-nums font-semibold ${balance != null && balance < 0 ? "text-[#1D0DB0]" : ""}`}>
@@ -1818,6 +1898,7 @@ function LotMaterialsCard({ lot }: { lot: LotDetail }) {
       {(adding || editing) && (
         <LotMaterialModal
           lotId={lot.id}
+          lotPieces={lot.planned_qty}
           material={editing}
           existingProductIds={rows.map((m) => m.product_id)}
           onClose={() => { setAdding(false); setEditing(null); }}
@@ -1827,7 +1908,7 @@ function LotMaterialsCard({ lot }: { lot: LotDetail }) {
   );
 }
 
-interface MISItemRow { key: string; productId: string; quantity: string; unitId: string }
+interface MISItemRow { key: string; productId: string; quantity: string; unitId: string; pieces: string }
 let misRowSeq = 0;
 function newMisRowId() {
   misRowSeq += 1;
@@ -1841,7 +1922,7 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
   const [issueDate, setIssueDate] = useState(today);
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<MISItemRow[]>([
-    { key: newMisRowId(), productId: "", quantity: "", unitId: "" },
+    { key: newMisRowId(), productId: "", quantity: "", unitId: "", pieces: "" },
   ]);
   const [error, setError] = useState("");
   const idempotencyKey = useRef(crypto.randomUUID()).current;
@@ -1873,7 +1954,7 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
     materialByProduct.has(p.id) && (!selectedWarehouse?.material_type || p.product_type === selectedWarehouse.material_type));
 
   function addItem() {
-    setItems((r) => [...r, { key: newMisRowId(), productId: "", quantity: "", unitId: "" }]);
+    setItems((r) => [...r, { key: newMisRowId(), productId: "", quantity: "", unitId: "", pieces: "" }]);
   }
   function updateItem(key: string, patch: Partial<MISItemRow>) {
     setItems((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -1997,6 +2078,37 @@ function IssueMaterialModal({ lotId, onClose }: { lotId: string; onClose: () => 
                     </button>
                   </div>
                 </div>
+                {(() => {
+                  // Quantity for a number of pieces, from what one piece takes.
+                  const m = it.productId ? materialByProduct.get(it.productId) : undefined;
+                  if (!m || m.per_piece_qty == null) return null;
+                  const per = Number(m.per_piece_qty);
+                  const unit = m.unit_abbreviation ?? "";
+                  const pcs = Number(it.pieces) || 0;
+                  return (
+                    <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span>For</span>
+                      <input
+                        type="number" min="0" placeholder="pieces"
+                        className="w-24 rounded border border-input bg-background px-2 py-1 text-xs"
+                        value={it.pieces}
+                        onChange={(e) => {
+                          const n = Number(e.target.value) || 0;
+                          updateItem(it.key, {
+                            pieces: e.target.value,
+                            quantity: n > 0 ? String(Math.round(per * n * 10000) / 10000) : it.quantity,
+                          });
+                        }}
+                      />
+                      <span>
+                        pieces{" "}
+                        {pcs > 0
+                          ? `→ ${per.toLocaleString("en-IN", { maximumFractionDigits: 6 })} ${unit}/pc × ${pcs.toLocaleString("en-IN")} = ${qtyFmt(per * pcs)} ${unit} needed`
+                          : `(${per.toLocaleString("en-IN", { maximumFractionDigits: 6 })} ${unit} per piece)`}
+                      </span>
+                    </div>
+                  );
+                })()}
                 {it.productId && warehouseId && (() => {
                   const available = balanceByProduct.get(it.productId);
                   const requested = Number(it.quantity) || 0;
@@ -2416,13 +2528,14 @@ function ChallanRow({ challan, lotId, assigneeName, onReceive }: { challan: Stag
 // ── Stage Card ────────────────────────────────────────────────────────────────
 function StageCard({
   stage, idx, lotId, vendorById, workerById, onEditRate, onAddEntry, onSendToVendor, onReceiveChallan, sizeById,
-  isCurrent, canReopen, nextStageName,
+  isCurrent, canReopen, nextStageName, trims, onRecordTrim,
 }: {
   stage: Stage; idx: number; lotId: string; vendorById: Map<string, string>; workerById: Map<string, string>;
   onEditRate: () => void; onAddEntry: () => void; onSendToVendor: () => void;
   onReceiveChallan: (challan: StageChallan) => void;
   sizeById: Map<string, string>;
   isCurrent: boolean; canReopen: boolean; nextStageName: string | null;
+  trims: LotTrim[]; onRecordTrim: (trim: LotTrim) => void;
 }) {
   const qc = useQueryClient();
   const [sizeDraft, setSizeDraft] = useState<Record<string, { accepted_qty: string; rejected_qty: string; rework_qty: string; defect_reason: string }>>({});
@@ -2742,6 +2855,32 @@ function StageCard({
           </div>
         </div>
       )}
+      {trims.length > 0 && (
+        <div className="px-4 py-3 border-b border-border">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Trims for this stage</p>
+          <div className="space-y-1.5">
+            {trims.map((t) => (
+              <div key={t.id} className="flex items-center justify-between gap-3 text-xs px-3 py-1.5 rounded-lg bg-muted/30">
+                <div className="flex items-center gap-2 min-w-0">
+                  {t.trim_type && <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ background: `${INDIGO}14`, color: INDIGO }}>{t.trim_type}</span>}
+                  <span className="font-medium truncate">{t.trim_name}</span>
+                </div>
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  <span className="text-muted-foreground">
+                    Planned {t.planned_qty != null ? `${Number(t.planned_qty).toLocaleString("en-IN")} ${t.unit ?? ""}` : "—"}
+                  </span>
+                  <span className="font-medium">
+                    Used {t.actual_qty != null ? `${Number(t.actual_qty).toLocaleString("en-IN")} ${t.unit ?? ""}` : "—"}
+                  </span>
+                  <Can perm="production.edit"><button onClick={() => onRecordTrim(t)} className="p-1 rounded hover:bg-muted text-muted-foreground" title="Record what was used">
+                    <Pencil className="h-3 w-3" />
+                  </button></Can>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="px-4 py-3 border-b border-border">
         <div className="flex items-center justify-between mb-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Entries</p>
@@ -2769,7 +2908,7 @@ function StageCard({
                 <span className="text-muted-foreground">{e.entry_date}</span>
                 <span>
                   {stage.stage_type === "cutting"
-                    ? `${e.input_weight_kg != null ? `Fabric ${Number(e.input_weight_kg)} kg · ` : ""}Out ${e.pieces_out}`
+                    ? `${e.input_weight_kg != null ? `Fabric ${Number(e.input_weight_kg)} kg · ` : ""}Out ${e.pieces_out}${e.balance_kg != null ? ` · Left ${Number(e.balance_kg)} kg ${e.balance_action === "return" ? "returned" : "wasted"}` : ""}`
                     : `In ${e.pieces_in} · Out ${e.pieces_out}`}
                   {" · "}Rej {e.rejected}
                   {e.missing > 0 && <>{" · "}<span style={{ color: "#B45309" }}>Missing {e.missing}</span></>}
@@ -2993,6 +3132,8 @@ export default function LotDetailPage() {
   const lastCompletedIdx = firstOpenIdx === -1 ? lot.stages.length - 1 : firstOpenIdx - 1;
 
   const cs = lot.cost_summary;
+  // Trims show on their stage; only those without one get a card of their own.
+  const unlinkedTrims = lot.trims.filter((t) => !t.stage_id || !lot.stages.some((st) => st.id === t.stage_id));
 
   return (
     <div className="p-8 space-y-8 max-w-6xl">
@@ -3531,6 +3672,8 @@ export default function LotDetailPage() {
                 isCurrent={lotOpen && idx === currentStageIdx}
                 canReopen={lotOpen && idx === lastCompletedIdx}
                 nextStageName={lot.stages.slice(idx + 1).find((n) => n.status !== "skipped")?.stage_name ?? null}
+                trims={lot.trims.filter((t) => t.stage_id === s.id)}
+                onRecordTrim={(t) => setActualTrim(t)}
               />
             ))}
             {upcomingStages.length > 0 && (
@@ -3543,6 +3686,14 @@ export default function LotDetailPage() {
                       <span className={`font-medium ${s.status === "skipped" ? "line-through text-muted-foreground" : "text-foreground/70"}`}>
                         {visibleStages.length + i + 1}. {s.stage_name}
                       </span>
+                      {(() => {
+                        const n = lot.trims.filter((t) => t.stage_id === s.id);
+                        return n.length > 0 && (
+                          <span className="ml-1 text-[11px]" title={n.map((t) => t.trim_name).join(", ")}>
+                            ({n.length} trim{n.length > 1 ? "s" : ""})
+                          </span>
+                        );
+                      })()}
                       <Can perm="production.edit">
                         {s.status === "skipped" ? (
                           <button onClick={() => upcomingStatusMut.mutate({ stageId: s.id, status: "pending" })}
@@ -3779,18 +3930,16 @@ export default function LotDetailPage() {
         )}
       </Card>
 
+      {unlinkedTrims.length > 0 && (
       <Card
-        title="Trims"
-        subtitle="Auto-fetched from the Style at LOT creation — size-wise consumption summed against this LOT's per-size plan (§21)"
+        title="Trims not linked to a stage"
+        subtitle="Trims are shown on the stage they're used in — these have no process set on the Style"
       >
-        {lot.trims.length === 0 ? (
-          <Empty text="No trims configured on the Style." />
-        ) : (
           <div className="space-y-2">
-            {lot.trims.map((t) => (
+            {unlinkedTrims.map((t) => (
               <div key={t.id} className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border text-sm">
                 <div className="flex items-center gap-2">
-                  {t.category && <span className="text-[11px] px-2 py-0.5 rounded bg-muted">{t.category}</span>}
+                  {t.trim_type && <span className="text-[11px] px-2 py-0.5 rounded" style={{ background: `${INDIGO}14`, color: INDIGO }}>{t.trim_type}</span>}
                   <span className="font-medium">{t.trim_name}</span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -3807,8 +3956,8 @@ export default function LotDetailPage() {
               </div>
             ))}
           </div>
-        )}
       </Card>
+      )}
 
       <Card
         title="Packing Materials"

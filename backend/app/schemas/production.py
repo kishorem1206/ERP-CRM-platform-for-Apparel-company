@@ -301,6 +301,7 @@ class StyleTrimIn(BaseModel):
     quantity: Decimal | None = None
     unit: str | None = None
     category: str | None = None   # Sizable / Non-Sizable
+    trim_type: str | None = None   # Elastic, Thread / Cone, Label, ...
     process_seq: int | None = None
     excess_pct: Decimal | None = None
     notes: str | None = None
@@ -325,6 +326,7 @@ class StyleTrimOut(BaseModel):
     quantity: Decimal | None
     unit: str | None
     category: str | None
+    trim_type: str | None = None
     process_seq: int | None = None
     excess_pct: Decimal | None
     notes: str | None
@@ -650,6 +652,17 @@ class StageEntryCreate(BaseModel):
     pieces_out: int = 0
     rejected: int = 0
     missing: int = 0   # pieces lost at this stage, apart from rejects
+    # Cutting: fabric left over and what happened to it — "return" puts it
+    # back in the warehouse (against the lot's fabric issues), "waste" writes it off.
+    balance_kg: Decimal | None = None
+    balance_action: str | None = None
+
+    @field_validator("balance_action")
+    @classmethod
+    def _valid_balance_action(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("return", "waste"):
+            raise ValueError("balance_action must be 'return' or 'waste'")
+        return v
     input_weight_kg: Decimal | None = None
     output_weight_kg: Decimal | None = None
     wastage_kg: Decimal | None = None
@@ -666,6 +679,8 @@ class StageEntryOut(BaseModel):
     pieces_out: int
     rejected: int
     missing: int = 0
+    balance_kg: Decimal | None = None
+    balance_action: str | None = None
     input_weight_kg: Decimal | None = None
     output_weight_kg: Decimal | None = None
     wastage_kg: Decimal | None = None
@@ -864,6 +879,8 @@ class LotTrimOut(BaseModel):
     trim_name: str
     unit: str | None
     category: str | None
+    trim_type: str | None = None
+    stage_id: UUID | None = None
     planned_qty: Decimal | None
     actual_qty: Decimal | None
     notes: str | None
@@ -932,12 +949,14 @@ class LotMaterialCreate(BaseModel):
     product_id: UUID
     unit_id: UUID | None = None   # defaults to the product's own unit
     planned_qty: Decimal | None = None
+    per_piece_qty: Decimal | None = None   # planned = per piece x lot pieces when planned is left out
     notes: str | None = None
 
 
 class LotMaterialUpdate(BaseModel):
     unit_id: UUID | None = None
     planned_qty: Decimal | None = None
+    per_piece_qty: Decimal | None = None
     notes: str | None = None
 
 
@@ -950,6 +969,7 @@ class LotMaterialOut(BaseModel):
     unit_id: UUID | None
     unit_abbreviation: str | None = None
     planned_qty: Decimal | None
+    per_piece_qty: Decimal | None = None
     issued_qty: Decimal          # issued on this lot's slips, less returns
     balance_qty: Decimal | None  # planned - issued; None when nothing is planned
     notes: str | None

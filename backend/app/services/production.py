@@ -1,5 +1,5 @@
 """ProductionService: lots, stages, MIS, stage entries, FG output."""
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -882,7 +882,7 @@ class ProductionService:
             t = StyleTrim(
                 style_id=s.id, trim_name=tr.trim_name, lot_id=tr.lot_id,
                 style_part_id=tr.style_part_id, colour_id=tr.colour_id,
-                quantity=tr.quantity, unit=tr.unit, category=tr.category,
+                quantity=tr.quantity, unit=tr.unit, category=tr.category, trim_type=tr.trim_type,
                 process_seq=tr.process_seq,
                 excess_pct=tr.excess_pct, notes=tr.notes, created_at=now,
             )
@@ -958,7 +958,7 @@ class ProductionService:
             } for p in source.processes],
             trims=[{"trim_name": x.trim_name, "lot_id": x.lot_id, "style_part_id": x.style_part_id, "colour_id": x.colour_id,
                      "quantity": x.quantity, "unit": x.unit,
-                     "category": x.category, "process_seq": x.process_seq, "excess_pct": x.excess_pct, "notes": x.notes,
+                     "category": x.category, "trim_type": x.trim_type, "process_seq": x.process_seq, "excess_pct": x.excess_pct, "notes": x.notes,
                      "size_breakdown": [{"size_id": sb.size_id, "quantity": sb.quantity} for sb in x.size_breakdown]}
                     for x in source.trims],
             packing_materials=[{"material_name": x.material_name, "product_id": x.product_id, "quantity": x.quantity, "unit": x.unit,
@@ -1065,7 +1065,7 @@ class ProductionService:
             t = StyleTrim(
                 style_id=style_id, trim_name=tr.trim_name, lot_id=tr.lot_id,
                 style_part_id=tr.style_part_id, colour_id=tr.colour_id,
-                quantity=tr.quantity, unit=tr.unit, category=tr.category,
+                quantity=tr.quantity, unit=tr.unit, category=tr.category, trim_type=tr.trim_type,
                 process_seq=tr.process_seq,
                 excess_pct=tr.excess_pct, notes=tr.notes, created_at=now,
             )
@@ -1479,6 +1479,11 @@ class ProductionService:
         """
         now = datetime.now(timezone.utc)
         lot_number = (body.lot_number or "").strip() or await self._next_lot_number(company_id)
+        # Size-wise quantities, when given, are the plan; the total follows
+        # them (and drives every per-piece requirement below).
+        sizes_total = sum(sz.planned_qty for sz in body.sizes)
+        if sizes_total:
+            body.planned_qty = sizes_total
 
         style: Style | None = None
         if body.style_id:
@@ -1508,9 +1513,7 @@ class ProductionService:
             company_id=company_id, lot_number=lot_number,
             style_id=body.style_id, customer_id=body.customer_id,
             sales_order_id=body.sales_order_id, order_ref=body.order_ref,
-            # Size-wise quantities, when given, are the plan; the total follows them.
-            planned_qty=sum(sz.planned_qty for sz in body.sizes) or body.planned_qty,
-            colour_id=body.colour_id,
+            planned_qty=body.planned_qty, colour_id=body.colour_id,
             planned_weight_kg=body.planned_weight_kg, delivery_date=body.delivery_date,
             season=body.season, target_sp=target_sp, notes=body.notes,
             final_output_unit=style.final_output_unit if style else None,
@@ -1540,6 +1543,7 @@ class ProductionService:
                 party_vendor_id=ac.party_vendor_id, notes=ac.notes, created_at=now,
             ))
 
+        trims_by_process_seq: dict[int | None, list[LotTrim]] = {}
         resolved_size_qty: dict[UUID, int] = {}
         if body.sizes:
             for sz in body.sizes:
@@ -1603,10 +1607,13 @@ class ProductionService:
                 if base_qty is not None:
                     excess_mult = 1 + float(tr.excess_pct) / 100 if tr.excess_pct is not None else 1
                     planned_qty = Decimal(str(base_qty * excess_mult))
-                self.db.add(LotTrim(
+                lot_trim = LotTrim(
                     production_lot_id=lot.id, style_trim_id=tr.id, trim_name=tr.trim_name,
-                    unit=tr.unit, category=tr.category, planned_qty=planned_qty, created_at=now,
-                ))
+                    unit=tr.unit, category=tr.category, trim_type=tr.trim_type,
+                    planned_qty=planned_qty, created_at=now,
+                )
+                self.db.add(lot_trim)
+                trims_by_process_seq.setdefault(tr.process_seq, []).append(lot_trim)
 
             for pm in style.packing_materials:
                 planned_qty = None
@@ -1687,6 +1694,9 @@ class ProductionService:
                 )
                 self.db.add(st)
                 created_stages.append(st)
+                # Trims belong to the stage of the process they're used in.
+                for lot_trim in trims_by_process_seq.get(proc.seq, []):
+                    lot_trim.stage = st
         else:
             # No Style (or Style has no configured workflow) — fall back to
             # the generic garment-production stages so the LOT is still usable.
@@ -2059,9 +2069,26 @@ class ProductionService:
         if pieces_in > 0 and stage is not None:
             await self._require_fabric_ready(stage.production_lot_id)
         now = datetime.now(timezone.utc)
-        if body.input_weight_kg is not None and body.output_weight_kg is not None:
-            remainder = body.input_weight_kg - body.output_weight_kg
-            classified = (body.wastage_kg or Decimal("0")) + (body.recoverable_kg or Decimal("0"))
+        # Cutting's leftover fabric: what's left of the fabric that went in,
+        # either back to the warehouse or written off. What was used is the rest.
+        output_weight_kg, wastage_kg = body.output_weight_kg, body.wastage_kg
+        balance_kg = body.balance_kg if body.balance_kg else None
+        if balance_kg is not None:
+            if stage is None or stage.stage_type != "cutting":
+                raise QuantityValidationError("Leftover fabric is recorded on cutting entries only.")
+            if balance_kg < 0:
+                raise QuantityValidationError("Leftover fabric can't be negative.")
+            if body.input_weight_kg is None or balance_kg > body.input_weight_kg:
+                raise QuantityValidationError("Leftover fabric can't be more than the fabric that went in.")
+            if body.balance_action is None:
+                raise QuantityValidationError("Choose whether the leftover fabric goes back to the warehouse or is waste.")
+            if output_weight_kg is None:
+                output_weight_kg = body.input_weight_kg - balance_kg
+            if body.balance_action == "waste":
+                wastage_kg = (wastage_kg or Decimal("0")) + balance_kg
+        if body.input_weight_kg is not None and output_weight_kg is not None and balance_kg is None:
+            remainder = body.input_weight_kg - output_weight_kg
+            classified = (wastage_kg or Decimal("0")) + (body.recoverable_kg or Decimal("0"))
             if classified > remainder:
                 raise QuantityValidationError(
                     f"Wastage + Recoverable ({classified} kg) cannot exceed the unaccounted "
@@ -2070,8 +2097,9 @@ class ProductionService:
         entry = ProductionStageEntry(
             stage_id=stage_id, entry_date=body.entry_date,
             pieces_in=pieces_in, pieces_out=body.pieces_out, rejected=body.rejected, missing=body.missing,
-            input_weight_kg=body.input_weight_kg, output_weight_kg=body.output_weight_kg,
-            wastage_kg=body.wastage_kg, recoverable_kg=body.recoverable_kg,
+            balance_kg=balance_kg, balance_action=body.balance_action if balance_kg is not None else None,
+            input_weight_kg=body.input_weight_kg, output_weight_kg=output_weight_kg,
+            wastage_kg=wastage_kg, recoverable_kg=body.recoverable_kg,
             operator=body.operator, machine=body.machine, notes=body.notes,
             created_at=now, created_by=user_id,
         )
@@ -2099,10 +2127,10 @@ class ProductionService:
             stage.missing_qty += body.missing
             if body.input_weight_kg is not None:
                 stage.input_weight_kg = (stage.input_weight_kg or Decimal("0")) + body.input_weight_kg
-            if body.output_weight_kg is not None:
-                stage.output_weight_kg = (stage.output_weight_kg or Decimal("0")) + body.output_weight_kg
-            if body.wastage_kg is not None:
-                stage.wastage_kg = (stage.wastage_kg or Decimal("0")) + body.wastage_kg
+            if output_weight_kg is not None:
+                stage.output_weight_kg = (stage.output_weight_kg or Decimal("0")) + output_weight_kg
+            if wastage_kg is not None:
+                stage.wastage_kg = (stage.wastage_kg or Decimal("0")) + wastage_kg
             if body.recoverable_kg is not None:
                 stage.recoverable_kg = (stage.recoverable_kg or Decimal("0")) + body.recoverable_kg
             stage.updated_at = now
@@ -2112,9 +2140,53 @@ class ProductionService:
             if stage.rate_per_pc is not None or any(c.bill_amount for c in stage.challans):
                 stage.bill_amount = _stage_actual_cost(stage)
             await self._propagate_to_next_stage(stage)
+            if balance_kg is not None and body.balance_action == "return":
+                await self._return_leftover_fabric(stage.production_lot_id, balance_kg, body.entry_date, user_id)
 
         await self.db.flush()
         return entry
+
+    async def _return_leftover_fabric(self, lot_id: UUID, kg: Decimal, on: date, user_id: UUID) -> None:
+        """Books leftover cutting fabric back into stock as a return against
+        the lot's fabric issue slips (issued in kg), newest first, so the lot
+        and the warehouse both see it and it can go to a future lot."""
+        company_id = (await self.db.execute(
+            select(ProductionLot.company_id).where(ProductionLot.id == lot_id)
+        )).scalar_one()
+        items = (await self.db.execute(
+            select(MaterialIssueItem)
+            .join(MaterialIssue, MaterialIssue.id == MaterialIssueItem.material_issue_id)
+            .join(Product, Product.id == MaterialIssueItem.product_id)
+            .join(Unit, Unit.id == MaterialIssueItem.unit_id)
+            .where(
+                MaterialIssue.production_lot_id == lot_id, MaterialIssue.status != "cancelled",
+                Product.product_type == "fabric", func.lower(Unit.abbreviation).in_(("kg", "kgs")),
+            )
+            .order_by(MaterialIssue.issue_date.desc(), MaterialIssue.created_at.desc())
+        )).scalars().all()
+        def unreturned(item: MaterialIssueItem) -> Decimal:
+            return item.issued_qty - (item.used_qty or 0) - (item.returned_qty or 0) - (item.wastage_qty or 0)
+
+        available = sum((max(unreturned(i), Decimal("0")) for i in items), Decimal("0"))
+        if kg > available:
+            raise QuantityValidationError(
+                f"Only {available.normalize()} kg of the fabric issued to this lot (in kg) is still unreturned, "
+                f"so {kg.normalize()} kg can't go back to the warehouse. Issue the fabric first, or mark the leftover as waste."
+            )
+        remaining = kg
+        for item in items:
+            take = min(unreturned(item), remaining)
+            if take <= 0:
+                continue
+            await self.record_mis_item_return(
+                item.id,
+                MISItemReturnUpdate(returned_qty=(item.returned_qty or Decimal("0")) + take,
+                                    notes=f"Leftover after cutting, {on.isoformat()}"),
+                company_id, user_id,
+            )
+            remaining -= take
+            if remaining <= 0:
+                break
 
     # Stage fields worth an audit row when they change — status and the
     # assignment/quantity corrections; stage_name/notes edits are cosmetic.
@@ -2591,14 +2663,27 @@ class ProductionService:
                 "id": m.id, "product_id": m.product_id, "product_name": m.product.name,
                 "product_code": m.product.code, "product_type": m.product.product_type,
                 "unit_id": m.unit_id, "unit_abbreviation": m.unit.abbreviation if m.unit else None,
-                "planned_qty": m.planned_qty, "issued_qty": issued_qty,
+                "planned_qty": m.planned_qty, "per_piece_qty": m.per_piece_qty, "issued_qty": issued_qty,
                 "balance_qty": m.planned_qty - issued_qty if m.planned_qty is not None else None,
                 "notes": m.notes,
             })
         return out
 
+    @staticmethod
+    def _per_piece(planned: Decimal | None, lot_pieces: int | None) -> Decimal | None:
+        if planned is None or not lot_pieces:
+            return None
+        return (Decimal(planned) / lot_pieces).quantize(Decimal("0.000001"))
+
+    @staticmethod
+    def _planned_from_per_piece(per_piece: Decimal | None, lot_pieces: int | None) -> Decimal | None:
+        if per_piece is None or not lot_pieces:
+            return None
+        return (Decimal(per_piece) * lot_pieces).quantize(Decimal("0.0001"))
+
     async def add_lot_material(self, lot_id: UUID, body: LotMaterialCreate, company_id: UUID) -> LotMaterial | None:
-        if not await self._get_company_lot(lot_id, company_id):
+        lot = await self._get_company_lot(lot_id, company_id)
+        if not lot:
             return None
         product = (await self.db.execute(
             select(Product).where(Product.id == body.product_id, Product.company_id == company_id)
@@ -2613,9 +2698,13 @@ class ProductionService:
         count = (await self.db.execute(
             select(func.count(LotMaterial.id)).where(LotMaterial.production_lot_id == lot_id)
         )).scalar_one()
+        planned = body.planned_qty
+        if planned is None:
+            planned = self._planned_from_per_piece(body.per_piece_qty, lot.planned_qty)
         material = LotMaterial(
             production_lot_id=lot_id, product_id=body.product_id,
-            unit_id=body.unit_id or product.unit_id, planned_qty=body.planned_qty,
+            unit_id=body.unit_id or product.unit_id, planned_qty=planned,
+            per_piece_qty=body.per_piece_qty if body.per_piece_qty is not None else self._per_piece(planned, lot.planned_qty),
             notes=body.notes, sort_order=count, created_at=datetime.now(timezone.utc),
         )
         self.db.add(material)
@@ -2633,8 +2722,17 @@ class ProductionService:
         material = await self._get_company_lot_material(material_id, company_id)
         if not material:
             return None
-        for field, value in body.model_dump(exclude_unset=True).items():
+        updates = body.model_dump(exclude_unset=True)
+        for field, value in updates.items():
             setattr(material, field, value)
+        # Per piece and planned move together: whichever was changed sets the other.
+        lot_pieces = (await self.db.execute(
+            select(ProductionLot.planned_qty).where(ProductionLot.id == material.production_lot_id)
+        )).scalar_one()
+        if "per_piece_qty" in updates and "planned_qty" not in updates:
+            material.planned_qty = self._planned_from_per_piece(material.per_piece_qty, lot_pieces)
+        elif "planned_qty" in updates and "per_piece_qty" not in updates:
+            material.per_piece_qty = self._per_piece(material.planned_qty, lot_pieces)
         await self.db.flush()
         return material
 
@@ -2742,6 +2840,7 @@ class ProductionService:
             unit_id = unit_by_abbr.get((unit or "").strip().lower()) or product_by_id[product_id].unit_id
             self.db.add(LotMaterial(
                 production_lot_id=lot_id, product_id=product_id, unit_id=unit_id, planned_qty=qty,
+                per_piece_qty=self._per_piece(qty, lot.planned_qty),
                 sort_order=len(already) + added, created_at=now,
             ))
             added += 1
