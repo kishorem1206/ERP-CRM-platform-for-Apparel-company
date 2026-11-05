@@ -218,6 +218,23 @@ class PurchaseEntryCreate(BaseModel):
     items: list[GRNItemCreate]
 
 
+class GRNItemUpdate(BaseModel):
+    id: UUID
+    received_qty: Decimal
+    rejected_qty: Decimal = Decimal("0")
+    unit_price: Decimal
+
+
+class PurchaseEntryUpdate(BaseModel):
+    """Admin correction of a saved GRN: header details and, per existing
+    line, what arrived, what was rejected and the rate."""
+    entry_date: date | None = None
+    invoice_number: str | None = None
+    invoice_date: date | None = None
+    notes: str | None = None
+    items: list[GRNItemUpdate] = []
+
+
 class PurchaseEntryOut(BaseModel):
     id: UUID
     entry_number: str

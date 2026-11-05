@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
@@ -10,6 +10,7 @@ import { SearchableSelect } from "@/components/shared/searchable-select";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
+import { LotSizePlan, PastMistakesNotice, sizeRowsPayload, sizeRowsTotal, type LotSizeRow } from "@/components/production/lot-plan-fields";
 
 const INDIGO = "#0049A7";
 
@@ -81,7 +82,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
   const [notes, setNotes] = useState("");
   const [piecesPerBox, setPiecesPerBox] = useState("");
   const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; planned_amount: string; party_vendor_id: string }[]>([]);
-  const [lotSizes, setLotSizes] = useState<Record<string, string>>({});
+  const [sizeRows, setSizeRows] = useState<LotSizeRow[]>([]);
   const [error, setError] = useState("");
 
   const { data: styles } = useQuery({
@@ -92,24 +93,6 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
     queryKey: ["vendors", "agent"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { vendor_type: "agent", page_size: 200 } })).data.data as { id: string; name: string }[],
   });
-  const { data: styleDetail } = useQuery({
-    queryKey: ["style-detail-for-lot", styleId],
-    queryFn: async () => (await api.get(`/production/styles/${styleId}`)).data.data as {
-      sizes: { size_id: string; quantity: number | null }[];
-    },
-    enabled: !!styleId,
-  });
-  const { data: sizesMaster } = useQuery({
-    queryKey: ["master-sizes"],
-    queryFn: async () => (await api.get("/master/sizes")).data.data as { id: string; name: string }[],
-  });
-
-  useEffect(() => {
-    if (!styleDetail) { setLotSizes({}); return; }
-    setLotSizes(Object.fromEntries(
-      styleDetail.sizes.filter((s) => s.quantity != null).map((s) => [s.size_id, String(s.quantity)])
-    ));
-  }, [styleDetail]);
   const { data: customers } = useQuery({
     queryKey: ["customers-list"],
     queryFn: async () => (await api.get("/sales/customers?page_size=200")).data.data ?? [],
@@ -126,16 +109,14 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         style_id: styleId || null,
         customer_id: customerId || null,
         order_ref: orderRef || null,
-        planned_qty: parseInt(plannedQty) || 0,
+        planned_qty: sizeRowsTotal(sizeRows) || parseInt(plannedQty) || 0,
         colour_id: colourId || null,
         planned_weight_kg: plannedWeightKg ? Number(plannedWeightKg) : undefined,
         delivery_date: deliveryDate || null,
         season: season || null,
         notes: notes || null,
         pieces_per_box: piecesPerBox ? parseInt(piecesPerBox) : undefined,
-        sizes: Object.entries(lotSizes).filter(([, v]) => v).map(([size_id, planned_qty]) => ({
-          size_id, planned_qty: parseInt(planned_qty) || 0,
-        })),
+        sizes: sizeRowsPayload(sizeRows),
         additional_costs: costs.filter((c) => c.description.trim()).map((c) => ({
           cost_type: c.cost_type, description: c.description.trim(),
           planned_amount: c.planned_amount ? Number(c.planned_amount) : undefined,
@@ -207,22 +188,12 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
               </div>
             </div>
           </div>
+          <PastMistakesNotice styleId={styleId} />
           <div>
             <label className="text-xs font-medium text-muted-foreground">Order Reference</label>
             <input value={orderRef} onChange={(e) => setOrderRef(e.target.value)}
               className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="PO number or order ref" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Planned Qty *</label>
-              <input required type="number" min="1" value={plannedQty} onChange={(e) => setPlannedQty(e.target.value)}
-                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Delivery Date</label>
-              <DatePicker value={deliveryDate} onChange={(v) => setDeliveryDate(v)} />
-            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -249,34 +220,25 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
                 placeholder="e.g. 500" />
             </div>
           </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground">Pieces per Box (optional)</label>
-            <input type="number" min="1" value={piecesPerBox} onChange={(e) => setPiecesPerBox(e.target.value)}
-              className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder="e.g. 12 — defaults from the Style" />
-          </div>
-          {styleDetail && styleDetail.sizes.length > 0 && (
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Planned Qty per Size</label>
-              <p className="text-[11px] text-muted-foreground mt-0.5 mb-1.5">Pre-filled from the Style's size quantities — edit any value below.</p>
-              <div className="space-y-1.5">
-                {styleDetail.sizes.map((s) => (
-                  <div key={s.size_id} className="flex items-center gap-2">
-                    <span className="text-xs font-medium w-20 flex-shrink-0">
-                      {(sizesMaster ?? []).find((m) => m.id === s.size_id)?.name ?? "—"}
-                    </span>
-                    <input
-                      type="number" min="0"
-                      value={lotSizes[s.size_id] ?? ""}
-                      onChange={(e) => setLotSizes((prev) => ({ ...prev, [s.size_id]: e.target.value }))}
-                      className="w-28 rounded border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      placeholder="Qty"
-                    />
-                  </div>
-                ))}
-              </div>
+              <label className="text-xs font-medium text-muted-foreground">Delivery Date</label>
+              <DatePicker value={deliveryDate} onChange={(v) => setDeliveryDate(v)} />
             </div>
-          )}
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Pieces per Box (optional)</label>
+              <input type="number" min="1" value={piecesPerBox} onChange={(e) => setPiecesPerBox(e.target.value)}
+                className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="e.g. 12 — from the Style" />
+            </div>
+          </div>
+          <LotSizePlan
+            styleId={styleId}
+            rows={sizeRows}
+            onRowsChange={setSizeRows}
+            plannedQty={plannedQty}
+            onPlannedQtyChange={setPlannedQty}
+          />
           <div>
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-muted-foreground">Additional Costs & Agent Commission (optional)</label>

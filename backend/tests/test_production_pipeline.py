@@ -451,3 +451,141 @@ def test_lot_materials_are_filled_from_the_style_and_editable():
     assert r["duplicate_error"] == "DUPLICATE_MATERIAL"
     assert float(r["after_edit"][r["yarn"]]["planned_qty"]) == 15.0
     assert r["after_delete"] == {r["fabric"], r["trim"], r["packing"]}
+
+
+async def _run_edit_style_with_lots_scenario():
+    """Editing a style that already has a lot must save, and the lot's links
+    move to the style's new rows (or clear when the row was renamed away)."""
+    from app.models.production import LotFabric, LotPackingMaterial, LotTrim, ProductionStage, StyleFabric, StyleProcess
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            svc = ProductionService(db)
+
+            def payload(trim_name):
+                return StyleCreate(
+                    name=f"Test Style {uuid4().hex[:8]}", final_output_unit="Pieces", fabric_source="purchased",
+                    fabrics=[StyleFabricIn(fabric_name="Body Fabric", consumption="0.2", unit="kg")],
+                    trims=[StyleTrimIn(trim_name=trim_name, quantity=1, unit="pcs")],
+                    packing_materials=[StylePackingMaterialIn(material_name="Poly bag", quantity=1)],
+                    processes=[StyleProcessIn(seq=1, process_name="Cutting"), StyleProcessIn(seq=2, process_name="Stitching")],
+                )
+
+            style = await svc.create_style(payload("Label"), company_id, user_id)
+            lot = await svc.create_lot(ProductionLotCreate(style_id=style.id, planned_qty=50), company_id, user_id)
+            updated = await svc.update_style(style.id, payload("Main Label"), company_id, user_id)
+
+            async def col(column, owner):
+                return (await db.execute(select(column).where(owner == lot.id))).scalars().all()
+
+            return {
+                "updated": updated is not None,
+                "new_fabric_ids": set((await db.execute(select(StyleFabric.id).where(StyleFabric.style_id == style.id))).scalars()),
+                "new_process_ids": set((await db.execute(select(StyleProcess.id).where(StyleProcess.style_id == style.id))).scalars()),
+                "lot_fabric_links": await col(LotFabric.style_fabric_id, LotFabric.production_lot_id),
+                "lot_trim_links": await col(LotTrim.style_trim_id, LotTrim.production_lot_id),
+                "lot_packing_links": await col(LotPackingMaterial.style_packing_material_id, LotPackingMaterial.production_lot_id),
+                "stage_links": await col(ProductionStage.style_process_id, ProductionStage.production_lot_id),
+            }
+        finally:
+            await db.rollback()
+
+
+def test_editing_a_style_with_lots_saves_and_relinks_them():
+    r = asyncio.run(_run_edit_style_with_lots_scenario())
+    assert r["updated"]
+    assert len(r["lot_fabric_links"]) == 1 and r["lot_fabric_links"][0] in r["new_fabric_ids"]
+    assert len(r["stage_links"]) == 2 and set(r["stage_links"]) == r["new_process_ids"]
+    assert r["lot_trim_links"] == [None]          # "Label" no longer exists on the style
+    assert len(r["lot_packing_links"]) == 1 and r["lot_packing_links"][0] is not None
+
+
+async def _run_skip_insert_missing_close_scenario():
+    """A skipped stage hands its plan straight on; a stage can be slotted in
+    after any other; missing pieces are counted apart from rejects; and a lot
+    can be closed early, skipping what nobody started."""
+    from app.schemas.production import StageCreate
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            svc = ProductionService(db)
+            lot = await svc.create_lot(ProductionLotCreate(planned_qty=100), company_id, user_id)
+            lot = await svc.get_lot(lot.id, company_id)
+            by_name = {s.stage_name: s for s in lot.stages}
+
+            await svc.add_stage_entry(by_name["Cutting"].id, StageEntryCreate(entry_date=date.today(), pieces_out=95, rejected=3), user_id)
+            await svc.update_stage(by_name["Making"].id, StageUpdate(status="skipped", skip_reason="Done at the vendor"), company_id, user_id)
+
+            ironing = await svc.add_stage(
+                lot.id, StageCreate(stage_type="finishing", stage_name="Ironing", after_stage_id=by_name["Finishing"].id), company_id,
+            )
+            finishing_entry = await svc.add_stage_entry(
+                by_name["Finishing"].id,
+                StageEntryCreate(entry_date=date.today(), pieces_in=95, pieces_out=90, rejected=2, missing=3), user_id,
+            )
+            too_many = None
+            try:
+                await svc.add_stage_entry(by_name["Finishing"].id, StageEntryCreate(entry_date=date.today(), missing=1), user_id)
+            except QuantityValidationError as e:
+                too_many = str(e)
+
+            lot_id = lot.id
+            db.expire(lot)   # the cached lot predates the inserted stage
+            lot = await svc.get_lot(lot_id, company_id)
+            order = [s.stage_name for s in sorted(lot.stages, key=lambda s: s.created_at)]
+            stages = {s.stage_name: s for s in lot.stages}
+            snapshot = {
+                "order": order,
+                "making": (stages["Making"].status, stages["Making"].skip_reason, stages["Making"].planned_qty),
+                "finishing_planned": stages["Finishing"].planned_qty,
+                "finishing_missing": stages["Finishing"].missing_qty,
+                "entry_missing": finishing_entry.missing,
+                "ironing_planned": stages["Ironing"].planned_qty,
+                "ironing_id": ironing.id,
+                "too_many": too_many,
+            }
+
+            closed = await svc.close_lot_early(lot.id, "Urgent dispatch", company_id, user_id)
+            snapshot["closed"] = (closed.status, closed.closed_early_reason)
+            snapshot["after_close"] = {s.stage_name: s.status for s in closed.stages}
+            return snapshot
+        finally:
+            await db.rollback()
+
+
+def test_skip_insert_missing_and_close_early():
+    r = asyncio.run(_run_skip_insert_missing_close_scenario())
+    assert r["order"] == ["Cutting", "Making", "Finishing", "Ironing", "QC / Checking", "Packing"]
+    assert r["making"] == ("skipped", "Done at the vendor", 95)
+    assert r["finishing_planned"] == 95          # passed straight through the skipped stage
+    assert (r["finishing_missing"], r["entry_missing"]) == (3, 3)
+    assert r["ironing_planned"] == 90            # the inserted stage gets Finishing's output
+    assert r["too_many"] and "can't be more than" in r["too_many"]
+    assert r["closed"] == ("completed", "Urgent dispatch")
+    assert r["after_close"]["QC / Checking"] == "skipped" and r["after_close"]["Packing"] == "skipped"
+    assert r["after_close"]["Ironing"] == "skipped" and r["after_close"]["Cutting"] == "in_progress"
+
+
+async def _run_style_code_matches_product_scenario():
+    """A style whose code is already a finished-goods product links to it
+    instead of failing on the unique product code."""
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            code = f"TST-{uuid4().hex[:6].upper()}"
+            product = Product(company_id=company_id, code=code, name="Existing Tee", product_type="finished_good", created_by=user_id)
+            db.add(product)
+            await db.flush()
+            style = await ProductionService(db).create_style(
+                StyleCreate(name="Existing Tee", code=code, final_output_unit="Pieces"), company_id, user_id,
+            )
+            return style.product_id, product.id
+        finally:
+            await db.rollback()
+
+
+def test_style_code_already_a_product_links_to_it():
+    linked, existing = asyncio.run(_run_style_code_matches_product_scenario())
+    assert linked == existing

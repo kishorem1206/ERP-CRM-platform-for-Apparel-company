@@ -8,6 +8,7 @@ from app.api.v1.deps import AuthUser, DBSession
 from app.models.purchase import PurchaseOrder, PurchaseEntry, Vendor
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.purchase import (
+    PurchaseEntryUpdate,
     PurchaseEntryCreate, PurchaseEntryOut,
     PurchaseOrderCreate, PurchaseOrderOut, PurchaseOrderUpdate,
     VendorCreate, VendorOut, VendorUpdate,
@@ -126,6 +127,13 @@ async def update_vendor(vendor_id: UUID, body: VendorUpdate, db: DBSession, user
 
 # ── Purchase Orders ──────────────────────────────────────────────────────────
 
+@router.get("/last-rate")
+async def last_rate(product_id: UUID, db: DBSession, user: AuthUser, vendor_id: UUID | None = None):
+    """Suggested rate for a product: latest from this vendor, any vendor, or its cost price."""
+    user.require("purchase.view")
+    return ApiResponse(success=True, data=await PurchaseService(db).last_rate(user.company_id, product_id, vendor_id))
+
+
 @router.get("/orders")
 async def list_purchase_orders(
     db: DBSession,
@@ -228,6 +236,16 @@ async def create_purchase_entry(body: PurchaseEntryCreate, db: DBSession, user: 
     svc = PurchaseService(db)
     entry = await svc.create_purchase_entry(body, user.company_id, user.user_id)
     return ApiResponse(success=True, data=_entry_out(entry))
+
+
+@router.put("/entries/{entry_id}")
+async def update_purchase_entry(entry_id: UUID, body: PurchaseEntryUpdate, db: DBSession, user: AuthUser):
+    """Correct a saved GRN (admin only by default)."""
+    user.require("purchase.grn_edit")
+    entry = await PurchaseService(db).update_purchase_entry(entry_id, body, user.company_id, user.user_id)
+    if not entry:
+        raise HTTPException(404, "Purchase entry not found")
+    return ApiResponse(success=True, data=_entry_out(entry), message="GRN updated")
 
 
 @router.get("/entries/{entry_id}")

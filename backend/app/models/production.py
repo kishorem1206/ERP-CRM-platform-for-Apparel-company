@@ -498,6 +498,7 @@ class ProductionLot(Base):
     pieces_per_box: Mapped[Optional[int]] = mapped_column(Integer)         # snapshot of Style.pieces_per_box; editable per lot
     style_version: Mapped[Optional[int]] = mapped_column(Integer)          # snapshot of Style.version at creation
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    closed_early_reason: Mapped[Optional[str]] = mapped_column(Text)   # closed before every stage was done
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
@@ -623,6 +624,8 @@ class ProductionStage(Base):
     received_qty: Mapped[int] = mapped_column(Integer, default=0)
     rejected_qty: Mapped[int] = mapped_column(Integer, default=0)
     rework_qty: Mapped[int] = mapped_column(Integer, default=0)
+    missing_qty: Mapped[int] = mapped_column(Integer, default=0)   # lost, not rejected
+    skip_reason: Mapped[Optional[str]] = mapped_column(Text)        # set when status is "skipped"
     # Weight-based cutting (spec §9) - rollup totals across this stage's
     # entries, mirroring how input_qty/output_qty already roll up.
     input_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
@@ -708,6 +711,7 @@ class ProductionStageEntry(Base):
     pieces_in: Mapped[int] = mapped_column(Integer, default=0)
     pieces_out: Mapped[int] = mapped_column(Integer, default=0)
     rejected: Mapped[int] = mapped_column(Integer, default=0)
+    missing: Mapped[int] = mapped_column(Integer, default=0)
     # Weight-based cutting (spec §9) - opt-in per entry; piece-only entries
     # leave these None. wastage_kg/recoverable_kg classify the remainder
     # (input - output) rather than losing track of the balance.
@@ -743,6 +747,7 @@ class ProductionStageChallan(Base):
     in_date: Mapped[Optional[date]] = mapped_column(Date)
     in_qty: Mapped[Optional[int]] = mapped_column(Integer)
     rejected_qty: Mapped[Optional[int]] = mapped_column(Integer)
+    missing_qty: Mapped[Optional[int]] = mapped_column(Integer)
     expected_return_days: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="out")   # out / partial / received / cancelled
     bill_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))

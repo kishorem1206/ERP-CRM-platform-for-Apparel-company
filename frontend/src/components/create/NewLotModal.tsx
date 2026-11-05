@@ -5,6 +5,7 @@ import { ModalShell, Field, Input, Textarea, ModalActions, SearchableSelect } fr
 import api from "@/lib/api";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
+import { LotSizePlan, PastMistakesNotice, sizeRowsPayload, sizeRowsTotal, type LotSizeRow } from "@/components/production/lot-plan-fields";
 
 interface Props {
   open: boolean;
@@ -22,6 +23,7 @@ export function NewLotModal({ open, onClose }: Props) {
     season: "",
     notes: "",
   });
+  const [sizeRows, setSizeRows] = useState<LotSizeRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   const styles = useQuery({
@@ -42,7 +44,8 @@ export function NewLotModal({ open, onClose }: Props) {
   const mut = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
-        planned_qty: Number(form.planned_qty) || 1,
+        planned_qty: sizeRowsTotal(sizeRows) || Number(form.planned_qty) || 1,
+        sizes: sizeRowsPayload(sizeRows),
         colour_id: form.colour_id || null,
         notes: form.notes || undefined,
       };
@@ -56,6 +59,7 @@ export function NewLotModal({ open, onClose }: Props) {
       qc.invalidateQueries({ queryKey: ["production-lots"] });
       onClose();
       setForm({ lot_number: "", style_id: "", planned_qty: "", colour_id: "", delivery_date: "", season: "", notes: "" });
+      setSizeRows([]);
     },
     onError: (e: unknown) => {
       const msg = (e as { response?: { data?: { error?: { message?: string } } } })
@@ -108,15 +112,15 @@ export function NewLotModal({ open, onClose }: Props) {
           />
         </Field>
 
-        <Field label="Planned Qty" required>
-          <Input
-            type="number"
-            min={1}
-            placeholder="e.g. 500"
-            value={form.planned_qty}
-            onChange={(e) => set("planned_qty", e.target.value)}
-          />
-        </Field>
+        <PastMistakesNotice styleId={form.style_id} />
+
+        <LotSizePlan
+          styleId={form.style_id}
+          rows={sizeRows}
+          onRowsChange={setSizeRows}
+          plannedQty={form.planned_qty}
+          onPlannedQtyChange={(v) => set("planned_qty", v)}
+        />
 
         <Field label="Colour (optional)">
           <SearchableSelect

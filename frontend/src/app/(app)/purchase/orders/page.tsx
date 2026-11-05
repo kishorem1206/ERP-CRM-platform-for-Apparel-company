@@ -1,6 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Plus, Trash2, X } from "lucide-react";
 import api from "@/lib/api";
@@ -11,6 +11,7 @@ import { SearchableSelect } from "@/components/shared/searchable-select";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can, usePermissions } from "@/lib/permissions";
 import { parseApiError } from "@/lib/api-error";
+import { fetchLastRate, lastRateNote } from "@/lib/last-rate";
 
 const BLUE = "#0049A7";
 
@@ -30,6 +31,7 @@ interface LineItem {
   ordered_qty: string;
   unit_price: string;
   gst_rate: string;
+  rate_note?: string;
 }
 
 const STATUS_FILTERS = [
@@ -81,7 +83,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
   });
   const { data: products } = useQuery({
     queryKey: ["products-list"],
-    queryFn: async () => (await api.get("/products?page_size=200")).data.data as { id: string; name: string; product_type: string; unit_id: string | null }[],
+    queryFn: async () => (await api.get("/products?page_size=200")).data.data as { id: string; name: string; product_type: string; unit_id: string | null; gst_rate?: number | string | null }[],
   });
   const selectedVendor = (vendors ?? []).find((v) => v.id === vendorId);
   const availableProducts = selectedVendor?.supplies_product_types?.length
@@ -125,6 +127,22 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
 
   const updateItem = (i: number, k: keyof LineItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
+
+  // Picking a product fills its unit, GST and the latest rate paid for it.
+  const pickProduct = async (i: number, productId: string) => {
+    const product = (products ?? []).find((p) => p.id === productId);
+    setItems((prev) => prev.map((it, idx) => (idx === i ? {
+      ...it, product_id: productId, unit_id: product?.unit_id ?? it.unit_id, rate_note: undefined,
+      gst_rate: product?.gst_rate != null ? String(Number(product.gst_rate)) : it.gst_rate,
+    } : it)));
+    if (!productId) return;
+    const rate = await fetchLastRate(productId, vendorId);
+    if (!rate) return;
+    setItems((prev) => prev.map((it, idx) =>
+      idx === i && it.product_id === productId
+        ? { ...it, unit_price: String(Number(rate.unit_price)), rate_note: lastRateNote(rate) }
+        : it));
+  };
 
   return (
     <ModalPortal>
@@ -195,15 +213,12 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                 </thead>
                 <tbody>
                   {items.map((it, i) => (
-                    <tr key={i} className="border-t">
+                    <Fragment key={i}>
+                    <tr className="border-t">
                       <td className="px-2 py-1 min-w-[220px]">
                         <SearchableSelect
                           value={it.product_id}
-                          onChange={(v) => {
-                            updateItem(i, "product_id", v);
-                            const unit = (products ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === v)?.unit_id;
-                            if (unit) updateItem(i, "unit_id", unit);
-                          }}
+                          onChange={(v) => pickProduct(i, v)}
                           placeholder="Select…"
                           accent={BLUE}
                           options={availableProducts.map((p) => ({
@@ -249,6 +264,12 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                         )}
                       </td>
                     </tr>
+                    {it.rate_note && (
+                      <tr>
+                        <td colSpan={7} className="px-2 pb-1.5 text-[11px] text-muted-foreground">{it.rate_note}</td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
                 <tfoot>

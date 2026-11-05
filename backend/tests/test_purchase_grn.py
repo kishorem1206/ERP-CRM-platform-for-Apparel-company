@@ -75,3 +75,81 @@ def test_grn_updates_every_po_it_receives_against():
     status, received = asyncio.run(_run_multi_po_grn_scenario())
     assert status == {"finished": "received", "part_done": "partial", "untouched": "approved"}
     assert received == Decimal("4")
+
+
+async def _run_grn_edit_scenario():
+    """Correcting a GRN moves stock, the PO line and the PO status with it,
+    and refuses to take back stock that has already been used."""
+    from app.domain.business_rules import BusinessRulesError
+    from app.models.master import Warehouse as WarehouseModel
+    from app.schemas.inventory import IssueParams
+    from app.schemas.purchase import GRNItemUpdate, PurchaseEntryUpdate
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            vendor = (await db.execute(select(Vendor.id).where(Vendor.company_id == company_id).limit(1))).scalar_one()
+            unit = (await db.execute(select(Unit.id).where(Unit.company_id == company_id).limit(1))).scalar_one()
+            product = (await db.execute(select(Product.id).where(Product.company_id == company_id).limit(1))).scalar_one()
+            warehouse = WarehouseModel(company_id=company_id, name="GRN edit check store")
+            db.add(warehouse)
+            await db.flush()
+            svc = PurchaseService(db)
+
+            po = await svc.create_purchase_order(
+                PurchaseOrderCreate(vendor_id=vendor, order_date=date.today(),
+                                    items=[POItemCreate(product_id=product, unit_id=unit, ordered_qty=10, unit_price=10)]),
+                company_id, user_id,
+            )
+            await svc.approve_purchase_order(po.id, company_id, user_id)
+            po = await svc.get_purchase_order(po.id, company_id)
+            grn = await svc.create_purchase_entry(
+                PurchaseEntryCreate(
+                    vendor_id=vendor, warehouse_id=warehouse.id, entry_date=date.today(), purchase_order_id=po.id,
+                    items=[GRNItemCreate(po_item_id=po.items[0].id, product_id=product, unit_id=unit,
+                                         received_qty=10, accepted_qty=10, unit_price=10)],
+                ),
+                company_id, user_id,
+            )
+            line_id = grn.items[0].id
+
+            edited = await svc.update_purchase_entry(
+                grn.id,
+                PurchaseEntryUpdate(invoice_number="INV-77", items=[GRNItemUpdate(id=line_id, received_qty=10, rejected_qty=3, unit_price=12)]),
+                company_id, user_id,
+            )
+            await db.refresh(po)
+            stock_after_edit = await svc.inv.get_balance(company_id, product, warehouse.id)
+            po_line_received = (await db.execute(
+                select(PurchaseOrderItem.received_qty).where(PurchaseOrderItem.purchase_order_id == po.id)
+            )).scalar_one()
+
+            # Use 6 of the 7 in stock, then try to cut accepted from 7 to 0.
+            await svc.inv.issue(IssueParams(company_id=company_id, product_id=product, warehouse_id=warehouse.id,
+                                            quantity=6, unit_id=unit, unit_cost=12, transaction_date=date.today()), user_id)
+            refused = None
+            try:
+                await svc.update_purchase_entry(
+                    grn.id, PurchaseEntryUpdate(items=[GRNItemUpdate(id=line_id, received_qty=10, rejected_qty=10, unit_price=12)]),
+                    company_id, user_id,
+                )
+            except BusinessRulesError as e:
+                refused = e.code
+            return {
+                "item": edited.items[0], "total": edited.total_amount, "invoice": edited.invoice_number,
+                "po_status": po.status, "po_line_received": po_line_received,
+                "stock_after_edit": stock_after_edit, "refused": refused,
+            }
+        finally:
+            await db.rollback()
+
+
+def test_grn_edit_moves_stock_and_po_and_guards_used_stock():
+    r = asyncio.run(_run_grn_edit_scenario())
+    assert r["item"].accepted_qty == Decimal("7") and r["item"].rejected_qty == Decimal("3")
+    assert r["item"].quality_status == "partial"
+    assert r["total"] == Decimal("84.00")          # 7 x 12
+    assert r["invoice"] == "INV-77"
+    assert r["stock_after_edit"] == Decimal("7")
+    assert r["po_line_received"] == Decimal("7") and r["po_status"] == "partial"
+    assert r["refused"] == "STOCK_ALREADY_USED"

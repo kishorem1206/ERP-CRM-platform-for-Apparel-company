@@ -401,6 +401,21 @@ def compute_lot_cost_summary(
     )
 
 
+# Style sections that lots point back to: (style model, lot column holding
+# the link, how a replaced row is matched to its new version on style edit).
+# Yarns come before fabrics because deleting a style fabric also deletes its
+# yarns, so their lot links must already have moved.
+_STYLE_LOT_LINKS = (
+    (StyleYarn, LotYarn.style_yarn_id, lambda r: (r.yarn_name, r.colour_id)),
+    (StyleFabric, LotFabric.style_fabric_id, lambda r: (r.fabric_name, r.style_part_id, r.colour_id)),
+    (StyleTrim, LotTrim.style_trim_id, lambda r: (r.trim_name, r.style_part_id, r.colour_id)),
+    (StyleProcess, ProductionStage.style_process_id, lambda r: (r.process_name, r.style_part_id)),
+    (StylePackingMaterial, LotPackingMaterial.style_packing_material_id, lambda r: (r.material_name,)),
+    (StyleAdditionalCost, LotAdditionalCost.style_additional_cost_id, lambda r: (r.cost_type, r.description)),
+    (StylePartColour, LotPartColour.style_part_colour_id, lambda r: (r.style_part_id, r.colour_id)),
+)
+
+
 class ProductionService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -583,9 +598,20 @@ class ProductionService:
         if existing_product_id:
             return existing_product_id
 
+        # A finished-goods product already carrying the style's code is this
+        # style's product: link it rather than trip the unique product code.
+        code = body.code or f"STY-{uuid4().hex[:8].upper()}"
+        same_code = (await self.db.execute(
+            select(Product).where(Product.company_id == company_id, Product.code == code)
+        )).scalar_one_or_none()
+        if same_code is not None:
+            if same_code.product_type == "finished_good" and same_code.deleted_at is None:
+                return same_code.id
+            code = f"{code}-{uuid4().hex[:4].upper()}"
+
         product = Product(
             company_id=company_id,
-            code=body.code or f"STY-{uuid4().hex[:8].upper()}",
+            code=code,
             name=body.name, product_type="finished_good",
             gender=body.gender, season=body.season, brand_id=body.brand_id,
             created_by=user_id,
@@ -970,15 +996,16 @@ class ProductionService:
         s.brand_id = body.brand_id
         s.updated_at = now
 
+        # Sizes and colours have nothing pointing at them, so they are simply
+        # replaced. Every other section is referenced by the lots made from
+        # this style, so its old rows stay until the new ones exist and each
+        # lot's link has been moved across (see _relink_lots_and_drop_old).
         await self.db.execute(delete(StyleSize).where(StyleSize.style_id == style_id))
         await self.db.execute(delete(StyleColour).where(StyleColour.style_id == style_id))
-        await self.db.execute(delete(StylePartColour).where(StylePartColour.style_id == style_id))
-        await self.db.execute(delete(StyleYarn).where(StyleYarn.style_id == style_id))
-        await self.db.execute(delete(StyleFabric).where(StyleFabric.style_id == style_id))
-        await self.db.execute(delete(StyleProcess).where(StyleProcess.style_id == style_id))
-        await self.db.execute(delete(StyleTrim).where(StyleTrim.style_id == style_id))
-        await self.db.execute(delete(StylePackingMaterial).where(StylePackingMaterial.style_id == style_id))
-        await self.db.execute(delete(StyleAdditionalCost).where(StyleAdditionalCost.style_id == style_id))
+        old_keys = {}
+        for model, _, key in _STYLE_LOT_LINKS:
+            rows = (await self.db.execute(select(model).where(model.style_id == style_id))).scalars().all()
+            old_keys[model] = [(row.id, key(row)) for row in rows]
         await self.db.flush()
 
         size_chart_items = await self._fetch_size_chart_items(body.sizes, company_id)
@@ -1062,6 +1089,7 @@ class ProductionService:
             ))
 
         await self.db.flush()
+        await self._relink_lots_and_drop_old(style_id, old_keys)
         # `s` (now `style`) was loaded at the top of this method, before the
         # delete+reinsert of every child section above - its relationship
         # collections (sizes, colours, processes, ...) are stale in the
@@ -1072,6 +1100,33 @@ class ProductionService:
         await self._ensure_variants(style)
         await self._ensure_part_variants(style)
         return style
+
+    async def _relink_lots_and_drop_old(self, style_id: UUID, old_keys: dict) -> None:
+        """Moves every lot link from a replaced style row to the new row that
+        matches it (same name, part and colour), clears links whose row is
+        gone, then deletes the old rows. Lots copied what they need when
+        they were created, so a cleared link only loses the style-side
+        lookup, never lot data.
+        """
+        for model, lot_column, key in _STYLE_LOT_LINKS:
+            old = old_keys[model]
+            if not old:
+                continue
+            old_ids = [row_id for row_id, _ in old]
+            new_rows = (await self.db.execute(
+                select(model).where(model.style_id == style_id, model.id.notin_(old_ids))
+            )).scalars().all()
+            new_by_key: dict = {}
+            for row in new_rows:
+                new_by_key.setdefault(key(row), []).append(row.id)
+            for old_id, old_key in old:
+                matches = new_by_key.get(old_key)
+                new_id = matches.pop(0) if matches else None
+                await self.db.execute(
+                    update(lot_column.class_).where(lot_column == old_id).values({lot_column.key: new_id})
+                )
+            await self.db.execute(delete(model).where(model.id.in_(old_ids)))
+        await self.db.flush()
 
     # ── Production Lots ────────────────────────────────────────────────────
 
@@ -1453,7 +1508,9 @@ class ProductionService:
             company_id=company_id, lot_number=lot_number,
             style_id=body.style_id, customer_id=body.customer_id,
             sales_order_id=body.sales_order_id, order_ref=body.order_ref,
-            planned_qty=body.planned_qty, colour_id=body.colour_id,
+            # Size-wise quantities, when given, are the plan; the total follows them.
+            planned_qty=sum(sz.planned_qty for sz in body.sizes) or body.planned_qty,
+            colour_id=body.colour_id,
             planned_weight_kg=body.planned_weight_kg, delivery_date=body.delivery_date,
             season=body.season, target_sp=target_sp, notes=body.notes,
             final_output_unit=style.final_output_unit if style else None,
@@ -1725,7 +1782,7 @@ class ProductionService:
         relevant = [s for s in lot.stages if s.stage_type in bucket]
         if not relevant:
             return [f"No {lot.status} stage has been logged for this lot yet."]
-        incomplete = [s for s in relevant if s.status != "completed"]
+        incomplete = [s for s in relevant if s.status not in ("completed", "skipped")]
         if incomplete:
             names = ", ".join(s.stage_name for s in incomplete)
             return [f"{len(incomplete)} {lot.status} stage(s) still in progress: {names}"]
@@ -1775,6 +1832,37 @@ class ProductionService:
         await self.db.flush()
         return lot
 
+    async def close_lot_early(
+        self, lot_id: UUID, reason: str, company_id: UUID, user_id: UUID | None = None,
+    ) -> ProductionLot | None:
+        """Closes a lot before every stage is done (an urgent dispatch, an
+        order cut short). Stages nobody started are marked skipped; stages
+        with work keep what was recorded. The reason stays on the lot."""
+        lot = await self.get_lot(lot_id, company_id)
+        if not lot:
+            return None
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("Give a reason for closing this lot early.")
+        if lot.status in ("completed", "cancelled"):
+            raise ValueError(f"This lot is already {lot.status}.")
+        now = datetime.now(timezone.utc)
+        for st in lot.stages:
+            if st.status == "pending" and not _stage_has_activity(st) and st.output_qty == 0:
+                st.status = "skipped"
+                st.skip_reason = "Lot closed early"
+                st.updated_at = now
+        old_status = lot.status
+        lot.status = "completed"
+        lot.closed_at = now
+        lot.closed_early_reason = reason
+        lot.updated_at = now
+        self._audit(company_id=company_id, production_lot_id=lot.id, entity_type="production_lot",
+                    entity_id=lot.id, action="closed_early", field_name="status",
+                    old_value=old_status, new_value=f"completed — {reason}", user_id=user_id)
+        await self.db.flush()
+        return lot
+
     async def reopen_lot(self, lot_id: UUID, company_id: UUID, user_id: UUID | None = None) -> ProductionLot | None:
         """Reopen a cancelled/completed lot back to Cutting."""
         lot = await self.get_lot(lot_id, company_id)
@@ -1785,6 +1873,7 @@ class ProductionService:
         old_status = lot.status
         lot.status = "cutting"
         lot.closed_at = None
+        lot.closed_early_reason = None
         lot.updated_at = datetime.now(timezone.utc)
         self._audit(company_id=company_id, production_lot_id=lot.id, entity_type="production_lot",
                     entity_id=lot.id, action="reopened", field_name="status",
@@ -1834,10 +1923,20 @@ class ProductionService:
         next stage plans against what was actually accepted from the previous
         one, never the LOT's original planned quantity.
         """
+        if stage.status == "skipped":
+            qty = stage.planned_qty
+        elif _stage_has_activity(stage) or stage.output_qty > 0:
+            qty = _stage_accepted_qty(stage)
+        else:
+            qty = None   # nothing has come out of this stage yet
         nxt = await self._next_stage(stage)
-        if nxt is not None:
-            nxt.planned_qty = _stage_accepted_qty(stage)
+        # A skipped stage hands on what it was planned to receive, unchanged.
+        while nxt is not None:
+            nxt.planned_qty = qty
             nxt.updated_at = datetime.now(timezone.utc)
+            if nxt.status != "skipped":
+                break
+            nxt = await self._next_stage(nxt)
 
     async def add_stage(self, lot_id: UUID, body: StageCreate, company_id: UUID) -> ProductionStage | None:
         lot_result = await self.db.execute(
@@ -1850,22 +1949,45 @@ class ProductionService:
             raise ValueError(f"Cannot add a stage to a {lot.status} lot")
         now = datetime.now(timezone.utc)
 
+        # Stages are ordered by created_at. A stage added "after" another one
+        # takes a timestamp between that stage and the next; otherwise it
+        # joins the end of the chain.
+        stages = (await self.db.execute(
+            select(ProductionStage).where(ProductionStage.production_lot_id == lot_id)
+            .order_by(ProductionStage.created_at)
+        )).scalars().all()
+        prev_stage = stages[-1] if stages else None
+        created_at = now
+        if body.after_stage_id is not None:
+            idx = next((i for i, st in enumerate(stages) if st.id == body.after_stage_id), None)
+            if idx is None:
+                raise ValueError("The stage to insert after isn't on this lot")
+            prev_stage = stages[idx]
+            following = stages[idx + 1:]
+            if following:
+                gap = following[0].created_at - prev_stage.created_at
+                if gap < timedelta(microseconds=2):
+                    # No room left between them: push the later stages back.
+                    for st in following:
+                        st.created_at = st.created_at + timedelta(milliseconds=1)
+                    gap = following[0].created_at - prev_stage.created_at
+                created_at = prev_stage.created_at + gap / 2
+        if prev_stage is not None and prev_stage.status == "completed" and body.after_stage_id is not None:
+            later_done = [st.stage_name for st in stages if st.created_at > prev_stage.created_at and st.status == "completed"]
+            if later_done:
+                raise ValueError(f"Can't insert here — later stage(s) already completed: {', '.join(later_done)}")
+
         planned_qty = body.planned_qty
         if planned_qty is None:
-            # A stage added after the lot already has stages joins the chain
-            # at the end (stages are ordered by created_at) — inherit the
-            # current last stage's actual accepted output, same rule as any
-            # other stage-to-stage handoff.
-            last_result = await self.db.execute(
-                select(ProductionStage)
-                .where(ProductionStage.production_lot_id == lot_id)
-                .order_by(ProductionStage.created_at.desc())
-                .limit(1)
-            )
-            last_stage = last_result.scalar_one_or_none()
-            if last_stage is not None:
-                accepted = _stage_accepted_qty(last_stage)
-                planned_qty = accepted if accepted > 0 else None
+            # Inherit the previous stage's actual accepted output (or what a
+            # skipped one was planned to receive), same rule as any other
+            # stage-to-stage handoff.
+            if prev_stage is not None:
+                if prev_stage.status == "skipped":
+                    planned_qty = prev_stage.planned_qty
+                else:
+                    accepted = _stage_accepted_qty(prev_stage)
+                    planned_qty = accepted if accepted > 0 else None
             else:
                 planned_qty = lot.planned_qty
 
@@ -1874,7 +1996,7 @@ class ProductionService:
             planned_qty=planned_qty, assignment_type=body.assignment_type,
             vendor_id=body.vendor_id, worker_id=body.worker_id,
             rate_per_pc=body.rate_per_pc, notes=body.notes,
-            created_at=now, updated_at=now,
+            created_at=created_at, updated_at=now,
         )
         self.db.add(stage)
         await self.db.flush()
@@ -1933,7 +2055,7 @@ class ProductionService:
         if stage is not None and stage.stage_type == "cutting":
             # Cutting takes fabric in by weight and gives pieces out, so its
             # pieces "in" are simply the pieces it cut: good plus rejected.
-            pieces_in = body.pieces_out + body.rejected
+            pieces_in = body.pieces_out + body.rejected + body.missing
         if pieces_in > 0 and stage is not None:
             await self._require_fabric_ready(stage.production_lot_id)
         now = datetime.now(timezone.utc)
@@ -1947,7 +2069,7 @@ class ProductionService:
                 )
         entry = ProductionStageEntry(
             stage_id=stage_id, entry_date=body.entry_date,
-            pieces_in=pieces_in, pieces_out=body.pieces_out, rejected=body.rejected,
+            pieces_in=pieces_in, pieces_out=body.pieces_out, rejected=body.rejected, missing=body.missing,
             input_weight_kg=body.input_weight_kg, output_weight_kg=body.output_weight_kg,
             wastage_kg=body.wastage_kg, recoverable_kg=body.recoverable_kg,
             operator=body.operator, machine=body.machine, notes=body.notes,
@@ -1965,9 +2087,16 @@ class ProductionService:
                     "Output quantity cannot exceed input quantity for this stage "
                     f"(would be {new_output} out of {new_input} in)."
                 )
+            if body.missing > 0:
+                accounted = new_output + stage.rejected_qty + body.rejected + stage.missing_qty + body.missing
+                if accounted > new_input:
+                    raise QuantityValidationError(
+                        f"Out + rejected + missing ({accounted}) can't be more than the {new_input} pieces that came in."
+                    )
             stage.input_qty = new_input
             stage.output_qty = new_output
             stage.rejected_qty += body.rejected
+            stage.missing_qty += body.missing
             if body.input_weight_kg is not None:
                 stage.input_weight_kg = (stage.input_weight_kg or Decimal("0")) + body.input_weight_kg
             if body.output_weight_kg is not None:
@@ -2017,13 +2146,21 @@ class ProductionService:
                 .where(ProductionStage.production_lot_id == stage.production_lot_id, ProductionStage.id != stage.id)
             )).all()
             if new_status == "completed":
-                open_before = [n for n, st, c in siblings if c < stage.created_at and st != "completed"]
+                open_before = [n for n, st, c in siblings if c < stage.created_at and st not in ("completed", "skipped")]
                 if open_before:
                     raise QuantityValidationError(f"Complete the earlier stage(s) first: {', '.join(open_before)}.")
-            elif stage.status == "completed":
+            elif new_status == "skipped":
+                if _stage_has_activity(stage) or stage.output_qty > 0:
+                    raise QuantityValidationError(
+                        f"{stage.stage_name} already has work recorded — mark it completed instead of skipping it."
+                    )
+            elif stage.status in ("completed", "skipped"):
                 done_after = [n for n, st, c in siblings if c > stage.created_at and st == "completed"]
                 if done_after:
-                    raise QuantityValidationError(f"Can't reopen — later stage(s) already completed: {', '.join(done_after)}.")
+                    verb = "reopen" if stage.status == "completed" else "un-skip"
+                    raise QuantityValidationError(f"Can't {verb} — later stage(s) already completed: {', '.join(done_after)}.")
+            if new_status != "skipped":
+                updates["skip_reason"] = None
 
         # Validate any correction to sent/received/rejected as one consistent
         # set (§7 — editing a stage must not create impossible quantities):
@@ -2048,7 +2185,7 @@ class ProductionService:
         stage.updated_at = datetime.now(timezone.utc)
         if stage.rate_per_pc is not None or any(c.bill_amount for c in stage.challans):
             stage.bill_amount = _stage_actual_cost(stage)
-        if {"sent_qty", "received_qty", "rejected_qty", "assignment_type"} & updates.keys():
+        if {"sent_qty", "received_qty", "rejected_qty", "assignment_type", "status"} & updates.keys():
             await self._propagate_to_next_stage(stage)
         await self.db.flush()
         return stage
@@ -2129,17 +2266,22 @@ class ProductionService:
         # Explicit rejected_qty distinguishes "rejected" from "still pending
         # with the vendor/worker" (§3) — default to the old fully-reconciled
         # behavior (out - in) when the caller omits it.
-        rejected_qty = body.rejected_qty if body.rejected_qty is not None else (challan.out_qty - body.in_qty)
-        pending_qty = challan.out_qty - body.in_qty - rejected_qty
+        missing_qty = body.missing_qty or 0
+        if missing_qty < 0:
+            raise QuantityValidationError("Missing can't be negative.")
+        rejected_qty = body.rejected_qty if body.rejected_qty is not None else (challan.out_qty - body.in_qty - missing_qty)
+        pending_qty = challan.out_qty - body.in_qty - rejected_qty - missing_qty
         if pending_qty < 0:
             raise QuantityValidationError(
-                f"Received ({body.in_qty}) + Rejected ({rejected_qty}) cannot exceed Sent OUT ({challan.out_qty})."
+                f"Received ({body.in_qty}) + Rejected ({rejected_qty}) + Missing ({missing_qty}) "
+                f"cannot exceed Sent OUT ({challan.out_qty})."
             )
 
         now = datetime.now(timezone.utc)
         challan.in_date = body.in_date
         challan.in_qty = body.in_qty
         challan.rejected_qty = rejected_qty
+        challan.missing_qty = missing_qty or None
         challan.bill_amount = body.bill_amount
         if body.notes is not None:
             challan.notes = body.notes
@@ -2149,6 +2291,7 @@ class ProductionService:
         stage = challan.stage
         stage.received_qty += body.in_qty
         stage.rejected_qty += rejected_qty
+        stage.missing_qty += missing_qty
         if stage.status == "pending":
             stage.status = "in_progress"
             stage.started_at = now
@@ -2900,6 +3043,20 @@ class ProductionService:
             .order_by(ProductionMistakeLog.mistake_date.desc(), ProductionMistakeLog.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def last_lot_mistakes(
+        self, style_id: UUID, company_id: UUID,
+    ) -> tuple[ProductionLot | None, list[ProductionMistakeLog]]:
+        """The most recent lot made from this style and the mistakes logged on
+        it, so a new lot of the same style can start with them in view."""
+        last_lot = (await self.db.execute(
+            select(ProductionLot)
+            .where(ProductionLot.style_id == style_id, ProductionLot.company_id == company_id)
+            .order_by(ProductionLot.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+        if last_lot is None:
+            return None, []
+        return last_lot, await self.list_mistake_logs(last_lot.id, company_id)
 
     async def create_mistake_log(
         self, lot_id: UUID, body: MistakeLogCreate, company_id: UUID, user_id: UUID,

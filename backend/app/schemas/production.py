@@ -549,6 +549,10 @@ class ProductionLotCreate(BaseModel):
     additional_costs: list[LotAdditionalCostCreate] = []   # optional, per lot
 
 
+class LotCloseEarly(BaseModel):
+    reason: str
+
+
 class ProductionLotUpdate(BaseModel):
     pieces_per_box: int | None = None
     delivery_date: date | None = None
@@ -588,6 +592,9 @@ class StageCreate(BaseModel):
     worker_id: UUID | None = None
     rate_per_pc: Decimal | None = None
     notes: str | None = None
+    # Insert straight after this stage (e.g. an urgent extra process mid-lot);
+    # without it the stage is added at the end.
+    after_stage_id: UUID | None = None
 
     @field_validator("stage_type")
     @classmethod
@@ -624,13 +631,14 @@ class StageUpdate(BaseModel):
     # enforced here because "done" is a judgment call the system shouldn't
     # second-guess once input/output have been recorded.
     status: str | None = None
+    skip_reason: str | None = None   # with status "skipped"
     notes: str | None = None
 
     @field_validator("status")
     @classmethod
     def _valid_status(cls, v: str | None) -> str | None:
-        if v is not None and v not in ("pending", "in_progress", "completed"):
-            raise ValueError("status must be one of: pending, in_progress, completed")
+        if v is not None and v not in ("pending", "in_progress", "completed", "skipped"):
+            raise ValueError("status must be one of: pending, in_progress, completed, skipped")
         return v
 
 
@@ -641,6 +649,7 @@ class StageEntryCreate(BaseModel):
     pieces_in: int = 0
     pieces_out: int = 0
     rejected: int = 0
+    missing: int = 0   # pieces lost at this stage, apart from rejects
     input_weight_kg: Decimal | None = None
     output_weight_kg: Decimal | None = None
     wastage_kg: Decimal | None = None
@@ -656,6 +665,7 @@ class StageEntryOut(BaseModel):
     pieces_in: int
     pieces_out: int
     rejected: int
+    missing: int = 0
     input_weight_kg: Decimal | None = None
     output_weight_kg: Decimal | None = None
     wastage_kg: Decimal | None = None
@@ -691,7 +701,8 @@ class StageChallanCreate(BaseModel):
 class StageChallanReceive(BaseModel):
     in_date: date
     in_qty: int
-    rejected_qty: int | None = None   # defaults to out_qty - in_qty when omitted
+    rejected_qty: int | None = None   # defaults to out_qty - in_qty - missing when omitted
+    missing_qty: int | None = None    # pieces sent out that never came back
     bill_amount: Decimal | None = None
     notes: str | None = None
 
@@ -712,7 +723,8 @@ class StageChallanOut(BaseModel):
     in_date: date | None
     in_qty: int | None
     rejected_qty: int | None
-    pending_qty: int = 0   # computed: out_qty - (in_qty or 0) - (rejected_qty or 0)
+    missing_qty: int | None = None
+    pending_qty: int = 0   # computed: out_qty - (in_qty or 0) - (rejected_qty or 0) - (missing_qty or 0)
     expected_return_days: int | None
     status: str
     bill_amount: Decimal | None
@@ -753,7 +765,9 @@ class StageOut(BaseModel):
     accepted_qty: int = 0   # computed: received_qty if assigned else output_qty — flows to next stage's planned_qty
     rejected_qty: int
     rework_qty: int
+    missing_qty: int = 0
     status: str
+    skip_reason: str | None = None
     assignment_type: str | None
     vendor_id: UUID | None
     worker_id: UUID | None
@@ -1105,6 +1119,7 @@ class ProductionLotOut(BaseModel):
     pieces_per_box: int | None = None
     style_version: int | None = None
     closed_at: datetime | None
+    closed_early_reason: str | None = None
     sizes: list[LotSizeOut] = []
     part_colours: list[LotPartColourOut] = []
     stages: list[StageOut] = []

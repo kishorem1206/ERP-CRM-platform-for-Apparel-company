@@ -9,7 +9,9 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { DatePicker } from "@/components/shared/date-picker";
-import { Can } from "@/lib/permissions";
+import { Can, usePermissions } from "@/lib/permissions";
+import { parseApiError } from "@/lib/api-error";
+import { fetchLastRate, lastRateNote } from "@/lib/last-rate";
 
 const TEAL = "#8174F5";
 
@@ -39,11 +41,14 @@ interface GRNItem {
   product_id: string;
   unit_id: string;
   received_qty: string;
-  accepted_qty: string;
+  rejected_qty: string;
   unit_price: string;
   ordered_qty?: number;
   received_so_far?: number;
+  rate_note?: string;
 }
+
+interface VendorPO { id: string; po_number: string; status: string; order_date: string; items: POLine[] }
 
 const STATUS_FILTERS = [
   { label: "All", value: "" },
@@ -80,7 +85,9 @@ const columns: Column<Record<string, unknown>>[] = [
   },
 ];
 
-const emptyItem = (): GRNItem => ({ product_id: "", unit_id: "", received_qty: "1", accepted_qty: "1", unit_price: "0" });
+const emptyItem = (): GRNItem => ({ product_id: "", unit_id: "", received_qty: "1", rejected_qty: "0", unit_price: "0" });
+
+const acceptedOf = (it: GRNItem) => Math.max((parseFloat(it.received_qty) || 0) - (parseFloat(it.rejected_qty) || 0), 0);
 
 const pendingQty = (line: POLine) => Math.max(Number(line.ordered_qty) - Number(line.received_qty), 0);
 
@@ -90,7 +97,7 @@ const poLineToItem = (purchaseOrderId: string, line: POLine): GRNItem => ({
   product_id: line.product_id,
   unit_id: line.unit_id,
   received_qty: String(pendingQty(line)),
-  accepted_qty: String(pendingQty(line)),
+  rejected_qty: "0",
   unit_price: line.unit_price,
   ordered_qty: Number(line.ordered_qty),
   received_so_far: Number(line.received_qty),
@@ -114,16 +121,24 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
     queryKey: ["vendors-list"],
     queryFn: async () => (await api.get("/purchase/vendors?page_size=200")).data.data ?? [],
   });
-  const { data: vendorPOs } = useQuery({
+  const { can } = usePermissions();
+  const { data: allVendorPOs } = useQuery({
     queryKey: ["purchase-orders-for-grn", vendorId],
-    queryFn: async () => {
-      const [approved, partial] = await Promise.all([
-        api.get("/purchase/orders", { params: { vendor_id: vendorId, status: "approved", page_size: 100 } }),
-        api.get("/purchase/orders", { params: { vendor_id: vendorId, status: "partial", page_size: 100 } }),
-      ]);
-      return [...(approved.data.data ?? []), ...(partial.data.data ?? [])] as { id: string; po_number: string; items: POLine[] }[];
-    },
+    queryFn: async () =>
+      (await api.get("/purchase/orders", { params: { vendor_id: vendorId, page_size: 100 } })).data.data as VendorPO[],
     enabled: !!vendorId,
+  });
+  // Goods can be received only against approved or part-received POs.
+  const vendorPOs = allVendorPOs?.filter((po) => po.status === "approved" || po.status === "partial");
+  const draftPOs = allVendorPOs?.filter((po) => po.status === "draft") ?? [];
+  const approvePO = useMutation({
+    mutationFn: (poId: string) => api.post(`/purchase/orders/${poId}/approve`),
+    onSuccess: () => {
+      setError("");
+      qc.invalidateQueries({ queryKey: ["purchase-orders-for-grn", vendorId] });
+      qc.invalidateQueries({ queryKey: ["purchase-orders"] });
+    },
+    onError: (e: unknown) => setError(parseApiError(e, "Could not approve that PO.")),
   });
   const { data: selectedPO } = useQuery({
     queryKey: ["purchase-order-detail-for-grn", purchaseOrderId],
@@ -166,23 +181,36 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
           product_id: it.product_id,
           unit_id: it.unit_id,
           received_qty: parseFloat(it.received_qty),
-          accepted_qty: parseFloat(it.accepted_qty),
+          accepted_qty: acceptedOf(it),
+          rejected_qty: parseFloat(it.rejected_qty) || 0,
           unit_price: parseFloat(it.unit_price),
-          quality_status: "accepted",
+          quality_status: (parseFloat(it.rejected_qty) || 0) === 0 ? "accepted" : acceptedOf(it) === 0 ? "rejected" : "partial",
         })),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["purchase-entries"] });
       onClose();
     },
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(typeof msg === "string" ? msg : "Failed to create GRN");
-    },
+    onError: (e: unknown) => setError(parseApiError(e, "Failed to create GRN")),
   });
+
+  const overRejected = items.some((it) => (parseFloat(it.rejected_qty) || 0) > (parseFloat(it.received_qty) || 0));
 
   const updateItem = (i: number, k: keyof GRNItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
+
+  // Picking a product fills its unit and the latest rate paid for it.
+  const pickProduct = async (i: number, productId: string) => {
+    const unit = (products ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === productId)?.unit_id;
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, product_id: productId, unit_id: unit ?? it.unit_id, rate_note: undefined } : it)));
+    if (!productId) return;
+    const rate = await fetchLastRate(productId, vendorId);
+    if (!rate) return;
+    setItems((prev) => prev.map((it, idx) =>
+      idx === i && it.product_id === productId
+        ? { ...it, unit_price: String(Number(rate.unit_price)), rate_note: lastRateNote(rate) }
+        : it));
+  };
 
   const pickPOLine = (i: number, lineId: string) => {
     const picked = openPOLines.find(({ line }) => line.id === lineId);
@@ -207,7 +235,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
   return (
     <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
-      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto ">
+      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto ">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <h2 className="font-semibold text-base">New Goods Receipt (GRN)</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
@@ -240,9 +268,35 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                   onChange={setPurchaseOrderId}
                   placeholder={vendorId ? "— Manual entry —" : "Select a vendor first"}
                   accent={TEAL}
-                  options={(vendorPOs ?? []).map((po) => ({ value: po.id, label: po.po_number }))}
+                  options={[
+                    { value: "", label: "— Manual entry —" },
+                    ...(vendorPOs ?? []).map((po) => {
+                      const pending = po.items.filter((l) => pendingQty(l) > 0).length;
+                      return { value: po.id, label: po.po_number, meta: `${po.status === "partial" ? "Part received" : "Approved"} · ${pending} line${pending === 1 ? "" : "s"} pending` };
+                    }),
+                  ]}
                 />
               </div>
+              {vendorId && allVendorPOs && (vendorPOs ?? []).length === 0 && (
+                <div className="mt-1.5 text-[11px] text-muted-foreground space-y-1">
+                  {draftPOs.length > 0 ? (
+                    <>
+                      <p>No approved POs yet. {draftPOs.length === 1 ? "This draft needs" : "These drafts need"} approval before goods can be received:</p>
+                      {draftPOs.map((po) => (
+                        <div key={po.id} className="flex items-center gap-2">
+                          <span className="font-medium text-foreground">{po.po_number}</span>
+                          {can("purchase.approve") ? (
+                            <button type="button" onClick={() => approvePO.mutate(po.id)} disabled={approvePO.isPending}
+                              className="font-semibold text-primary hover:underline disabled:opacity-50">Approve</button>
+                          ) : <span>(ask an approver)</span>}
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <p>No open POs for this vendor — {allVendorPOs.length ? "all are received or cancelled" : "none raised yet"}. Add items manually below.</p>
+                  )}
+                </div>
+              )}
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Warehouse *</label>
@@ -293,21 +347,21 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                 This vendor has no open POs with quantity pending. A PO is open once it&apos;s approved, until everything has arrived.
               </p>
             )}
-            <div className="border rounded overflow-hidden">
-              <table className="w-full text-xs">
+            <div className="border rounded overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="text-left px-2 py-1.5 font-medium">Product</th>
                     <th className="text-left px-2 py-1.5 font-medium">Unit</th>
                     <th className="text-right px-2 py-1.5 font-medium">Received</th>
-                    <th className="text-right px-2 py-1.5 font-medium">Accepted</th>
+                    <th className="text-right px-2 py-1.5 font-medium">Rejected</th>
                     <th className="text-right px-2 py-1.5 font-medium">Price</th>
                     <th className="w-6"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((it, i) => {
-                    const projectedTotal = (it.received_so_far ?? 0) + (parseFloat(it.accepted_qty) || 0);
+                    const projectedTotal = (it.received_so_far ?? 0) + acceptedOf(it);
                     const excessPreview = it.ordered_qty != null && projectedTotal > it.ordered_qty
                       ? projectedTotal - it.ordered_qty : 0;
                     return (
@@ -336,11 +390,7 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                         ) : (
                           <SearchableSelect
                             value={it.product_id}
-                            onChange={(v) => {
-                              updateItem(i, "product_id", v);
-                              const unit = (products ?? []).find((p: { id: string; unit_id?: string | null }) => p.id === v)?.unit_id;
-                              if (unit) updateItem(i, "unit_id", unit);
-                            }}
+                            onChange={(v) => pickProduct(i, v)}
                             placeholder="Select…"
                             accent={TEAL}
                             options={(products ?? []).map((p: { id: string; name: string }) => ({
@@ -368,8 +418,8 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                           className="w-20 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
                       </td>
                       <td className="px-2 py-1">
-                        <input type="number" min="0" step="0.01" required value={it.accepted_qty}
-                          onChange={(e) => updateItem(i, "accepted_qty", e.target.value)}
+                        <input type="number" min="0" step="0.01" required value={it.rejected_qty}
+                          onChange={(e) => updateItem(i, "rejected_qty", e.target.value)}
                           className="w-20 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
                       </td>
                       <td className="px-2 py-1">
@@ -386,10 +436,14 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                         )}
                       </td>
                     </tr>
-                    {it.ordered_qty != null && (
+                    {(it.ordered_qty != null || it.rate_note || (parseFloat(it.rejected_qty) || 0) > 0) && (
                       <tr>
                         <td colSpan={6} className="px-2 pb-1.5 text-[11px] text-muted-foreground">
-                          Ordered: {it.ordered_qty} · Received so far: {it.received_so_far ?? 0}
+                          {[
+                            it.ordered_qty != null && `Ordered: ${it.ordered_qty} · Received so far: ${it.received_so_far ?? 0}`,
+                            (parseFloat(it.rejected_qty) || 0) > 0 && `Accepted into stock: ${acceptedOf(it)}`,
+                            it.rate_note,
+                          ].filter(Boolean).join(" · ")}
                           {excessPreview > 0 && (
                             <span className="ml-2 font-semibold" style={{ color: "#8174F5" }}>
                               +{excessPreview} excess
@@ -411,11 +465,12 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
               className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none" />
           </div>
+          {overRejected && <p className="text-xs text-destructive">Rejected can&apos;t be more than received.</p>}
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose}
               className="px-4 py-1.5 rounded border border-input text-sm hover:bg-muted">Cancel</button>
-            <button type="submit" disabled={mut.isPending}
+            <button type="submit" disabled={mut.isPending || overRejected}
               className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-60">
               {mut.isPending ? "Saving…" : "Create GRN"}
             </button>

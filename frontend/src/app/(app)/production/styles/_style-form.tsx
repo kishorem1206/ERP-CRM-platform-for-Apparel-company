@@ -408,9 +408,6 @@ export function StyleForm({ styleId }: { styleId?: string }) {
       setAddingColour(false);
     }
   }
-  function updateSizeQuantity(sizeId: string, qty: string) {
-    setSizeQuantities((prev) => ({ ...prev, [sizeId]: qty }));
-  }
   function addPartColour() {
     setPartColours((r) => [...r, { key: newId(), style_part_id: "", colour_id: "", sizeQty: {} }]);
   }
@@ -979,7 +976,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
 
         {/* 2 & 3. Sizes / Colours / SKU */}
         <Section n={2} title="Sizes, Colours & SKU" subtitle="Applicable size chart and colour variants — Style + variant dimensions form the SKU">
-          <Field label="Load from Size Chart" hint="Optional — merges a reusable chart's sizes and default quantities in; edit any value below afterward without affecting the saved chart">
+          <Field label="Load from Size Chart" hint="Optional — adds a saved chart's sizes. Quantities per size are entered on each Production Lot.">
             <SearchableSelect
               value={loadChartId}
               onChange={loadSizeChart}
@@ -1040,29 +1037,6 @@ export function StyleForm({ styleId }: { styleId?: string }) {
               Leave &ldquo;To&rdquo; blank to add exactly what you type in &ldquo;From&rdquo; as one size — numeric or text, e.g. &ldquo;0-3M&rdquo;, &ldquo;XL&rdquo;, &ldquo;Free Size&rdquo;. Fill in &ldquo;To&rdquo; for a numeric run instead, e.g. &ldquo;75&rdquo; to &ldquo;100&rdquo; step &ldquo;5&rdquo; → 75, 80, 85, 90, 95, 100.
             </p>
           </Field>
-          {sizeIds.length > 0 && (
-            <Field label="Quantity per Size" hint="Quantity/configuration applicable for each size — from the loaded chart, or entered directly">
-              <div className="space-y-1.5">
-                {sizeIds.map((sId) => (
-                  <div key={sId} className="flex items-center gap-2">
-                    <span className="text-xs font-medium w-20 flex-shrink-0">{sizeById.get(sId) ?? "—"}</span>
-                    <Input
-                      type="number" step="0.001"
-                      value={sizeQuantities[sId] ?? ""}
-                      onChange={(e) => updateSizeQuantity(sId, e.target.value)}
-                      placeholder="Quantity"
-                      className="!py-1.5 w-32"
-                    />
-                    {sizeChartBySize[sId] && (
-                      <span className="text-[11px] text-muted-foreground">
-                        from {(sizeCharts.data ?? []).find((c) => c.id === sizeChartBySize[sId])?.name ?? "chart"}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Field>
-          )}
           <Field label="Applicable Colours">
             <div className="flex gap-1.5 flex-wrap">
               {(colours.data ?? []).map((c) => (

@@ -21,7 +21,7 @@ from app.schemas.production import (
     InternalWorkerCreate, InternalWorkerOut,
     LotAdditionalCostCreate, LotAdditionalCostOut, LotAdditionalCostUpdate,
     LotFabricActualUpdate, LotFabricOut, LotYarnActualUpdate, LotYarnOut,
-    LotMaterialCreate, LotMaterialOut, LotMaterialUpdate,
+    LotCloseEarly, LotMaterialCreate, LotMaterialOut, LotMaterialUpdate,
     ProductionAuditLogOut, ProductionDashboardOut, ProductionDashboardRow, ProductionDashboardTotals,
     LotPackingActualUpdate, LotPackingMaterialOut, LotTrimActualUpdate, LotTrimOut,
     MaterialIssueCreate, MaterialIssueOut, MISItemOut, MISItemReturnUpdate,
@@ -47,7 +47,7 @@ router = APIRouter(prefix="/production", tags=["production"])
 
 def _challan_out(c: ProductionStageChallan) -> StageChallanOut:
     out = StageChallanOut.model_validate(c)
-    out.pending_qty = c.out_qty - (c.in_qty or 0) - (c.rejected_qty or 0)
+    out.pending_qty = c.out_qty - (c.in_qty or 0) - (c.rejected_qty or 0) - (c.missing_qty or 0)
     return out
 
 
@@ -163,7 +163,7 @@ async def _lot_out(lot: ProductionLot, svc: ProductionService) -> ProductionLotO
         actual_selling_price=lot.actual_selling_price,
         status=lot.status, notes=lot.notes,
         final_output_unit=lot.final_output_unit, pieces_per_box=lot.pieces_per_box, style_version=lot.style_version,
-        closed_at=lot.closed_at,
+        closed_at=lot.closed_at, closed_early_reason=lot.closed_early_reason,
         sizes=[LotSizeOut.model_validate(s) for s in lot.sizes],
         part_colours=_lot_part_colours_out(lot.part_colours),
         stages=[_stage_out(s) for s in sorted(lot.stages, key=lambda s: s.created_at)],
@@ -433,6 +433,20 @@ async def advance_lot_status(lot_id: UUID, body: StatusBody, db: DBSession, user
     return ApiResponse(success=True, data=await _lot_out(lot, svc))
 
 
+@router.post("/lots/{lot_id}/close-early")
+async def close_lot_early(lot_id: UUID, body: LotCloseEarly, db: DBSession, user: AuthUser):
+    """Close a lot before all its stages are done; untouched stages are skipped."""
+    user.require("production.edit")
+    svc = ProductionService(db)
+    try:
+        lot = await svc.close_lot_early(lot_id, body.reason, user.company_id, user.user_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    if not lot:
+        raise HTTPException(404, "Production lot not found")
+    return ApiResponse(success=True, data=await _lot_out(lot, svc), message="Lot closed")
+
+
 @router.post("/lots/{lot_id}/reopen")
 async def reopen_lot(lot_id: UUID, db: DBSession, user: AuthUser):
     user.require("production.edit")
@@ -533,7 +547,7 @@ async def update_stage_size(stage_id: UUID, size_id: UUID, body: StageSizeUpdate
     if not row:
         raise HTTPException(404, "Stage/size not found")
     out = StageSizeOut.model_validate(row)
-    out.pending_qty = max(out.input_qty - out.accepted_qty - out.rejected_qty - out.rework_qty, 0)
+    out.pending_qty = max(out.input_qty - out.accepted_qty - out.rejected_qty - out.rework_qty - out.missing_qty, 0)
     return ApiResponse(success=True, data=out, message="Updated")
 
 
@@ -927,6 +941,17 @@ async def list_mistake_logs(lot_id: UUID, db: DBSession, user: AuthUser):
     svc = ProductionService(db)
     logs = await svc.list_mistake_logs(lot_id, user.company_id)
     return ApiResponse(success=True, data=[_mistake_log_out(l) for l in logs])
+
+
+@router.get("/styles/{style_id}/last-lot-mistakes")
+async def last_lot_mistakes(style_id: UUID, db: DBSession, user: AuthUser):
+    """Mistakes from the last lot of this style, shown when starting a new one."""
+    user.require("production.view")
+    lot, logs = await ProductionService(db).last_lot_mistakes(style_id, user.company_id)
+    return ApiResponse(success=True, data={
+        "lot": {"id": str(lot.id), "lot_number": lot.lot_number, "status": lot.status} if lot else None,
+        "mistakes": [_mistake_log_out(l) for l in logs],
+    })
 
 
 @router.post("/lots/{lot_id}/mistake-logs", status_code=201)

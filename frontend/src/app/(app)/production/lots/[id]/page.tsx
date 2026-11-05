@@ -4,7 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Pencil, Plus, X, ChevronRight, Truck, Trash2, RotateCcw, Inbox, Download, FileText,
-  Flame, Printer, Shirt, CircleDot, Sparkles, Droplets, CheckCircle2, Wind, Package, MoreHorizontal, Scissors,
+  Flame, Printer, Shirt, CircleDot, Sparkles, Droplets, CheckCircle2, Wind, Package, MoreHorizontal, Scissors, Flag,
 } from "lucide-react";
 import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
@@ -25,11 +25,19 @@ const STATUS_FLOW: Record<string, string> = {
   cutting: "checking", checking: "packing", packing: "completed",
 };
 const STAGE_STATUS_HEX: Record<string, string> = {
-  pending: "#94A3B8", in_progress: "#0049A7", completed: "#0F78FF",
+  pending: "#94A3B8", in_progress: "#0049A7", completed: "#0F78FF", skipped: "#94A3B8",
+};
+
+/** A stage that's done for flow purposes: finished, or bypassed. */
+const stageDone = (s: { status: string }) => s.status === "completed" || s.status === "skipped";
+/** The nearest earlier stage that actually ran (skipped ones pass nothing of their own). */
+const prevWorkedStage = (stages: Stage[], idx: number): Stage | null => {
+  for (let i = idx - 1; i >= 0; i--) if (stages[i].status !== "skipped") return stages[i];
+  return null;
 };
 
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_HEX[status] ?? "#94A3B8";
+  const color = STATUS_HEX[status] ?? STAGE_STATUS_HEX[status] ?? "#94A3B8";
   const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span
@@ -56,14 +64,14 @@ const INR = (v: number) => `₹${v.toLocaleString("en-IN", { maximumFractionDigi
 interface Size { id: string; name: string }
 interface LotSize { id: string; size_id: string; planned_qty: number; cut_qty: number; sewn_qty: number; finished_qty: number }
 interface StageEntry {
-  id: string; entry_date: string; pieces_in: number; pieces_out: number; rejected: number;
+  id: string; entry_date: string; pieces_in: number; pieces_out: number; rejected: number; missing: number;
   input_weight_kg: number | null; output_weight_kg: number | null; wastage_kg: number | null; recoverable_kg: number | null;
   operator: string | null; machine: string | null; notes: string | null;
 }
 interface StageChallan {
   id: string; challan_number: string; vendor_id: string | null; worker_id: string | null;
   out_date: string; out_qty: number;
-  in_date: string | null; in_qty: number | null; rejected_qty: number | null; pending_qty: number;
+  in_date: string | null; in_qty: number | null; rejected_qty: number | null; missing_qty: number | null; pending_qty: number;
   expected_return_days: number | null;
   status: string; bill_amount: number | null; bill_received: boolean;
   bill_received_date: string | null; notes: string | null;
@@ -71,7 +79,7 @@ interface StageChallan {
 interface Stage {
   id: string; stage_type: string; stage_name: string; planned_qty: number | null;
   input_qty: number; output_qty: number; sent_qty: number; received_qty: number; accepted_qty: number;
-  rejected_qty: number; rework_qty: number; status: string;
+  rejected_qty: number; rework_qty: number; missing_qty: number; status: string; skip_reason: string | null;
   assignment_type: string | null; vendor_id: string | null; worker_id: string | null;
   rate_per_pc: number | null; bill_amount: number | null; notes: string | null;
   tolerance_pct: number | null; input_unit: string | null; output_unit: string | null; conversion_rule: string | null;
@@ -128,7 +136,8 @@ interface LotDetail {
   delivery_date: string | null; season: string | null; target_sp: number | null;
   actual_selling_price: number | null; pieces_per_box: number | null; status: string;
   notes: string | null; final_output_unit: string | null; style_version: number | null;
-  closed_at: string | null; sizes: LotSize[]; stages: Stage[]; additional_costs: LotAdditionalCost[];
+  closed_at: string | null; closed_early_reason: string | null;
+  sizes: LotSize[]; stages: Stage[]; additional_costs: LotAdditionalCost[];
   trims: LotTrim[]; packing_materials: LotPackingMaterial[]; boxes_required: number | null;
   fabric_blockers: string[];
   fabric_processing: FabricProcessing[]; cost_summary: LotCostSummary;
@@ -711,6 +720,7 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
   const [piecesIn, setPiecesIn] = useState(String(suggestedIn));
   const [piecesOut, setPiecesOut] = useState("0");
   const [rejected, setRejected] = useState("0");
+  const [missing, setMissing] = useState("0");
   const [inputWeightKg, setInputWeightKg] = useState("");
   const [outputWeightKg, setOutputWeightKg] = useState("");
   const [wastageKg, setWastageKg] = useState("");
@@ -734,6 +744,7 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
         pieces_in: isCutting ? 0 : Number(piecesIn) || 0,
         pieces_out: Number(piecesOut) || 0,
         rejected: Number(rejected) || 0,
+        missing: Number(missing) || 0,
         input_weight_kg: inputWeightKg ? Number(inputWeightKg) : undefined,
         output_weight_kg: outputWeightKg ? Number(outputWeightKg) : undefined,
         wastage_kg: wastageKg ? Number(wastageKg) : undefined,
@@ -761,7 +772,7 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
           <label className="block text-xs font-medium text-muted-foreground mb-1">Date</label>
           <DatePicker value={entryDate} onChange={(v) => setEntryDate(v)} />
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-2.5">
           {isCutting ? (
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Fabric In (kg)</label>
@@ -780,6 +791,10 @@ function AddEntryModal({ stage, prevStage, lotId, onClose }: {
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Rejected</label>
             <input type="number" className={inputCls} value={rejected} onChange={(e) => setRejected(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1" title="Pieces lost or not returned — not rejects">Missing</label>
+            <input type="number" min="0" className={inputCls} value={missing} onChange={(e) => setMissing(e.target.value)} />
           </div>
         </div>
         {!isCutting && prevStage && (
@@ -990,6 +1005,59 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
   );
 }
 
+// ── Close Lot Early Modal ──────────────────────────────────────────────────────
+function CloseEarlyModal({ lot, onClose }: { lot: LotDetail; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
+  const untouched = lot.stages.filter((s) => s.status === "pending" && s.input_qty === 0 && s.sent_qty === 0 && s.output_qty === 0);
+  const unfinished = lot.stages.filter((s) => !stageDone(s) && !untouched.includes(s));
+  const mut = useMutation({
+    mutationFn: () => api.post(`/production/lots/${lot.id}/close-early`, { reason: reason.trim() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["production-lot", lot.id] });
+      qc.invalidateQueries({ queryKey: ["production-lots"] });
+      onClose();
+    },
+    onError: (e: unknown) => setError(parseApiError(e, "Could not close this lot.")),
+  });
+  return (
+    <ModalShell maxWidth="max-w-md" onClose={onClose}>
+      <div className="flex items-center justify-between p-6 border-b">
+        <h2 className="text-lg font-semibold">Close {lot.lot_number} early</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors" aria-label="Close"><X className="h-4 w-4" /></button>
+      </div>
+      <div className="p-6 space-y-3 text-sm">
+        <p className="text-muted-foreground">The lot is marked completed now, without finishing every stage. Everything recorded so far is kept.</p>
+        {untouched.length > 0 && (
+          <p><span className="font-medium">Skipped:</span> {untouched.map((s) => s.stage_name).join(", ")}</p>
+        )}
+        {unfinished.length > 0 && (
+          <p><span className="font-medium">Left as they are:</span> {unfinished.map((s) => s.stage_name).join(", ")} (work already recorded)</p>
+        )}
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Reason *</label>
+          <textarea className={`${inputCls} resize-none`} rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. Urgent dispatch — buyer took 800 pcs as is" autoFocus />
+        </div>
+        <p className="text-[11px] text-muted-foreground">You can reopen the lot later if needed.</p>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+      <div className="flex justify-end gap-3 p-6 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm rounded-xl border border-input hover:bg-muted transition-colors">Cancel</button>
+        <button
+          onClick={() => { setError(""); mut.mutate(); }}
+          disabled={mut.isPending || !reason.trim()}
+          className="px-4 py-2 text-sm rounded-xl text-white font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+          style={{ background: "#B45309" }}
+        >
+          {mut.isPending ? "Closing…" : "Close lot"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 // ── Add Stage Modal ─────────────────────────────────────────────────────────────
 
 const STAGE_CHIPS: { name: string; stage_type: string; icon: typeof Flame }[] = [
@@ -1005,9 +1073,12 @@ const STAGE_CHIPS: { name: string; stage_type: string; icon: typeof Flame }[] = 
   { name: "Packing", stage_type: "packing", icon: Package },
 ];
 
-function AddStageModal({ lotId, onClose }: { lotId: string; onClose: () => void }) {
+function AddStageModal({ lotId, stages, onClose }: { lotId: string; stages: Stage[]; onClose: () => void }) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
+  // Default: straight after the stage in progress, so an urgent extra step comes next.
+  const firstOpen = stages.find((st) => !stageDone(st));
+  const [afterStageId, setAfterStageId] = useState(firstOpen?.id ?? "");
   const [customName, setCustomName] = useState("");
   const [assignmentType, setAssignmentType] = useState<"vendor" | "internal_worker" | null>(null);
   const [vendorId, setVendorId] = useState("");
@@ -1040,15 +1111,13 @@ function AddStageModal({ lotId, onClose }: { lotId: string; onClose: () => void 
         vendor_id: assignmentType === "vendor" ? (vendorId || undefined) : undefined,
         worker_id: assignmentType === "internal_worker" ? (workerId || undefined) : undefined,
         notes: notes || undefined,
+        after_stage_id: afterStageId || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
       onClose();
     },
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message;
-      setError(msg ?? "Failed to add stage");
-    },
+    onError: (e: unknown) => setError(parseApiError(e, "Failed to add stage")),
   });
 
   return (
@@ -1098,6 +1167,25 @@ function AddStageModal({ lotId, onClose }: { lotId: string; onClose: () => void 
             />
           )}
         </div>
+        {stages.length > 0 && (
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Position</label>
+            <SearchableSelect
+              value={afterStageId}
+              onChange={setAfterStageId}
+              placeholder="At the end"
+              accent={INDIGO}
+              options={[
+                { value: "", label: "At the end" },
+                ...stages.map((st, i) => ({
+                  value: st.id,
+                  label: `After ${i + 1}. ${st.stage_name}`,
+                  meta: st.status === "pending" ? undefined : st.status.replace(/_/g, " "),
+                })),
+              ]}
+            />
+          </div>
+        )}
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-2">Assignment (optional)</label>
           <AssignmentTypeToggle value={assignmentType} onChange={setAssignmentType} allowNone />
@@ -1152,11 +1240,12 @@ function ReceiveChallanModal({ challan, lotId, onClose }: { challan: StageChalla
   const [inDate, setInDate] = useState(today);
   const [inQty, setInQty] = useState(String(challan.out_qty));
   const [rejectedQty, setRejectedQty] = useState("0");
+  const [missingQty, setMissingQty] = useState("0");
   const [billAmount, setBillAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
-  const pending = challan.out_qty - (Number(inQty) || 0) - (Number(rejectedQty) || 0);
+  const pending = challan.out_qty - (Number(inQty) || 0) - (Number(rejectedQty) || 0) - (Number(missingQty) || 0);
 
   const mut = useMutation({
     mutationFn: () =>
@@ -1164,6 +1253,7 @@ function ReceiveChallanModal({ challan, lotId, onClose }: { challan: StageChalla
         in_date: inDate,
         in_qty: Number(inQty) || 0,
         rejected_qty: Number(rejectedQty) || 0,
+        missing_qty: Number(missingQty) || 0,
         bill_amount: billAmount ? Number(billAmount) : undefined,
         notes: notes || undefined,
       }),
@@ -1171,14 +1261,11 @@ function ReceiveChallanModal({ challan, lotId, onClose }: { challan: StageChalla
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
       onClose();
     },
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setErr(typeof msg === "string" ? msg : "Failed to receive challan");
-    },
+    onError: (e: unknown) => setErr(parseApiError(e, "Failed to receive challan")),
   });
 
   return (
-    <ModalShell maxWidth="max-w-sm" onClose={onClose}>
+    <ModalShell maxWidth="max-w-md" onClose={onClose}>
       <div className="flex items-center justify-between p-6 border-b">
         <h2 className="text-lg font-semibold">Receive — {challan.challan_number}</h2>
         <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
@@ -1191,7 +1278,7 @@ function ReceiveChallanModal({ challan, lotId, onClose }: { challan: StageChalla
           <label className="block text-xs font-medium text-muted-foreground mb-1">In Date</label>
           <DatePicker value={inDate} onChange={(v) => setInDate(v)} />
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">First Quality</label>
             <input type="number" className={inputCls} value={inQty} onChange={(e) => setInQty(e.target.value)} />
@@ -1200,10 +1287,14 @@ function ReceiveChallanModal({ challan, lotId, onClose }: { challan: StageChalla
             <label className="block text-xs font-medium text-muted-foreground mb-1">Rejected</label>
             <input type="number" className={inputCls} value={rejectedQty} onChange={(e) => setRejectedQty(e.target.value)} />
           </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1" title="Sent out but never came back">Missing</label>
+            <input type="number" min="0" className={inputCls} value={missingQty} onChange={(e) => setMissingQty(e.target.value)} />
+          </div>
         </div>
         <p className="text-[11px] text-muted-foreground -mt-2">
           Pending / still with {challan.worker_id ? "worker" : "vendor"}: <span className="font-semibold" style={{ color: pending === 0 ? INDIGO : "#A096F7" }}>{pending}</span>
-          {" "}({challan.out_qty} sent = {inQty || 0} received + {rejectedQty || 0} rejected + {pending} pending)
+          {" "}({challan.out_qty} sent = {inQty || 0} received + {rejectedQty || 0} rejected + {missingQty || 0} missing + {pending} pending)
         </p>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Bill Amount / Cost (₹)</label>
@@ -2033,7 +2124,7 @@ function AddMistakeLogModal({ lotId, stages, onClose }: { lotId: string; stages:
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Staff</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Staff / Operator</label>
             <SearchableSelect
               value={staffId}
               onChange={setStaffId}
@@ -2060,7 +2151,7 @@ function AddMistakeLogModal({ lotId, stages, onClose }: { lotId: string; stages:
         </div>
         {!staffId && (
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Staff name (if not listed above)</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Staff / operator name (if not listed above)</label>
             <input className={inputCls} placeholder="Name" value={staffName} onChange={(e) => setStaffName(e.target.value)} />
           </div>
         )}
@@ -2282,6 +2373,7 @@ function ChallanRow({ challan, lotId, assigneeName, onReceive }: { challan: Stag
           <span className="text-muted-foreground">
             IN {challan.in_qty} · {challan.in_date}
             {(challan.rejected_qty ?? 0) > 0 && <> · Rej {challan.rejected_qty}</>}
+            {(challan.missing_qty ?? 0) > 0 && <> · Missing {challan.missing_qty}</>}
             {challan.pending_qty > 0 && <> · Pending {challan.pending_qty}</>}
           </span>
         )}
@@ -2341,18 +2433,21 @@ function StageCard({
   });
   const [confirmComplete, setConfirmComplete] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [skipping, setSkipping] = useState(false);
+  const [skipReason, setSkipReason] = useState("");
   const statusMut = useMutation({
-    mutationFn: (status: "completed" | "in_progress") => api.patch(`/production/stages/${stage.id}`, { status }),
+    mutationFn: (status: "completed" | "in_progress" | "pending" | "skipped") =>
+      api.patch(`/production/stages/${stage.id}`, status === "skipped" ? { status, skip_reason: skipReason.trim() || null } : { status }),
     onSuccess: () => {
       setConfirmComplete(false);
+      setSkipping(false);
       setStatusError(null);
       qc.invalidateQueries({ queryKey: ["production-lot", lotId] });
     },
-    onError: (e: unknown) => {
-      const err = (e as { response?: { data?: { error?: string | { message?: string } } } })?.response?.data?.error;
-      setStatusError(typeof err === "string" ? err : err?.message ?? "Could not update the stage.");
-    },
+    onError: (e: unknown) => setStatusError(parseApiError(e, "Could not update the stage.")),
   });
+  // Only a stage nobody has worked on can be bypassed.
+  const untouched = stage.input_qty === 0 && stage.sent_qty === 0 && stage.output_qty === 0;
   const onMarkComplete = () => {
     setStatusError(null);
     if (stage.completion_warnings.length > 0) setConfirmComplete(true);
@@ -2362,8 +2457,33 @@ function StageCard({
   const sortedChallans = [...stage.challans].sort((a, b) => a.out_date.localeCompare(b.out_date));
   const isAssigned = !!stage.assignment_type;
   const showChallans = isAssigned || sortedChallans.length > 0;
-  const pending = stage.sent_qty - stage.received_qty - stage.rejected_qty;
+  const pending = stage.sent_qty - stage.received_qty - stage.rejected_qty - (stage.challans ?? []).reduce((n, c) => n + (c.missing_qty ?? 0), 0);
   const pendingChallan = [...sortedChallans].reverse().find((c) => c.status === "out" || c.status === "partial");
+  if (stage.status === "skipped") {
+    return (
+      <div className="rounded-xl border border-dashed border-border px-4 py-2.5 flex items-center gap-3 text-sm">
+        <span className="text-xs font-mono text-muted-foreground">{idx + 1}</span>
+        <span className="font-semibold line-through text-muted-foreground">{stage.stage_name}</span>
+        <span className="text-xs text-muted-foreground flex-1 truncate">
+          {stage.skip_reason ? `Skipped — ${stage.skip_reason}` : "Skipped"}
+          {stage.planned_qty != null && ` · ${stage.planned_qty} pcs passed straight on`}
+        </span>
+        {canReopen && (
+          <Can perm="production.edit">
+            <button
+              onClick={() => statusMut.mutate("pending")}
+              disabled={statusMut.isPending}
+              className="text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:underline disabled:opacity-40"
+            >
+              Un-skip
+            </button>
+          </Can>
+        )}
+        <StatusBadge status="skipped" />
+        {statusError && <span className="text-xs" style={{ color: "#1D0DB0" }}>{statusError}</span>}
+      </div>
+    );
+  }
   return (
     <div className="rounded-xl border border-border overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-2.5 bg-muted/30 border-b border-border">
@@ -2379,6 +2499,17 @@ function StageCard({
               title={nextStageName ? `Complete this stage and move on to ${nextStageName}` : "Complete the final stage"}
             >
               {nextStageName ? `Complete & Move to ${nextStageName}` : "Mark Complete"}
+            </button>
+          </Can>
+        )}
+        {isCurrent && untouched && !skipping && (
+          <Can perm="production.edit">
+            <button
+              onClick={() => { setStatusError(null); setSkipping(true); }}
+              className="text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:underline"
+              title="Bypass this stage — its planned pieces pass straight to the next one"
+            >
+              Skip stage
             </button>
           </Can>
         )}
@@ -2418,6 +2549,34 @@ function StageCard({
               className="px-3 py-1 rounded text-[11px] font-semibold border border-border hover:bg-muted"
             >
               Go back and fill them in
+            </button>
+          </div>
+        </div>
+      )}
+      {skipping && (
+        <div className="px-4 py-3 border-b border-border text-xs bg-muted/30">
+          <p className="font-semibold">Skip {stage.stage_name}?</p>
+          <p className="text-muted-foreground mt-0.5">
+            Its {stage.planned_qty ?? "planned"} pieces go straight to {nextStageName ?? "the end of the lot"}. You can un-skip it until a later stage is completed.
+          </p>
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              className={`${inputCls} max-w-xs`}
+              placeholder="Reason, e.g. Not needed for this order"
+              value={skipReason}
+              onChange={(e) => setSkipReason(e.target.value)}
+              autoFocus
+            />
+            <button
+              onClick={() => statusMut.mutate("skipped")}
+              disabled={statusMut.isPending}
+              className="px-3 py-1.5 rounded text-[11px] font-semibold text-white disabled:opacity-40"
+              style={{ background: INDIGO }}
+            >
+              {statusMut.isPending ? "Skipping…" : "Skip stage"}
+            </button>
+            <button onClick={() => setSkipping(false)} className="px-3 py-1.5 rounded text-[11px] font-semibold border border-border hover:bg-muted">
+              Cancel
             </button>
           </div>
         </div>
@@ -2482,7 +2641,11 @@ function StageCard({
             <div><p className="text-muted-foreground">Output</p><p className="font-medium mt-0.5">{stage.output_qty}</p></div>
           </>
         )}
-        <div><p className="text-muted-foreground">Rejected</p><p className="font-medium mt-0.5 text-[#1D0DB0]">{stage.rejected_qty}</p></div>
+        <div>
+          <p className="text-muted-foreground">Rejected</p>
+          <p className="font-medium mt-0.5 text-[#1D0DB0]">{stage.rejected_qty}</p>
+          {stage.missing_qty > 0 && <p className="text-[11px] mt-0.5" style={{ color: "#B45309" }}>Missing {stage.missing_qty}</p>}
+        </div>
         <div><p className="text-muted-foreground">Bill Amount</p><p className="font-semibold mt-0.5" style={{ color: INDIGO }}>{stage.bill_amount != null ? INR(Number(stage.bill_amount)) : "—"}</p></div>
       </div>
       {stage.operations.length > 0 && (
@@ -2609,6 +2772,7 @@ function StageCard({
                     ? `${e.input_weight_kg != null ? `Fabric ${Number(e.input_weight_kg)} kg · ` : ""}Out ${e.pieces_out}`
                     : `In ${e.pieces_in} · Out ${e.pieces_out}`}
                   {" · "}Rej {e.rejected}
+                  {e.missing > 0 && <>{" · "}<span style={{ color: "#B45309" }}>Missing {e.missing}</span></>}
                 </span>
                 <span className="text-muted-foreground">{[e.operator, e.machine].filter(Boolean).join(" · ") || "—"}</span>
               </div>
@@ -2655,6 +2819,10 @@ export default function LotDetailPage() {
   const [vendorStage, setVendorStage] = useState<Stage | null>(null);
   const [receiveChallan, setReceiveChallan] = useState<StageChallan | null>(null);
   const [showAddStage, setShowAddStage] = useState(false);
+  const [showCloseEarly, setShowCloseEarly] = useState(false);
+  const [skipUpcomingId, setSkipUpcomingId] = useState<string | null>(null);
+  const [upcomingReason, setUpcomingReason] = useState("");
+  const [upcomingError, setUpcomingError] = useState<string | null>(null);
   const [showIssueMaterial, setShowIssueMaterial] = useState(false);
   const [showStartFabric, setShowStartFabric] = useState(false);
   const [completeFabricEntry, setCompleteFabricEntry] = useState<FabricProcessing | null>(null);
@@ -2750,6 +2918,18 @@ export default function LotDetailPage() {
     },
   });
 
+  const upcomingStatusMut = useMutation({
+    mutationFn: ({ stageId, status }: { stageId: string; status: "skipped" | "pending" }) =>
+      api.patch(`/production/stages/${stageId}`, status === "skipped" ? { status, skip_reason: upcomingReason.trim() || null } : { status }),
+    onSuccess: () => {
+      setSkipUpcomingId(null);
+      setUpcomingReason("");
+      setUpcomingError(null);
+      qc.invalidateQueries({ queryKey: ["production-lot", id] });
+    },
+    onError: (e: unknown) => setUpcomingError(parseApiError(e, "Could not update that stage.")),
+  });
+
   const deleteMut = useMutation({
     mutationFn: () => api.delete(`/production/lots/${id}`),
     onSuccess: () => {
@@ -2806,7 +2986,7 @@ export default function LotDetailPage() {
   // Stages unlock one at a time: everything already completed plus the first
   // open stage is shown; later stages are listed as upcoming until then.
   const lotOpen = !["completed", "cancelled"].includes(lot.status);
-  const firstOpenIdx = lot.stages.findIndex((s) => s.status !== "completed");
+  const firstOpenIdx = lot.stages.findIndex((s) => !stageDone(s));
   const currentStageIdx = firstOpenIdx === -1 ? -1 : firstOpenIdx;
   const visibleStages = firstOpenIdx === -1 ? lot.stages : lot.stages.slice(0, firstOpenIdx + 1);
   const upcomingStages = firstOpenIdx === -1 ? [] : lot.stages.slice(firstOpenIdx + 1);
@@ -2876,6 +3056,16 @@ export default function LotDetailPage() {
                 {statusMut.isPending ? "Updating…" : <>Advance to {nextStatus.replace(/_/g, " ")} <ChevronRight className="h-4 w-4" /></>}
               </button></Can>
             )}
+            {lotOpen && (
+              <Can perm="production.edit"><button
+                onClick={() => setShowCloseEarly(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors hover:bg-muted"
+                style={{ color: "#B45309", borderColor: "#B453094D" }}
+                title="Close this lot now without finishing every stage"
+              >
+                <Flag className="h-4 w-4" /> Close early
+              </button></Can>
+            )}
             {(lot.status === "cancelled" || lot.status === "completed") && (
               <Can perm="production.edit"><button
                 onClick={() => reopenMut.mutate()}
@@ -2906,6 +3096,17 @@ export default function LotDetailPage() {
         <p className="text-xs px-3 py-2 rounded-lg -mt-4" style={{ background: "#1D0DB00D", color: "#1D0DB0" }}>
           {reportErr}
         </p>
+      )}
+
+      {lot.closed_early_reason && (
+        <div className="flex items-start gap-2 rounded-xl px-4 py-3 text-sm -mt-4" style={{ background: "#B4530914", color: "#92400E" }}>
+          <Flag className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <p>
+            <span className="font-semibold">Closed early</span>
+            {lot.closed_at && ` on ${new Date(lot.closed_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}`}
+            {" — "}{lot.closed_early_reason}
+          </p>
+        </div>
       )}
 
       {/* Profitability — actual production economics */}
@@ -3329,20 +3530,52 @@ export default function LotDetailPage() {
                 sizeById={sizeById}
                 isCurrent={lotOpen && idx === currentStageIdx}
                 canReopen={lotOpen && idx === lastCompletedIdx}
-                nextStageName={lot.stages[idx + 1]?.stage_name ?? null}
+                nextStageName={lot.stages.slice(idx + 1).find((n) => n.status !== "skipped")?.stage_name ?? null}
               />
             ))}
             {upcomingStages.length > 0 && (
               <div className="rounded-xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">
                 <p className="font-semibold uppercase tracking-wide text-[11px] mb-1.5">Upcoming stages</p>
-                <p>
+                <div className="flex flex-wrap items-center gap-y-1.5">
                   {upcomingStages.map((s, i) => (
-                    <span key={s.id}>
+                    <span key={s.id} className="inline-flex items-center">
                       {i > 0 && <span className="mx-1.5">→</span>}
-                      <span className="font-medium text-foreground/70">{visibleStages.length + i + 1}. {s.stage_name}</span>
+                      <span className={`font-medium ${s.status === "skipped" ? "line-through text-muted-foreground" : "text-foreground/70"}`}>
+                        {visibleStages.length + i + 1}. {s.stage_name}
+                      </span>
+                      <Can perm="production.edit">
+                        {s.status === "skipped" ? (
+                          <button onClick={() => upcomingStatusMut.mutate({ stageId: s.id, status: "pending" })}
+                            disabled={upcomingStatusMut.isPending}
+                            className="ml-1.5 text-[11px] font-semibold hover:underline disabled:opacity-40" style={{ color: INDIGO }}>
+                            Undo skip
+                          </button>
+                        ) : (
+                          <button onClick={() => { setUpcomingError(null); setUpcomingReason(""); setSkipUpcomingId(s.id); }}
+                            className="ml-1.5 text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:underline">
+                            Skip
+                          </button>
+                        )}
+                      </Can>
                     </span>
                   ))}
-                </p>
+                </div>
+                {skipUpcomingId && (
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <span className="font-medium text-foreground">Skip {lot.stages.find((x) => x.id === skipUpcomingId)?.stage_name}:</span>
+                    <input className={`${inputCls} max-w-xs`} placeholder="Reason (optional)" value={upcomingReason}
+                      onChange={(e) => setUpcomingReason(e.target.value)} autoFocus />
+                    <button onClick={() => upcomingStatusMut.mutate({ stageId: skipUpcomingId, status: "skipped" })}
+                      disabled={upcomingStatusMut.isPending}
+                      className="px-3 py-1.5 rounded text-[11px] font-semibold text-white disabled:opacity-40" style={{ background: INDIGO }}>
+                      Skip stage
+                    </button>
+                    <button onClick={() => setSkipUpcomingId(null)} className="px-3 py-1.5 rounded text-[11px] font-semibold border border-border hover:bg-muted">
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                {upcomingError && <p className="mt-1.5" style={{ color: "#1D0DB0" }}>{upcomingError}</p>}
                 <p className="mt-1.5">Unlocks once {lot.stages[currentStageIdx]?.stage_name} is completed.</p>
               </div>
             )}
@@ -3617,7 +3850,7 @@ export default function LotDetailPage() {
 
       <Card
         title="Mistake Log"
-        subtitle="Staff, process, what happened, and the action taken — kept for future reference"
+        subtitle="Staff / operator, process, what happened, and the action taken — kept for future reference"
         action={
           <Can perm="production.create"><button onClick={() => setShowAddMistake(true)} className="flex items-center gap-1 text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: INDIGO }}>
             <Plus className="h-3.5 w-3.5" /> Log Mistake
@@ -3691,7 +3924,7 @@ export default function LotDetailPage() {
       {entryStage && (
         <AddEntryModal
           stage={entryStage}
-          prevStage={lot.stages[lot.stages.findIndex((s) => s.id === entryStage.id) - 1] ?? null}
+          prevStage={prevWorkedStage(lot.stages, lot.stages.findIndex((s) => s.id === entryStage.id))}
           lotId={lot.id}
           onClose={() => setEntryStage(null)}
         />
@@ -3713,7 +3946,8 @@ export default function LotDetailPage() {
       {misReturnItem && <RecordMISReturnModal item={misReturnItem} lotId={lot.id} onClose={() => setMisReturnItem(null)} />}
       {vendorStage && <SendToVendorModal stage={vendorStage} lotId={lot.id} onClose={() => setVendorStage(null)} />}
       {receiveChallan && <ReceiveChallanModal challan={receiveChallan} lotId={lot.id} onClose={() => setReceiveChallan(null)} />}
-      {showAddStage && <AddStageModal lotId={lot.id} onClose={() => setShowAddStage(false)} />}
+      {showAddStage && <AddStageModal lotId={lot.id} stages={lot.stages} onClose={() => setShowAddStage(false)} />}
+      {showCloseEarly && <CloseEarlyModal lot={lot} onClose={() => setShowCloseEarly(false)} />}
       {showIssueMaterial && <IssueMaterialModal lotId={lot.id} onClose={() => setShowIssueMaterial(false)} />}
       {showAddMistake && <AddMistakeLogModal lotId={lot.id} stages={lot.stages} onClose={() => setShowAddMistake(false)} />}
       {showStartFabric && <StartFabricProcessingModal lotId={lot.id} onClose={() => setShowStartFabric(false)} />}
