@@ -39,7 +39,7 @@ interface ProcessRow {
 interface TrimRow { key: string; process_key: string; trim_name: string; trim_type: string; lot_id: string; style_part_id: string; colour_id: string; quantity: string; unit: string; category: string; excess_pct: string; notes: string; size_breakdown: Record<string, string> }
 interface PartColourRow { key: string; style_part_id: string; colour_id: string; sizeQty: Record<string, string> }
 interface PackingRow { key: string; material_name: string; product_id: string; quantity: string; unit: string; excess_pct: string; consumption_stage: string; notes: string }
-interface AdditionalCostRow { key: string; cost_type: "additional" | "agent_commission"; description: string; amount: string; basis: string; party_vendor_id: string; notes: string }
+interface AdditionalCostRow { key: string; cost_type: "additional" | "agent_commission"; description: string; amount: string; basis: string; tds_pct: string; party_vendor_id: string; notes: string }
 const GENDER_OPTIONS = ["Men's", "Women's", "Kids", "Newborn Baby"];
 
 // ── Section shell ────────────────────────────────────────────────────────────
@@ -280,7 +280,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     }[];
     trims: { process_seq: number | null; trim_name: string; trim_type: string | null; lot_id: string | null; style_part_id: string | null; colour_id: string | null; quantity: number | null; unit: string | null; category: string | null; excess_pct: number | null; notes: string | null; size_breakdown: { size_id: string; quantity: number }[] }[];
     packing_materials: { material_name: string; product_id: string | null; quantity: number | null; unit: string | null; excess_pct: number | null; consumption_stage: string | null; notes: string | null }[];
-    additional_costs: { cost_type: string; description: string; amount: number | null; basis: string | null; party_vendor_id: string | null; notes: string | null }[];
+    additional_costs: { cost_type: string; description: string; amount: number | null; basis: string | null; tds_pct: number | null; party_vendor_id: string | null; notes: string | null }[];
   }
   const styleQuery = useQuery({
     queryKey: ["style-detail", styleId],
@@ -311,7 +311,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     setColourIds([...d.colours].sort((a, b) => a.sort_order - b.sort_order).map((c) => c.colour_id));
     setPartColours([...d.part_colours].sort((a, b) => a.sort_order - b.sort_order).map((pc) => ({
       key: newId(), style_part_id: pc.style_part_id, colour_id: pc.colour_id ?? "",
-      sizeQty: Object.fromEntries(pc.sizes.map((s) => [s.size_id, s.quantity != null ? String(s.quantity) : ""])),
+      sizeQty: Object.fromEntries(pc.sizes.map((s) => [s.size_id, s.quantity != null ? String(Number(s.quantity)) : ""])),
     })));
     const fabricKeyById = new Map(d.fabrics.map((f) => [f.id, newId()]));
     setFabrics(d.fabrics.map((f) => ({
@@ -362,7 +362,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     setAdditionalCosts(d.additional_costs.map((a) => ({
       key: newId(), cost_type: a.cost_type === "agent_commission" ? "agent_commission" : "additional",
       description: a.description, amount: a.amount != null ? String(a.amount) : "",
-      basis: asBasis(a.basis), party_vendor_id: a.party_vendor_id ?? "", notes: a.notes ?? "",
+      basis: asBasis(a.basis), tds_pct: a.tds_pct != null ? String(Number(a.tds_pct)) : "",
+      party_vendor_id: a.party_vendor_id ?? "", notes: a.notes ?? "",
     })));
   }, [styleQuery.data]);
 
@@ -645,7 +646,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
 
   // ── Additional cost rows ─────────────────────────────────────────────────
   function addAdditionalCost() {
-    setAdditionalCosts((r) => [...r, { key: newId(), cost_type: "additional", description: "", amount: "", basis: "lumpsum", party_vendor_id: "", notes: "" }]);
+    setAdditionalCosts((r) => [...r, { key: newId(), cost_type: "additional", description: "", amount: "", basis: "lumpsum", tds_pct: "", party_vendor_id: "", notes: "" }]);
   }
   function updateAdditionalCost(key: string, patch: Partial<AdditionalCostRow>) {
     setAdditionalCosts((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -769,6 +770,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           description: a.description.trim(),
           amount: a.amount ? Number(a.amount) : undefined,
           basis: asBasis(a.basis),
+          tds_pct: a.tds_pct ? Number(a.tds_pct) : undefined,
           party_vendor_id: a.cost_type === "agent_commission" && a.party_vendor_id ? a.party_vendor_id : undefined,
           notes: a.notes || undefined,
         })),
@@ -1121,7 +1123,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           </Field>
           <Field
             label="Style Parts (optional)"
-            hint="For garments made of multiple parts (e.g. Front, Back, Collar) that need their own colour and size-wise quantities — e.g. a contrast-colour collar. Leave empty for a single-piece style."
+            hint="For garments made of multiple parts (e.g. Body, Collar, Folding) — each part can have its own colour, and for each size its weight per piece in grams (e.g. Body 0-6M = 50 g). Lots show the total weight each part needs. Leave empty for a single-piece style."
           >
             <div className="space-y-3">
               {partColours.map((p) => (
@@ -1159,10 +1161,10 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                       {sizeIds.map((sId) => (
                         <div key={sId}>
                           <label className="block text-[10px] text-muted-foreground mb-0.5">
-                            {(sizes.data ?? []).find((s) => s.id === sId)?.name ?? "—"}
+                            {(sizes.data ?? []).find((s) => s.id === sId)?.name ?? "—"} · g / piece
                           </label>
                           <Input
-                            type="number" step="1" placeholder="Qty"
+                            type="number" step="0.01" min="0" placeholder="g"
                             value={p.sizeQty[sId] ?? ""}
                             onChange={(e) => updatePartSizeQty(p.key, sId, e.target.value)}
                           />
@@ -1540,7 +1542,11 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   <SegControl
                     options={["Additional", "Agent Commission"]}
                     value={a.cost_type === "agent_commission" ? "Agent Commission" : "Additional"}
-                    onChange={(v) => updateAdditionalCost(a.key, { cost_type: v === "Agent Commission" ? "agent_commission" : "additional" })}
+                    onChange={(v) => updateAdditionalCost(a.key, {
+                      cost_type: v === "Agent Commission" ? "agent_commission" : "additional",
+                      // Agents are usually paid after 1% TDS; change it if not.
+                      ...(v === "Agent Commission" && !a.tds_pct ? { tds_pct: "1" } : {}),
+                    })}
                   />
                   <Input value={a.description} onChange={(e) => updateAdditionalCost(a.key, { description: e.target.value })} placeholder="Description, e.g. Freight / Agent commission for Order #123" className="flex-1" />
                   <RemoveRowButton onClick={() => removeAdditionalCost(a.key)} />
@@ -1550,7 +1556,12 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                 <div className="grid grid-cols-3 gap-2">
                   <Input type="number" step="0.01" min="0" max={asBasis(a.basis) === "percent" ? 100 : undefined} value={a.amount}
                     onChange={(e) => updateAdditionalCost(a.key, { amount: e.target.value })} placeholder={rateLabel(asBasis(a.basis))} />
-                  <p className="col-span-2 self-center text-[11px] text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <Input type="number" step="0.01" min="0" max="100" value={a.tds_pct} className="w-24"
+                      onChange={(e) => updateAdditionalCost(a.key, { tds_pct: e.target.value })} placeholder="TDS %" />
+                    <span className="text-[11px] text-muted-foreground">TDS % held back when paying</span>
+                  </div>
+                  <p className="self-center text-[11px] text-muted-foreground">
                     {basisPreview(asBasis(a.basis), a.amount, null, targetPrice ? Number(targetPrice) : null)}
                   </p>
                   {a.cost_type === "agent_commission" && (

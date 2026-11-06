@@ -14,6 +14,8 @@ export interface ModuleNavItem {
   href: string;
   icon: ComponentType<{ className?: string }>;
   group?: string;
+  /** Permission(s) needed to see this item; omitted = anyone who sees the module. */
+  permission?: string | string[];
 }
 
 export interface ModuleNavEntry {
@@ -59,17 +61,22 @@ export const MODULE_NAV: ModuleNavEntry[] = [
   },
   {
     key: "sales", label: "Sales", href: "/sales", icon: ShoppingCart,
-    permission: "sales.view",
+    permission: ["sales.view", "retail.view"],
     createPermission: "sales.create",
     editPermission: "sales.edit",
     items: [
-      { label: "Customers", href: "/sales/customers", icon: Users },
-      { label: "Quotations", href: "/sales/quotations", icon: FileText },
-      { label: "Sales Orders", href: "/sales/orders", icon: ShoppingCart },
-      { label: "Delivery Challans", href: "/sales/deliveries", icon: Truck },
-      { label: "Returns", href: "/sales/returns", icon: FileMinus },
-      { label: "Invoices", href: "/sales/invoices", icon: Receipt },
-      { label: "Price Lists", href: "/sales/price-lists", icon: Tag },
+      { label: "Customers", href: "/sales/customers", icon: Users, group: "B2B", permission: "sales.view" },
+      { label: "Quotations", href: "/sales/quotations", icon: FileText, group: "B2B", permission: "sales.view" },
+      { label: "Sales Orders", href: "/sales/orders", icon: ShoppingCart, group: "B2B", permission: "sales.view" },
+      { label: "Delivery Challans", href: "/sales/deliveries", icon: Truck, group: "B2B", permission: "sales.view" },
+      { label: "Returns", href: "/sales/returns", icon: FileMinus, group: "B2B", permission: "sales.view" },
+      { label: "Invoices", href: "/sales/invoices", icon: Receipt, group: "B2B", permission: "sales.view" },
+      { label: "Price Lists", href: "/sales/price-lists", icon: Tag, group: "B2B", permission: "sales.view" },
+      { label: "Retail Billing", href: "/sales/retail/bill", icon: Calculator, group: "Retail", permission: "retail.create" },
+      { label: "Retail Bills", href: "/sales/retail/invoices", icon: Receipt, group: "Retail", permission: "retail.view" },
+      { label: "Retail Estimates", href: "/sales/retail/estimates", icon: FileText, group: "Retail", permission: "retail.view" },
+      { label: "Retail Customers", href: "/sales/retail/customers", icon: User, group: "Retail", permission: "retail.view" },
+      { label: "Retail Settings", href: "/sales/retail/settings", icon: Settings, group: "Retail", permission: "retail.manage" },
     ],
   },
   {

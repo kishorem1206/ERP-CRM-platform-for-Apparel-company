@@ -23,7 +23,7 @@ interface TrimOut { id: string; trim_name: string; trim_type: string | null; pro
 interface PackingOut { id: string; material_name: string; quantity: string | null; unit: string | null; excess_pct: string | null; consumption_stage: string | null; notes: string | null }
 interface AdditionalCostOut {
   id: string; cost_type: string; description: string; amount: string | null;
-  basis: string | null; party_vendor_id: string | null; notes: string | null;
+  basis: string | null; tds_pct: string | number | null; party_vendor_id: string | null; notes: string | null;
 }
 interface TargetPriceSuggestion {
   process_name: string; current_rate: string; suggested_rate: string; delta: string;
@@ -386,6 +386,7 @@ export default function StyleDetailPage() {
                 </div>
                 <span className="text-muted-foreground">
                   {a.amount != null ? (a.basis === "lumpsum" || !a.basis ? `₹${Number(a.amount).toLocaleString("en-IN")} lump sum` : basisText(a.basis, a.amount)) : "—"}
+                  {Number(a.tds_pct) > 0 && ` · TDS ${Number(a.tds_pct)}%`}
                 </span>
               </div>
             ))}

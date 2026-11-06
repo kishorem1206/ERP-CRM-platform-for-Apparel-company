@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ── Style Master ──────────────────────────────────────────────────────────────
@@ -276,6 +276,7 @@ class StyleAdditionalCostIn(BaseModel):
     description: str
     amount: Decimal | None = None   # ₹ for lumpsum / per_piece, % for percent
     basis: str | None = None        # lumpsum / per_piece / percent
+    tds_pct: Decimal | None = Field(default=None, ge=0, le=100)
     party_vendor_id: UUID | None = None
     notes: str | None = None
 
@@ -299,6 +300,7 @@ class StyleAdditionalCostOut(BaseModel):
     description: str
     amount: Decimal | None
     basis: str | None
+    tds_pct: Decimal | None = None
     party_vendor_id: UUID | None
     notes: str | None
     model_config = {"from_attributes": True}
@@ -510,12 +512,14 @@ class LotSizeOut(BaseModel):
 
 class LotPartSizeCreate(BaseModel):
     size_id: UUID
-    planned_qty: int = 0
+    planned_qty: int = 0                  # pieces; 0 = take the lot's plan for this size
+    weight_g: Decimal | None = None       # grams per piece of this part
 
 
 class LotPartSizeOut(BaseModel):
     size_id: UUID
     planned_qty: int
+    weight_g: Decimal | None = None
     model_config = {"from_attributes": True}
 
 
@@ -544,6 +548,7 @@ class LotAdditionalCostCreate(BaseModel):
     actual_amount: Decimal | None = None
     basis: str | None = None                # lumpsum / per_piece / percent
     rate: Decimal | None = None             # ₹ (per piece) or % — planned is worked out from it
+    tds_pct: Decimal | None = Field(default=None, ge=0, le=100)
     party_vendor_id: UUID | None = None
     notes: str | None = None
 
@@ -864,6 +869,7 @@ class LotAdditionalCostOut(BaseModel):
     actual_amount: Decimal | None
     basis: str | None
     rate: Decimal | None = None
+    tds_pct: Decimal | None = None
     party_vendor_id: UUID | None
     notes: str | None
     model_config = {"from_attributes": True}
@@ -871,6 +877,7 @@ class LotAdditionalCostOut(BaseModel):
 
 class LotAdditionalCostUpdate(BaseModel):
     actual_amount: Decimal | None = None
+    tds_pct: Decimal | None = Field(default=None, ge=0, le=100)
     notes: str | None = None
 
 

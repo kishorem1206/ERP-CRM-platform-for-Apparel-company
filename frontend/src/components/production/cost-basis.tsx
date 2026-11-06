@@ -8,7 +8,7 @@ export type CostBasis = "lumpsum" | "per_piece" | "percent";
 export const COST_BASIS_OPTIONS: { value: CostBasis; label: string }[] = [
   { value: "lumpsum", label: "₹ Lump sum" },
   { value: "per_piece", label: "₹ per piece" },
-  { value: "percent", label: "% of selling value" },
+  { value: "percent", label: "% of selling value (before GST)" },
 ];
 
 export const asBasis = (b: string | null | undefined): CostBasis =>
@@ -30,7 +30,7 @@ export function basisText(basis: string | null | undefined, rate: number | strin
   const r = rate == null || rate === "" ? null : Number(rate);
   const b = asBasis(basis);
   if (b === "per_piece") return r != null ? `${inr(r)} per piece` : "Per piece";
-  if (b === "percent") return r != null ? `${r}% of selling value` : "% of selling value";
+  if (b === "percent") return r != null ? `${r}% of selling value (before GST)` : "% of selling value (before GST)";
   return "Lump sum";
 }
 
@@ -61,6 +61,14 @@ export function CostBasisPicker({ value, onChange, accent }: { value: CostBasis;
       ))}
     </div>
   );
+}
+
+/** "Pay ₹9,900 · TDS ₹100" — what goes to the party and what's held back for the Govt. */
+export function tdsSplit(amount: number | null | undefined, tdsPct: number | string | null | undefined): string {
+  const pct = Number(tdsPct);
+  if (amount == null || !Number.isFinite(pct) || pct <= 0) return "";
+  const tds = Math.round(amount * pct) / 100;
+  return `Pay ${inr(amount - tds)} · TDS ${inr(tds)} (${pct}%)`;
 }
 
 export const rateLabel = (b: CostBasis) => (b === "percent" ? "Percent (%)" : b === "per_piece" ? "₹ per piece" : "Amount (₹)");

@@ -84,6 +84,12 @@ const columns: Column<BalanceRow>[] = [
       // "zero value".
       row.stock_value == null
         ? "—"
+        : Number(row.stock_value) <= 0 && Number(row.balance) > 0
+        ? (
+          <span className="text-xs text-amber-600 dark:text-amber-400" title="This stock came in without a rate (purchase or receipt price ₹0), so it has no value yet. Enter the rate on its GRN / receipt to value it.">
+            No rate
+          </span>
+        )
         : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(Number(row.stock_value)),
   },
 ];

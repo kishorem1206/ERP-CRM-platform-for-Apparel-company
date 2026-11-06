@@ -827,3 +827,48 @@ def test_additional_cost_basis_lumpsum_per_piece_percent():
     assert after["Courier"][1] == Decimal("750.00")
     assert stitching_rate == Decimal("5") and typed_basis == "lumpsum"
     assert no_price is None
+
+
+async def _run_part_weights_and_tds_scenario():
+    """Style part sizes are grams per piece: a lot carries them with its own
+    pieces per size. TDS % on a cost line is copied onto the lot."""
+    from app.models.master import Size
+    from app.models.production import StylePart
+    from app.schemas.production import StyleAdditionalCostIn, StylePartColourIn, StylePartSizeIn
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            s1, s2 = (await db.execute(select(Size.id).where(Size.company_id == company_id).limit(2))).scalars().all()
+            part = (await db.execute(select(StylePart.id).where(StylePart.company_id == company_id).limit(1))).scalar_one()
+            svc = ProductionService(db)
+            style = await svc.create_style(StyleCreate(
+                name=f"Test Style {uuid4().hex[:8]}", final_output_unit="Pieces",
+                sizes=[StyleSizeIn(size_id=s1), StyleSizeIn(size_id=s2)],
+                part_colours=[StylePartColourIn(style_part_id=part, sizes=[
+                    StylePartSizeIn(size_id=s1, quantity=Decimal("50")),
+                    StylePartSizeIn(size_id=s2, quantity=Decimal("52.5")),
+                ])],
+                additional_costs=[StyleAdditionalCostIn(
+                    cost_type="agent_commission", description="Agent", amount=Decimal("10"), basis="per_piece", tds_pct=Decimal("1"),
+                )],
+            ), company_id, user_id)
+            lot = await svc.create_lot(ProductionLotCreate(
+                style_id=style.id, planned_qty=140,
+                sizes=[LotSizeCreate(size_id=s1, planned_qty=100), LotSizeCreate(size_id=s2, planned_qty=40)],
+            ), company_id, user_id)
+            lot_id = lot.id
+            db.expire_all()
+            full = await svc.get_lot(lot_id, company_id)
+            sizes = {sz.size_id: (sz.planned_qty, sz.weight_g) for pc in full.part_colours for sz in pc.sizes}
+            cost = full.additional_costs[0]
+            return sizes[s1], sizes[s2], (cost.planned_amount, cost.tds_pct)
+        finally:
+            await db.rollback()
+
+
+def test_style_part_grams_and_cost_tds_reach_the_lot():
+    first, second, (planned, tds) = asyncio.run(_run_part_weights_and_tds_scenario())
+    assert first == (100, Decimal("50.000"))       # 100 pcs at 50 g each
+    assert second == (40, Decimal("52.500"))       # decimals kept, not cut to 52
+    assert planned == Decimal("1400.00") and tds == Decimal("1.00")

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WarehouseSummary } from "@/components/inventory/warehouse-summary";
 import { ComponentType, CSSProperties } from "react";
 import {
   Layers,
@@ -55,14 +56,6 @@ const OPERATIONS = [
   },
 ];
 
-const warehouseSummary = [
-  { name: "Yarn Store", code: "WH-YARN" },
-  { name: "Fabric Store", code: "WH-FAB" },
-  { name: "Trim Store", code: "WH-TRIM" },
-  { name: "Packing Store", code: "WH-PACK" },
-  { name: "Finished Goods", code: "WH-FG" },
-  { name: "Main Warehouse", code: "WH-MAIN" },
-];
 
 function NavCard({
   href,
@@ -151,16 +144,7 @@ export default function InventoryPage() {
           </p>
           <p className="text-sm font-medium mt-0.5">Stock by location</p>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-          {warehouseSummary.map((wh) => (
-            <div key={wh.code} className="bg-background border border-border rounded-xl p-3 space-y-1">
-              <p className="text-xs font-medium truncate">{wh.name}</p>
-              <p className="text-xs text-muted-foreground">{wh.code}</p>
-              <p className="text-lg font-semibold">₹0</p>
-              <p className="text-xs text-muted-foreground">0 SKUs</p>
-            </div>
-          ))}
-        </div>
+        <WarehouseSummary />
       </div>
     </div>
   );

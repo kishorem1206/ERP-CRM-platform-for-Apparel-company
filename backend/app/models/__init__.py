@@ -79,3 +79,7 @@ __all__ = [
     "WhatsappContact", "WhatsappMessage", "WhatsappTemplate",
     "Notification",
 ]
+from app.models.retail import (  # noqa: F401
+    RetailCustomer, RetailEstimate, RetailEstimateItem, RetailInvoice, RetailInvoiceItem,
+    RetailPayment, RetailSettings, RetailSettingsAudit,
+)

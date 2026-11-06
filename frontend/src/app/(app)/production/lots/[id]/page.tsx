@@ -11,7 +11,7 @@ import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { useVendorTypeLabel } from "@/lib/vendor-types";
-import { CostBasisPicker, basisPreview, basisText, rateLabel, type CostBasis } from "@/components/production/cost-basis";
+import { CostBasisPicker, basisPreview, basisText, rateLabel, tdsSplit, type CostBasis } from "@/components/production/cost-basis";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
 
@@ -103,7 +103,7 @@ interface StageSize {
 interface LotAdditionalCost {
   id: string; cost_type: string; description: string;
   planned_amount: number | null; actual_amount: number | null;
-  basis: string | null; rate: number | null; party_vendor_id: string | null; notes: string | null;
+  basis: string | null; rate: number | null; tds_pct: number | string | null; party_vendor_id: string | null; notes: string | null;
 }
 interface LotTrim {
   id: string; trim_name: string; category: string | null; trim_type: string | null; stage_id: string | null; unit: string | null;
@@ -148,7 +148,7 @@ interface LotDetail {
 }
 interface LotPartColour {
   id: string; style_part_name: string | null; colour_name: string | null;
-  sizes: { size_id: string; planned_qty: number }[];
+  sizes: { size_id: string; planned_qty: number; weight_g: string | number | null }[];
 }
 interface MISItem {
   id: string; product_id: string; product_name: string | null; unit_abbreviation: string | null;
@@ -438,6 +438,7 @@ function AddLotCostModal({ lotId, pieces, sellingPrice, onClose }: {
   const [description, setDescription] = useState("");
   const [basis, setBasis] = useState<CostBasis>("lumpsum");
   const [planned, setPlanned] = useState("");
+  const [tdsPct, setTdsPct] = useState("");
   const [actual, setActual] = useState("");
   const [partyVendorId, setPartyVendorId] = useState("");
   const { data: agentVendors } = useQuery({
@@ -448,6 +449,7 @@ function AddLotCostModal({ lotId, pieces, sellingPrice, onClose }: {
     mutationFn: () => api.post(`/production/lots/${lotId}/additional-costs`, {
       cost_type: costType, description: description.trim(),
       basis, rate: planned ? Number(planned) : undefined,
+      tds_pct: tdsPct ? Number(tdsPct) : undefined,
       actual_amount: actual ? Number(actual) : undefined,
       party_vendor_id: costType === "agent_commission" && partyVendorId ? partyVendorId : undefined,
     }),
@@ -488,6 +490,11 @@ function AddLotCostModal({ lotId, pieces, sellingPrice, onClose }: {
           </div>
         </div>
         {planned && <p className="text-[11px] text-muted-foreground -mt-2">{basisPreview(basis, planned, pieces, sellingPrice)}</p>}
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">TDS % (held back when paying)</label>
+          <input type="number" step="0.01" min="0" max="100" className={inputCls} value={tdsPct}
+            onChange={(e) => setTdsPct(e.target.value)} placeholder="e.g. 1" />
+        </div>
         {costType === "agent_commission" && (
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Agent</label>
@@ -512,15 +519,24 @@ function AddLotCostModal({ lotId, pieces, sellingPrice, onClose }: {
   );
 }
 
+/** 850 g → "850 g", 12500 g → "12.5 kg". */
+function fmtWeight(grams: number): string {
+  return grams >= 1000
+    ? `${(grams / 1000).toLocaleString("en-IN", { maximumFractionDigits: 2 })} kg`
+    : `${grams.toLocaleString("en-IN", { maximumFractionDigits: 1 })} g`;
+}
+
 function RecordActualCostModal({ cost, lotId, onClose }: { cost: LotAdditionalCost; lotId: string; onClose: () => void }) {
   const qc = useQueryClient();
   const [actualAmount, setActualAmount] = useState(cost.actual_amount != null ? String(cost.actual_amount) : "");
+  const [tdsPct, setTdsPct] = useState(cost.tds_pct != null ? String(Number(cost.tds_pct)) : "");
   const [notes, setNotes] = useState(cost.notes ?? "");
 
   const mut = useMutation({
     mutationFn: () =>
       api.patch(`/production/lots/additional-costs/${cost.id}`, {
         actual_amount: actualAmount ? Number(actualAmount) : null,
+        tds_pct: tdsPct ? Number(tdsPct) : null,
         notes: notes || null,
       }),
     onSuccess: () => {
@@ -543,6 +559,15 @@ function RecordActualCostModal({ cost, lotId, onClose }: { cost: LotAdditionalCo
           <input type="number" step="0.01" className={inputCls} value={actualAmount} onChange={(e) => setActualAmount(e.target.value)} />
           {cost.planned_amount != null && (
             <p className="text-[11px] text-muted-foreground mt-1">Planned amount: {INR(cost.planned_amount)}</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">TDS %</label>
+          <input type="number" step="0.01" min="0" max="100" className={inputCls} value={tdsPct} onChange={(e) => setTdsPct(e.target.value)} placeholder="e.g. 1" />
+          {tdsPct && (actualAmount || cost.planned_amount != null) && (
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {tdsSplit(actualAmount ? Number(actualAmount) : Number(cost.planned_amount), tdsPct)}
+            </p>
           )}
         </div>
         <div>
@@ -3509,23 +3534,33 @@ export default function LotDetailPage() {
       )}
 
       {lot.part_colours.length > 0 && (
-        <Card title="Part / Colour / Size Breakdown" subtitle="Pre-filled from the Style at lot creation">
+        <Card title="Style Parts — weight needed" subtitle="Grams per piece from the Style × this lot's pieces in each size">
           <div className="space-y-3">
-            {lot.part_colours.map((pc) => (
-              <div key={pc.id} className="p-3 rounded-xl border border-border">
-                <p className="text-sm font-medium mb-2">
-                  {[pc.style_part_name, pc.colour_name].filter(Boolean).join(" · ") || "—"}
-                </p>
-                <div className="flex gap-4 flex-wrap text-xs">
-                  {pc.sizes.map((s) => (
-                    <div key={s.size_id}>
-                      <span className="text-muted-foreground">{sizeById.get(s.size_id) ?? "—"}:</span>{" "}
-                      <span className="font-medium">{s.planned_qty}</span>
-                    </div>
-                  ))}
+            {lot.part_colours.map((pc) => {
+              const totalG = pc.sizes.reduce((sum, s) => sum + (Number(s.weight_g) || 0) * s.planned_qty, 0);
+              return (
+                <div key={pc.id} className="p-3 rounded-xl border border-border">
+                  <div className="flex items-baseline justify-between gap-3 mb-2">
+                    <p className="text-sm font-medium">{[pc.style_part_name, pc.colour_name].filter(Boolean).join(" · ") || "—"}</p>
+                    {totalG > 0 && <p className="text-sm font-semibold tabular-nums">{fmtWeight(totalG)}</p>}
+                  </div>
+                  <div className="flex gap-x-5 gap-y-1 flex-wrap text-xs">
+                    {pc.sizes.map((s) => (
+                      <div key={s.size_id}>
+                        <span className="text-muted-foreground">{sizeById.get(s.size_id) ?? "—"}:</span>{" "}
+                        {s.weight_g != null ? (
+                          <span className="font-medium tabular-nums">
+                            {Number(s.weight_g)} g × {s.planned_qty} pcs = {fmtWeight(Number(s.weight_g) * s.planned_qty)}
+                          </span>
+                        ) : (
+                          <span className="font-medium">{s.planned_qty} pcs</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       )}
@@ -3779,6 +3814,11 @@ export default function LotDetailPage() {
                   <span className="font-medium">
                     Actual {a.actual_amount != null ? INR(Number(a.actual_amount)) : "—"}
                   </span>
+                  {Number(a.tds_pct) > 0 && (a.actual_amount != null || a.planned_amount != null) && (
+                    <span className="text-[11px] text-muted-foreground" title="Paid to the party after TDS; the TDS goes to the Govt. The lot cost stays the full amount.">
+                      {tdsSplit(Number(a.actual_amount ?? a.planned_amount), a.tds_pct)}
+                    </span>
+                  )}
                   <Can perm="production.edit"><button onClick={() => setActualCost(a)} className="p-1 rounded hover:bg-muted text-muted-foreground transition-colors" title="Record actual">
                     <Pencil className="h-3 w-3" />
                   </button></Can>

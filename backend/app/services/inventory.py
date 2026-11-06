@@ -67,15 +67,24 @@ class InventoryService:
         Not true FIFO (reserved for item #10's cost-layer work); a defensible
         simpler approximation in the meantime.
         """
+        # Only receipts that carry a rate: a ₹0 receipt (no price entered)
+        # would otherwise drag the average down. If this warehouse has none,
+        # use the product's priced receipts anywhere, then its cost price.
         result = await self.db.execute(
             text("""
-                SELECT COALESCE(SUM(quantity * unit_cost) / SUM(quantity), 0)
-                FROM inventory_transactions
-                WHERE company_id = :company_id
-                  AND product_id = :product_id
-                  AND warehouse_id = :warehouse_id
-                  AND (CAST(:variant_id AS UUID) IS NULL OR variant_id = CAST(:variant_id AS UUID))
-                  AND direction = 1
+                SELECT
+                    (SELECT SUM(quantity * unit_cost) / NULLIF(SUM(quantity), 0)
+                     FROM inventory_transactions
+                     WHERE company_id = :company_id AND product_id = :product_id
+                       AND warehouse_id = :warehouse_id
+                       AND (CAST(:variant_id AS UUID) IS NULL OR variant_id = CAST(:variant_id AS UUID))
+                       AND direction = 1 AND unit_cost > 0) AS here,
+                    (SELECT SUM(quantity * unit_cost) / NULLIF(SUM(quantity), 0)
+                     FROM inventory_transactions
+                     WHERE company_id = :company_id AND product_id = :product_id
+                       AND (CAST(:variant_id AS UUID) IS NULL OR variant_id = CAST(:variant_id AS UUID))
+                       AND direction = 1 AND unit_cost > 0) AS anywhere,
+                    (SELECT cost_price FROM products WHERE id = :product_id) AS cost_price
             """),
             {
                 "company_id": str(company_id),
@@ -84,7 +93,8 @@ class InventoryService:
                 "variant_id": str(variant_id) if variant_id else None,
             },
         )
-        return Decimal(result.scalar() or 0)
+        row = result.one()
+        return Decimal(row.here or row.anywhere or row.cost_price or 0)
 
     async def get_total_balance(
         self,

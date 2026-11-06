@@ -82,7 +82,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
   const [season, setSeason] = useState("");
   const [notes, setNotes] = useState("");
   const [piecesPerBox, setPiecesPerBox] = useState("");
-  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; basis: CostBasis; rate: string; party_vendor_id: string }[]>([]);
+  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; basis: CostBasis; rate: string; tds_pct: string; party_vendor_id: string }[]>([]);
   const [sizeRows, setSizeRows] = useState<LotSizeRow[]>([]);
   const [error, setError] = useState("");
 
@@ -125,6 +125,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         additional_costs: costs.filter((c) => c.description.trim()).map((c) => ({
           cost_type: c.cost_type, description: c.description.trim(),
           basis: c.basis, rate: c.rate ? Number(c.rate) : undefined,
+          tds_pct: c.tds_pct ? Number(c.tds_pct) : undefined,
           party_vendor_id: c.cost_type === "agent_commission" && c.party_vendor_id ? c.party_vendor_id : undefined,
         })),
       }),
@@ -247,7 +248,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
           <div>
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-muted-foreground">Additional Costs & Agent Commission (optional)</label>
-              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", basis: "lumpsum", rate: "", party_vendor_id: "" }])}
+              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", basis: "lumpsum", rate: "", tds_pct: "", party_vendor_id: "" }])}
                 className="text-xs font-semibold" style={{ color: INDIGO }}>+ Add</button>
             </div>
             {costs.map((c) => (
@@ -265,6 +266,8 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
                   placeholder="Description" className="flex-1 rounded border border-input bg-background px-2 py-1.5 text-xs" />
                 <input type="number" step="0.01" min="0" value={c.rate} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, rate: e.target.value } : x))}
                   placeholder={c.basis === "percent" ? "%" : "₹"} className="w-24 rounded border border-input bg-background px-2 py-1.5 text-xs" />
+                <input type="number" step="0.01" min="0" max="100" value={c.tds_pct} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, tds_pct: e.target.value } : x))}
+                  placeholder="TDS %" title="TDS % held back when paying" className="w-20 rounded border border-input bg-background px-2 py-1.5 text-xs" />
                 <button type="button" onClick={() => setCosts((r) => r.filter((x) => x.key !== c.key))} className="text-muted-foreground px-1">×</button>
                 <div className="w-full flex flex-wrap items-center gap-2">
                   <CostBasisPicker value={c.basis} accent={INDIGO}

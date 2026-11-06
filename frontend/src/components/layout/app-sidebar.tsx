@@ -119,7 +119,7 @@ export function AppSidebar() {
                 {/* Expanded sub-navigation */}
                 {isExpanded && (
                   <div className="mt-0.5 mb-1">
-                    {groupItems(mod.items).map((g, gi) => (
+                    {groupItems(mod.items.filter((item) => can(item.permission))).map((g, gi) => (
                       <div key={gi} className={gi > 0 ? "mt-2.5" : "mt-0.5"}>
                         {g.label && (
                           <p className="px-6 mb-1 text-[10px] font-semibold uppercase tracking-widest text-white/45">

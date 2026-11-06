@@ -154,7 +154,7 @@ class StylePartColour(Base):
 
 
 class StylePartSize(Base):
-    """Per-size planned quantity for one (style, part, colour) combination —
+    """Per-size weight (grams per piece) for one (style, part, colour) combination —
     mirrors StyleSize, scoped to a StylePartColour row instead of directly
     to the Style, matching the reference ERP's per-part size-wise table
     (spec §5 — operational quantities must never be a single overall figure
@@ -165,7 +165,7 @@ class StylePartSize(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     style_part_colour_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("style_part_colours.id", ondelete="CASCADE"), nullable=False)
     size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
-    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))   # grams per piece of this part in this size
     sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
 
     style_part_colour: Mapped["StylePartColour"] = relationship(back_populates="sizes")
@@ -413,6 +413,7 @@ class StyleAdditionalCost(Base):
     description: Mapped[str] = mapped_column(String(200), nullable=False)
     amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     basis: Mapped[Optional[str]] = mapped_column(String(30))
+    tds_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))   # TDS held back when paying the party
     party_vendor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -555,7 +556,8 @@ class LotPartSize(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     lot_part_colour_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lot_part_colours.id", ondelete="CASCADE"), nullable=False)
     size_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sizes.id"), nullable=False)
-    planned_qty: Mapped[int] = mapped_column(Integer, default=0)
+    planned_qty: Mapped[int] = mapped_column(Integer, default=0)   # the lot's pieces in this size
+    weight_g: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))   # grams per piece of this part
     sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
 
     lot_part_colour: Mapped["LotPartColour"] = relationship(back_populates="sizes")
@@ -782,6 +784,7 @@ class LotAdditionalCost(Base):
     basis: Mapped[Optional[str]] = mapped_column(String(30))   # lumpsum / per_piece / percent
     # The entered ₹ or % that planned_amount was worked out from (NULL = typed directly).
     rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
+    tds_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))   # TDS held back when paying the party
     party_vendor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

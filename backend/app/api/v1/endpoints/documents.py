@@ -4,6 +4,7 @@ Each route reuses the same GET handler the detail page uses, so the PDF can't
 drift from what the screen shows.
 """
 import re
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -446,3 +447,77 @@ async def debit_note_pdf(dn_id: UUID, db: DBSession, user: AuthUser, hide: str |
         "grand_total": inr(dn.total_amount), "notes": dn.notes,
     }
     return _pdf(await _company(db, user.company_id), doc, "DebitNote", dn.debit_note_number, hide=hide)
+
+
+# ── Retail ────────────────────────────────────────────────────────────────────
+
+def _retail_lines(items) -> list[dict]:
+    return [
+        {
+            "description": i.description, "sub": None, "hsn": i.hsn_code, "qty": qty(i.quantity), "unit": "Pcs",
+            "rate": inr(i.unit_price),
+            "discount": qty(Decimal(100) - (i.net_amount / i.gross_amount * 100)) if i.gross_amount and i.discount_amount else None,
+            "amount": inr(i.net_amount),
+        }
+        for i in items
+    ]
+
+
+def _retail_totals(doc) -> list[tuple[str, str]]:
+    rows = [("MRP value", inr(doc.gross_amount))]
+    if doc.discount_amount:
+        rows.append(("Discount", f"- {inr(doc.discount_amount)}"))
+    rows += [("Taxable value", inr(doc.taxable_amount)), ("CGST", inr(doc.cgst_amount)), ("SGST", inr(doc.sgst_amount))]
+    if doc.round_off:
+        rows.append(("Round off", inr(doc.round_off)))
+    return rows
+
+
+def _retail_party(customer) -> list[dict]:
+    if not customer:
+        return [{"label": "Customer", "name": "Walk-in customer", "lines": []}]
+    lines = [f"Mobile {customer.mobile}"]
+    address = ", ".join(p for p in (customer.billing_address, customer.city, customer.state, customer.pincode) if p)
+    if address:
+        lines.append(address)
+    return [{"label": "Customer", "name": customer.name, "lines": lines}]
+
+
+@router.get("/retail-invoices/{invoice_id}/pdf")
+async def retail_invoice_pdf(invoice_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
+    user.require("retail.view")
+    from app.services.retail import RetailService
+    inv = await RetailService(db).get_invoice(invoice_id, user.company_id)
+    if not inv:
+        raise HTTPException(404, "Bill not found")
+    meta = [("Payment", "Cash" if inv.payment_mode == "cash" else "Credit"),
+            ("Status", inv.payment_status.replace("_", " ").title())]
+    if inv.payment_mode == "credit":
+        meta += [("Paid", inr(inv.amount_paid)), ("Balance due", inr(inv.total_amount - inv.amount_paid))]
+        if inv.due_date:
+            meta.append(("Due date", date_text(inv.due_date)))
+    doc = {
+        "title": "Tax invoice", "number": inv.invoice_number, "date": date_text(inv.invoice_date),
+        "status": "cancelled" if inv.status == "cancelled" else None, "meta": meta,
+        "parties": _retail_party(inv.customer), "lines": _retail_lines(inv.items),
+        "totals": _retail_totals(inv), "grand_total": inr(inv.total_amount),
+        "notes": "Prices are inclusive of GST." + (f" {inv.notes}" if inv.notes else ""),
+    }
+    return _pdf(await _company(db, user.company_id), doc, "RetailInvoice", inv.invoice_number, hide=hide)
+
+
+@router.get("/retail-estimates/{estimate_id}/pdf")
+async def retail_estimate_pdf(estimate_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
+    user.require("retail.view")
+    from app.services.retail import RetailService
+    est = await RetailService(db).get_estimate(estimate_id, user.company_id)
+    if not est:
+        raise HTTPException(404, "Estimate not found")
+    doc = {
+        "title": "Estimate", "number": est.estimate_number, "date": date_text(est.estimate_date),
+        "status": RetailService.estimate_status(est), "meta": [("Valid until", date_text(est.valid_until))],
+        "parties": _retail_party(est.customer), "lines": _retail_lines(est.items),
+        "totals": _retail_totals(est), "grand_total": inr(est.total_amount),
+        "notes": "Prices are inclusive of GST. This is an estimate, not a bill." + (f" {est.notes}" if est.notes else ""),
+    }
+    return _pdf(await _company(db, user.company_id), doc, "RetailEstimate", est.estimate_number, hide=hide)

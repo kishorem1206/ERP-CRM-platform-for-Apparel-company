@@ -919,8 +919,8 @@ class ProductionService:
         for ac in body.additional_costs:
             self.db.add(StyleAdditionalCost(
                 style_id=s.id, cost_type=ac.cost_type, description=ac.description,
-                amount=ac.amount, basis=ac.basis, party_vendor_id=ac.party_vendor_id,
-                notes=ac.notes, created_at=now,
+                amount=ac.amount, basis=normalize_cost_basis(ac.basis), tds_pct=ac.tds_pct,
+                party_vendor_id=ac.party_vendor_id, notes=ac.notes, created_at=now,
             ))
 
         await self.db.flush()
@@ -983,7 +983,7 @@ class ProductionService:
                                   "excess_pct": x.excess_pct, "consumption_stage": x.consumption_stage,
                                   "notes": x.notes} for x in source.packing_materials],
             additional_costs=[{"cost_type": x.cost_type, "description": x.description, "amount": x.amount,
-                                 "basis": x.basis, "party_vendor_id": x.party_vendor_id, "notes": x.notes}
+                                 "basis": x.basis, "tds_pct": x.tds_pct, "party_vendor_id": x.party_vendor_id, "notes": x.notes}
                                 for x in source.additional_costs],
         )
         return await self.create_style(payload, company_id, user_id)
@@ -1102,8 +1102,8 @@ class ProductionService:
         for ac in body.additional_costs:
             self.db.add(StyleAdditionalCost(
                 style_id=style_id, cost_type=ac.cost_type, description=ac.description,
-                amount=ac.amount, basis=ac.basis, party_vendor_id=ac.party_vendor_id,
-                notes=ac.notes, created_at=now,
+                amount=ac.amount, basis=normalize_cost_basis(ac.basis), tds_pct=ac.tds_pct,
+                party_vendor_id=ac.party_vendor_id, notes=ac.notes, created_at=now,
             ))
 
         await self.db.flush()
@@ -1551,7 +1551,7 @@ class ProductionService:
                     production_lot_id=lot.id, style_additional_cost_id=ac.id,
                     cost_type=ac.cost_type, description=ac.description,
                     planned_amount=planned_cost(basis, ac.amount, body.planned_qty, target_sp),
-                    rate=ac.amount, basis=basis,
+                    rate=ac.amount, basis=basis, tds_pct=ac.tds_pct,
                     party_vendor_id=ac.party_vendor_id, notes=ac.notes,
                     created_at=now,
                 ))
@@ -1561,7 +1561,7 @@ class ProductionService:
             self.db.add(LotAdditionalCost(
                 production_lot_id=lot.id, cost_type=ac.cost_type, description=ac.description,
                 planned_amount=planned_cost(basis, ac.rate, body.planned_qty, target_sp) if ac.rate is not None else ac.planned_amount,
-                rate=ac.rate, actual_amount=ac.actual_amount, basis=basis,
+                rate=ac.rate, actual_amount=ac.actual_amount, basis=basis, tds_pct=ac.tds_pct,
                 party_vendor_id=ac.party_vendor_id, notes=ac.notes, created_at=now,
             ))
 
@@ -1598,7 +1598,10 @@ class ProductionService:
                 self.db.add(lpc)
                 await self.db.flush()
                 for psz in pc.sizes:
-                    self.db.add(LotPartSize(lot_part_colour_id=lpc.id, size_id=psz.size_id, planned_qty=psz.planned_qty, sort_order=0))
+                    self.db.add(LotPartSize(
+                        lot_part_colour_id=lpc.id, size_id=psz.size_id, sort_order=0,
+                        planned_qty=psz.planned_qty or resolved_size_qty.get(psz.size_id, 0), weight_g=psz.weight_g,
+                    ))
         elif style:
             for spc in style.part_colours:
                 lpc = LotPartColour(
@@ -1607,9 +1610,14 @@ class ProductionService:
                 )
                 self.db.add(lpc)
                 await self.db.flush()
+                # The style gives grams per piece for this part and size; the
+                # lot's own size plan gives how many pieces.
                 for ssz in spc.sizes:
                     if ssz.quantity is not None:
-                        self.db.add(LotPartSize(lot_part_colour_id=lpc.id, size_id=ssz.size_id, planned_qty=int(ssz.quantity), sort_order=ssz.sort_order))
+                        self.db.add(LotPartSize(
+                            lot_part_colour_id=lpc.id, size_id=ssz.size_id, sort_order=ssz.sort_order,
+                            planned_qty=resolved_size_qty.get(ssz.size_id, 0), weight_g=ssz.quantity,
+                        ))
 
         if style:
             trims_by_process_seq = await self._copy_style_materials(
@@ -2601,7 +2609,7 @@ class ProductionService:
         )
         cost = LotAdditionalCost(
             production_lot_id=lot_id, cost_type=body.cost_type, description=body.description,
-            planned_amount=planned, rate=body.rate, actual_amount=body.actual_amount, basis=basis,
+            planned_amount=planned, rate=body.rate, actual_amount=body.actual_amount, basis=basis, tds_pct=body.tds_pct,
             party_vendor_id=body.party_vendor_id, notes=body.notes, created_at=datetime.now(timezone.utc),
         )
         self.db.add(cost)
@@ -3253,13 +3261,31 @@ class ProductionService:
         # per saleable piece — recorded output changes both first_quality_qty
         # and, at the margin, the cost this output contributed, so the actual
         # cost/piece is worth re-syncing to Inventory on every output.
+        per_piece: Decimal | None = None
         if lot:
             full_lot = await self.get_lot(lot.id, company_id)
             if full_lot:
                 cost_summary = compute_lot_cost_summary(full_lot)
-                if cost_summary.cost_per_first_quality_piece is not None:
-                    await self._sync_product_pricing(full_lot, cost_price=cost_summary.cost_per_first_quality_piece)
+                per_piece = cost_summary.cost_per_first_quality_piece
+                if per_piece is not None:
+                    await self._sync_product_pricing(full_lot, cost_price=per_piece)
                     await self.db.flush()
+
+        # Output entered without a cost goes into stock at the lot's actual
+        # cost per piece (else the product's cost price), so finished goods
+        # carry a stock value instead of ₹0.
+        if not body.unit_cost:
+            if per_piece is None:
+                per_piece = (await self.db.execute(
+                    select(Product.cost_price).where(Product.id == body.product_id)
+                )).scalar_one_or_none()
+            if per_piece:
+                unit_cost = Decimal(per_piece).quantize(Decimal("0.01"))
+                output.unit_cost = unit_cost
+                output.total_cost = (body.quantity * unit_cost).quantize(Decimal("0.01"))
+                inv_txn.unit_cost = unit_cost
+                inv_txn.total_cost = body.quantity * unit_cost
+                await self.db.flush()
 
         result = await self.db.execute(
             select(ProductionOutput).where(ProductionOutput.id == output.id)
