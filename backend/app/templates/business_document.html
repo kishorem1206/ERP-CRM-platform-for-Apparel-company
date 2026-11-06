@@ -56,7 +56,7 @@
     <div class="title-block">
       <p class="doc-title">{{ doc.title }}</p>
       <div class="small"><strong>No.</strong> {{ doc.number }}</div>
-      <div class="small"><strong>Date</strong> {{ doc.date }}</div>
+      {% if doc.date %}<div class="small"><strong>Date</strong> {{ doc.date }}</div>{% endif %}
       {% if doc.status %}<span class="status">{{ doc.status }}</span>{% endif %}
     </div>
   </div>

@@ -18,6 +18,7 @@ export default function Page() {
       status={data?.status}
       backHref="/sales/quotations"
       pdfPath={`/documents/quotations/${id}/pdf`}
+      pdfFields={[{ key: "date", label: "Quotation date" }, { key: "valid_until", label: "Valid until" }]}
       downloadName={`Quotation_${data?.quotation_number ?? id}.pdf`}
       loading={isLoading}
       error={isError}

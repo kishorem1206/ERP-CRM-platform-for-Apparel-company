@@ -891,7 +891,7 @@ function AddActivityModal({
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Assign To</label>
-            <SearchableSelect
+            <SearchableSelect clearable
               options={users.map((u) => ({ value: u.id, label: u.name }))}
               value={form.assigned_to}
               onChange={(v) => set("assigned_to", v)}
@@ -1507,7 +1507,7 @@ export default function LeadDetailPage() {
             {/* Assignment */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Assigned To</label>
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={assignableUsers.map((u) => ({ value: u.id, label: u.name, meta: u.email }))}
                 value={lead.assigned_to ?? ""}
                 onChange={(v) => assignMutation.mutate(v || null)}
@@ -1709,10 +1709,10 @@ export default function LeadDetailPage() {
             {/* Source */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Source</label>
-              <Can perm="crm.edit"><SearchableSelect
+              <Can perm="crm.edit"><SearchableSelect clearable
                 options={sources.map((s) => ({ value: s.id, label: s.name }))}
                 value={lead.source_id ?? ""}
-                onChange={(v) => updateMutation.mutate({ source_id: v })}
+                onChange={(v) => updateMutation.mutate({ source_id: v || null })}
                 placeholder="Select source…"
                 accent={INDIGO}
               /></Can>
@@ -1721,10 +1721,10 @@ export default function LeadDetailPage() {
             {/* Type */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Type</label>
-              <Can perm="crm.edit"><SearchableSelect
+              <Can perm="crm.edit"><SearchableSelect clearable
                 options={types.map((t) => ({ value: t.id, label: t.name }))}
                 value={lead.type_id ?? ""}
-                onChange={(v) => updateMutation.mutate({ type_id: v })}
+                onChange={(v) => updateMutation.mutate({ type_id: v || null })}
                 placeholder="Select type…"
                 accent={INDIGO}
               /></Can>

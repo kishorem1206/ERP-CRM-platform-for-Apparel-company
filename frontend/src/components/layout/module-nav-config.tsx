@@ -63,6 +63,7 @@ export const MODULE_NAV: ModuleNavEntry[] = [
     createPermission: "sales.create",
     editPermission: "sales.edit",
     items: [
+      { label: "Customers", href: "/sales/customers", icon: Users },
       { label: "Quotations", href: "/sales/quotations", icon: FileText },
       { label: "Sales Orders", href: "/sales/orders", icon: ShoppingCart },
       { label: "Delivery Challans", href: "/sales/deliveries", icon: Truck },
@@ -163,7 +164,7 @@ export { Star as SavedFilterIcon };
  */
 export function requiredPathPermission(pathname: string): string | undefined {
   if (/^\/inventory\/stock-movement$/.test(pathname)) return "inventory.create";
-  if (/^\/crm\/customers\/new$/.test(pathname)) return "sales.create";
+  if (/^\/(crm|sales)\/customers\/new$/.test(pathname)) return "sales.create";
   const mod = findActiveModule(pathname);
   if (/\/new(\/|$)/.test(pathname)) return mod.createPermission;
   if (/\/edit(\/|$)/.test(pathname)) return mod.editPermission;

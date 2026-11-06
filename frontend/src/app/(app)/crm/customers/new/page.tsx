@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useCustomersBase } from "@/lib/customers-base";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Plus, Trash2, Star, Building2,
@@ -137,6 +138,7 @@ const TABS = [
 
 export default function NewCustomerPage() {
   const router = useRouter();
+  const customersBase = useCustomersBase();
   const qc = useQueryClient();
   const [tab, setTab] = useState("company");
   const [error, setError] = useState("");
@@ -188,7 +190,7 @@ export default function NewCustomerPage() {
     mutationFn: (body: Record<string, unknown>) => api.post("/sales/customers", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["customers"] });
-      router.push("/crm/customers");
+      router.push(customersBase);
     },
     onError: (e: unknown) => {
       const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
@@ -240,7 +242,9 @@ export default function NewCustomerPage() {
       tds_percent: parseFloat(form.tds_percent) || 0,
       due_days: parseInt(form.due_days) || 0,
       agent_commission_percent: parseFloat(form.agent_commission_percent) || 0,
-      addresses: addresses.filter((a) => a.line1 || a.city || a.pincode),
+      addresses: addresses
+        .filter((a) => a.line1 || a.city || a.pincode)
+        .map((a) => ({ ...a, state_code: parseInt(a.state_code, 10) || null })),
       contacts: contacts.filter((c) => c.name.trim()),
       details: details.filter((d) => d.label.trim() || d.value.trim()),
     });
@@ -648,7 +652,7 @@ export default function NewCustomerPage() {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => router.push("/crm/customers")}
+            onClick={() => router.push(customersBase)}
             className="text-muted-foreground hover:text-foreground transition-colors"
           >
             <ArrowLeft className="h-5 w-5" />
@@ -662,7 +666,7 @@ export default function NewCustomerPage() {
           {error && <p className="text-xs text-destructive max-w-xs text-right">{error}</p>}
           <button
             type="button"
-            onClick={() => router.push("/crm/customers")}
+            onClick={() => router.push(customersBase)}
             className="px-4 py-1.5 rounded-md border border-input text-sm hover:bg-muted transition-colors"
           >
             Cancel

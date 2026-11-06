@@ -209,7 +209,7 @@ export default function NewActivityPage() {
             <SectionLabel label="LINK & SCHEDULE" />
 
             <Field label="Linked Lead">
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={leads.map((l) => ({ value: l.id, label: l.title }))}
                 value={form.lead_id}
                 onChange={(v) => set("lead_id", v)}

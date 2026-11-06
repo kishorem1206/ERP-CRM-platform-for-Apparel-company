@@ -1358,7 +1358,7 @@ function AssignmentRuleModal({
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">If source is (optional)</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             value={sourceId} onChange={setSourceId} accent={INDIGO}
             placeholder="Any source"
             options={sources.map((s) => ({ value: s.id, label: s.name }))}
@@ -1375,7 +1375,7 @@ function AssignmentRuleModal({
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">And location tier is (optional)</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             value={locationTier} onChange={setLocationTier} accent={INDIGO}
             placeholder="Any location"
             options={[

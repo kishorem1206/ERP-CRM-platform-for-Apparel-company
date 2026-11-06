@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useCustomersBase } from "@/lib/customers-base";
 import { useQuery } from "@tanstack/react-query";
 import { Users, Plus, Search, Edit2 } from "lucide-react";
 import api from "@/lib/api";
@@ -59,6 +60,7 @@ const TYPE_FILTERS = [
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function CustomersPage() {
   const router = useRouter();
+  const customersBase = useCustomersBase();
   const [typeFilter, setTypeFilter] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -99,7 +101,7 @@ export default function CustomersPage() {
       header: "",
       render: (row) => (
         <button
-          onClick={(e) => { e.stopPropagation(); router.push(`/crm/customers/${row.id as string}`); }}
+          onClick={(e) => { e.stopPropagation(); router.push(`${customersBase}/${row.id as string}`); }}
           className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
           title="Edit"
         >
@@ -119,7 +121,7 @@ export default function CustomersPage() {
           <p className="text-sm text-muted-foreground mt-1">Manage buyer profiles, credit terms, and contact details.</p>
         </div>
         <Can perm="sales.create"><button
-          onClick={() => router.push("/crm/customers/new")}
+          onClick={() => router.push(`${customersBase}/new`)}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
           style={{ background: INDIGO }}
         >
@@ -169,7 +171,7 @@ export default function CustomersPage() {
             data={customers as unknown as Record<string, unknown>[]}
             loading={isLoading}
             emptyMessage="No customers found — click New Customer to add one"
-            onRowClick={(row) => router.push(`/crm/customers/${row.id as string}`)}
+            onRowClick={(row) => router.push(`${customersBase}/${row.id as string}`)}
           />
         </div>
       </div>

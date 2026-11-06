@@ -229,7 +229,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
   });
   const products = useQuery({
     queryKey: ["products", "ref"],
-    queryFn: async () => (await api.get("/products", { params: { page_size: 200 } })).data.data as { id: string; name: string; code: string }[],
+    queryFn: async () => (await api.get("/products", { params: { page_size: 200 } })).data.data as { id: string; name: string; code: string; product_type: string }[],
   });
   const packingProducts = useQuery({
     queryKey: ["products", "packing", "ref"],
@@ -810,7 +810,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           className="flex-1"
         />
         <div className="w-44 shrink-0">
-          <SearchableSelect
+          <SearchableSelect clearable
             value={t.trim_type}
             onChange={(v) => updateTrim(t.key, { trim_type: v })}
             placeholder="Trim type"
@@ -859,7 +859,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
             ...(colours.data ?? []).map((c) => ({ value: c.id, label: c.name })),
           ]}
         />
-        <SearchableSelect
+        <SearchableSelect clearable
           value={t.lot_id}
           onChange={(v) => updateTrim(t.key, { lot_id: v })}
           placeholder="Link trim lot (optional)"
@@ -995,16 +995,20 @@ export function StyleForm({ styleId }: { styleId?: string }) {
             </Field>
           </div>
           <Field label="Link to Product" hint="Leave blank to auto-create a new sellable Product for this Style. Linking carries over GST/HSN from the Product master.">
-            <SearchableSelect
+            <SearchableSelect clearable
               value={productId}
               onChange={setProductId}
               placeholder="— Auto-create a new Product —"
               accent={INDIGO}
-              options={(products.data ?? []).map((p) => ({ value: p.id, label: p.name, meta: p.code }))}
+              // A style makes finished goods; keep a current link of another
+              // type listed so it can be seen and cleared.
+              options={(products.data ?? [])
+                .filter((p) => p.product_type === "finished_good" || p.id === productId)
+                .map((p) => ({ value: p.id, label: p.name, meta: p.code }))}
             />
-            {isEdit && linkedProduct && (
+            {isEdit && linkedProduct && productId && (
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Linked Product: <span className="font-mono">{linkedProduct.code ?? "—"}</span>
+                Linked Product: <span className="font-mono">{(products.data ?? []).find((p) => p.id === productId)?.code ?? linkedProduct.code ?? "—"}</span>
                 {linkedProduct.gst_rate != null && <> · GST {linkedProduct.gst_rate}%</>}
               </p>
             )}
@@ -1200,7 +1204,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                 <div className="flex items-start gap-2">
                   <div className="grid grid-cols-4 gap-2 flex-1">
                     <Input value={y.yarn_name} onChange={(e) => updateYarn(y.key, { yarn_name: e.target.value })} placeholder="Yarn name, e.g. 30s VL" className="col-span-2" />
-                    <SearchableSelect
+                    <SearchableSelect clearable
                       value={y.lot_id}
                       onChange={(v) => updateYarn(y.key, { lot_id: v })}
                       placeholder="Link yarn lot (optional)"
@@ -1402,7 +1406,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                 <div className="p-3 space-y-3">
                   <div className="grid grid-cols-2 gap-3">
                     <Field label="Process (from master)" hint="Optional — select to auto-fill the name and blank fields below from a reusable default; your own entries are never overwritten">
-                      <SearchableSelect
+                      <SearchableSelect clearable
                         value={p.process_master_id}
                         onChange={(v) => selectProcessMaster(p.key, v)}
                         placeholder="— Custom / no master —"
@@ -1544,7 +1548,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   <Input type="number" step="0.01" value={a.amount} onChange={(e) => updateAdditionalCost(a.key, { amount: e.target.value })} placeholder="Amount (₹)" />
                   <Input value={a.basis} onChange={(e) => updateAdditionalCost(a.key, { basis: e.target.value })} placeholder="Basis, e.g. per_piece, lumpsum" />
                   {a.cost_type === "agent_commission" && (
-                    <SearchableSelect
+                    <SearchableSelect clearable
                       value={a.party_vendor_id}
                       onChange={(v) => updateAdditionalCost(a.key, { party_vendor_id: v })}
                       placeholder="Select Agent"

@@ -352,9 +352,9 @@ export function QuoteFormModal({
     setTitleError("");
     mutation.mutate({
       title: form.title.trim(),
-      lead_id: form.lead_id || undefined,
-      person_id: form.person_id || undefined,
-      organization_id: form.organization_id || undefined,
+      lead_id: form.lead_id || null,
+      person_id: form.person_id || null,
+      organization_id: form.organization_id || null,
       valid_until: form.valid_until || undefined,
       discount_percent: parseFloat(form.discount_percent) || 0,
       notes: form.notes || undefined,
@@ -405,7 +405,7 @@ export function QuoteFormModal({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Lead</label>
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={leads.map((l) => ({ value: l.id, label: l.title ?? l.id }))}
                 value={form.lead_id}
                 onChange={(v) => setField("lead_id", v)}
@@ -415,7 +415,7 @@ export function QuoteFormModal({
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Person</label>
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={persons.map((p) => ({ value: p.id, label: p.full_name ?? p.name ?? p.id }))}
                 value={form.person_id}
                 onChange={(v) => setField("person_id", v)}
@@ -425,7 +425,7 @@ export function QuoteFormModal({
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Organization</label>
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={orgs.map((o) => ({ value: o.id, label: o.name ?? o.id }))}
                 value={form.organization_id}
                 onChange={(v) => setField("organization_id", v)}

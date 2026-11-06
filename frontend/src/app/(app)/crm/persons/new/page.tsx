@@ -218,7 +218,7 @@ export default function NewPersonPage() {
             </div>
 
             <Field label="Organization">
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={orgs.map((o) => ({ value: o.id, label: o.name }))}
                 value={form.org_id}
                 onChange={(v) => set("org_id", v)}

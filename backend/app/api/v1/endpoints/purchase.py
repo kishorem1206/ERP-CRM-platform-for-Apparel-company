@@ -13,7 +13,7 @@ from app.schemas.purchase import (
     PurchaseEntryUpdate,
     PurchaseEntryCreate, PurchaseEntryOut,
     POCloseRequest, PurchaseOrderCreate, PurchaseOrderOut, PurchaseOrderUpdate,
-    VendorCreate, VendorOut, VendorUpdate,
+    VendorCreate, VendorOut, VendorTypeCreate, VendorUpdate,
     GRNItemOut, POItemOut,
 )
 from app.services.purchase import PurchaseService
@@ -94,6 +94,19 @@ def _entry_out(e: PurchaseEntry) -> PurchaseEntryOut:
 
 
 # ── Vendors ─────────────────────────────────────────────────────────────────
+
+@router.get("/vendor-types")
+async def list_vendor_types(db: DBSession, user: AuthUser):
+    user.require("purchase.view")
+    return ApiResponse(success=True, data=await PurchaseService(db).list_vendor_types(user.company_id))
+
+
+@router.post("/vendor-types", status_code=201)
+async def create_vendor_type(body: VendorTypeCreate, db: DBSession, user: AuthUser):
+    user.require("purchase.create")
+    created = await PurchaseService(db).create_vendor_type(body.name, user.company_id)
+    return ApiResponse(success=True, data=created, message="Vendor type added")
+
 
 @router.get("/vendors")
 async def list_vendors(

@@ -186,7 +186,7 @@ function EditPersonModal({
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Organization</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             options={orgs.map((o) => ({ value: o.id, label: o.name }))}
             value={form.org_id}
             onChange={(v) => set("org_id", v)}

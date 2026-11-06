@@ -3,6 +3,7 @@
 Each route reuses the same GET handler the detail page uses, so the PDF can't
 drift from what the screen shows.
 """
+import re
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -77,7 +78,20 @@ async def _customer_lines(db, customer_id) -> list[str]:
     return [", ".join(p for p in parts if p)] if any(parts) else []
 
 
-def _pdf(company: dict, doc: dict, title: str, number: str) -> Response:
+def _field_key(label: str) -> str:
+    """"Expected delivery" -> "expected_delivery": how a PDF's optional rows are named."""
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+
+
+def _pdf(company: dict, doc: dict, title: str, number: str, hide: str | None = None) -> Response:
+    """Render the PDF. `hide` lists rows to leave off (comma-separated keys
+    of the detail rows, e.g. "expected_delivery", or "date" for the header
+    date) — chosen with the tickboxes next to the PDF."""
+    hidden = {h.strip() for h in (hide or "").split(",") if h.strip()}
+    if hidden:
+        doc = {**doc, "meta": [m for m in (doc.get("meta") or []) if _field_key(m[0]) not in hidden]}
+        if "date" in hidden:
+            doc["date"] = None
     pdf = render_business_document_pdf(company, doc)
     return Response(
         content=pdf,
@@ -87,7 +101,7 @@ def _pdf(company: dict, doc: dict, title: str, number: str) -> Response:
 
 
 @router.get("/quotations/{quotation_id}/pdf")
-async def quotation_pdf(quotation_id: UUID, db: DBSession, user: AuthUser):
+async def quotation_pdf(quotation_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("sales.view")
     q = (await get_quotation(quotation_id, db, user)).data
     products, variants, units = await _product_names(
@@ -113,11 +127,11 @@ async def quotation_pdf(quotation_id: UUID, db: DBSession, user: AuthUser):
         + ([("Discount", inr(q.discount_amount))] if q.discount_amount else []),
         "grand_total": inr(q.total_amount), "notes": q.notes, "terms": q.terms,
     }
-    return _pdf(await _company(db, user.company_id), doc, "Quotation", q.quotation_number)
+    return _pdf(await _company(db, user.company_id), doc, "Quotation", q.quotation_number, hide=hide)
 
 
 @router.get("/sales-orders/{so_id}/pdf")
-async def sales_order_pdf(so_id: UUID, db: DBSession, user: AuthUser):
+async def sales_order_pdf(so_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("sales.view")
     so = (await get_sales_order(so_id, db, user)).data
     products, variants, units = await _product_names(
@@ -145,11 +159,11 @@ async def sales_order_pdf(so_id: UUID, db: DBSession, user: AuthUser):
         + ([("Discount", inr(so.discount_amount))] if so.discount_amount else []),
         "grand_total": inr(so.total_amount), "notes": so.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "SalesOrder", so.order_number)
+    return _pdf(await _company(db, user.company_id), doc, "SalesOrder", so.order_number, hide=hide)
 
 
 @router.get("/deliveries/{delivery_id}/pdf")
-async def delivery_challan_pdf(delivery_id: UUID, db: DBSession, user: AuthUser):
+async def delivery_challan_pdf(delivery_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("sales.view")
     d = (await get_delivery(delivery_id, db, user)).data
     products, variants, units = await _product_names(
@@ -180,11 +194,11 @@ async def delivery_challan_pdf(delivery_id: UUID, db: DBSession, user: AuthUser)
         "parties": [{"label": "Deliver to", "name": d.customer_name, "lines": await _customer_lines(db, d.customer_id)}],
         "lines": items, "totals": [], "grand_total": None, "notes": d.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "DeliveryChallan", d.delivery_number)
+    return _pdf(await _company(db, user.company_id), doc, "DeliveryChallan", d.delivery_number, hide=hide)
 
 
 @router.get("/returns/{return_id}/pdf")
-async def sales_return_pdf(return_id: UUID, db: DBSession, user: AuthUser):
+async def sales_return_pdf(return_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("sales.view")
     r = (await get_sales_return(return_id, db, user)).data
     products, variants, units = await _product_names(
@@ -207,11 +221,11 @@ async def sales_return_pdf(return_id: UUID, db: DBSession, user: AuthUser):
         "parties": [{"label": "Customer", "name": r.customer_name, "lines": await _customer_lines(db, r.customer_id)}],
         "lines": items, "totals": [], "grand_total": None, "notes": r.reason,
     }
-    return _pdf(await _company(db, user.company_id), doc, "SalesReturn", r.return_number)
+    return _pdf(await _company(db, user.company_id), doc, "SalesReturn", r.return_number, hide=hide)
 
 
 @router.get("/invoices/{invoice_id}/pdf")
-async def invoice_pdf(invoice_id: UUID, db: DBSession, user: AuthUser):
+async def invoice_pdf(invoice_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("sales.view")
     inv = (await get_invoice(invoice_id, db, user)).data
     items: list[dict] = []
@@ -254,11 +268,11 @@ async def invoice_pdf(invoice_id: UUID, db: DBSession, user: AuthUser):
         + [("Paid", inr(inv.paid_amount)), ("Balance due", inr(inv.balance_amount))],
         "grand_total": inr(inv.total_amount), "notes": inv.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "Invoice", inv.invoice_number)
+    return _pdf(await _company(db, user.company_id), doc, "Invoice", inv.invoice_number, hide=hide)
 
 
 @router.get("/purchase-orders/{po_id}/pdf")
-async def purchase_order_pdf(po_id: UUID, db: DBSession, user: AuthUser):
+async def purchase_order_pdf(po_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("purchase.view")
     po = (await get_purchase_order(po_id, db, user)).data
     products, variants, units = await _product_names(
@@ -285,11 +299,11 @@ async def purchase_order_pdf(po_id: UUID, db: DBSession, user: AuthUser):
         "totals": _tax_totals(po.taxable_amount, po.cgst_amount, po.sgst_amount, po.igst_amount, po.total_amount),
         "grand_total": inr(po.total_amount), "notes": po.notes, "terms": po.terms,
     }
-    return _pdf(await _company(db, user.company_id), doc, "PurchaseOrder", po.po_number)
+    return _pdf(await _company(db, user.company_id), doc, "PurchaseOrder", po.po_number, hide=hide)
 
 
 @router.get("/goods-receipts/{entry_id}/pdf")
-async def goods_receipt_pdf(entry_id: UUID, db: DBSession, user: AuthUser):
+async def goods_receipt_pdf(entry_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("purchase.view")
     e = (await get_purchase_entry(entry_id, db, user)).data
     products, variants, units = await _product_names(
@@ -322,7 +336,7 @@ async def goods_receipt_pdf(entry_id: UUID, db: DBSession, user: AuthUser):
         "totals": [("Taxable value", inr(e.taxable_amount))],
         "grand_total": inr(e.total_amount), "notes": e.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "GoodsReceipt", e.entry_number)
+    return _pdf(await _company(db, user.company_id), doc, "GoodsReceipt", e.entry_number, hide=hide)
 
 
 def _allocation_lines(allocations, labels: dict, prefix: str) -> list[dict]:
@@ -337,7 +351,7 @@ def _allocation_lines(allocations, labels: dict, prefix: str) -> list[dict]:
 
 
 @router.get("/payments/{payment_id}/pdf")
-async def payment_receipt_pdf(payment_id: UUID, db: DBSession, user: AuthUser):
+async def payment_receipt_pdf(payment_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("finance.view")
     p = (await get_payment(payment_id, db, user)).data
     invoice_ids = [a.invoice_id for a in p.allocations]
@@ -362,11 +376,11 @@ async def payment_receipt_pdf(payment_id: UUID, db: DBSession, user: AuthUser):
         "totals": [("Amount received", inr(p.amount))],
         "grand_total": inr(p.amount), "notes": p.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "PaymentReceipt", p.payment_number)
+    return _pdf(await _company(db, user.company_id), doc, "PaymentReceipt", p.payment_number, hide=hide)
 
 
 @router.get("/vendor-payments/{payment_id}/pdf")
-async def vendor_payment_voucher_pdf(payment_id: UUID, db: DBSession, user: AuthUser):
+async def vendor_payment_voucher_pdf(payment_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("finance.view")
     p = (await get_vendor_payment(payment_id, db, user)).data
     entry_ids = [a.purchase_entry_id for a in p.allocations]
@@ -391,11 +405,11 @@ async def vendor_payment_voucher_pdf(payment_id: UUID, db: DBSession, user: Auth
         "totals": [("Amount paid", inr(p.amount))],
         "grand_total": inr(p.amount), "notes": p.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "PaymentVoucher", p.payment_number)
+    return _pdf(await _company(db, user.company_id), doc, "PaymentVoucher", p.payment_number, hide=hide)
 
 
 @router.get("/credit-notes/{cn_id}/pdf")
-async def credit_note_pdf(cn_id: UUID, db: DBSession, user: AuthUser):
+async def credit_note_pdf(cn_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("finance.view")
     cn = (await get_credit_note(cn_id, db, user)).data
     invoice_number = None
@@ -411,11 +425,11 @@ async def credit_note_pdf(cn_id: UUID, db: DBSession, user: AuthUser):
         "totals": _tax_totals(cn.taxable_amount, cn.cgst_amount, cn.sgst_amount, cn.igst_amount, cn.total_amount),
         "grand_total": inr(cn.total_amount), "notes": cn.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "CreditNote", cn.credit_note_number)
+    return _pdf(await _company(db, user.company_id), doc, "CreditNote", cn.credit_note_number, hide=hide)
 
 
 @router.get("/debit-notes/{dn_id}/pdf")
-async def debit_note_pdf(dn_id: UUID, db: DBSession, user: AuthUser):
+async def debit_note_pdf(dn_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
     user.require("finance.view")
     dn = (await get_debit_note(dn_id, db, user)).data
     entry_number = None
@@ -431,4 +445,4 @@ async def debit_note_pdf(dn_id: UUID, db: DBSession, user: AuthUser):
         "totals": [],
         "grand_total": inr(dn.total_amount), "notes": dn.notes,
     }
-    return _pdf(await _company(db, user.company_id), doc, "DebitNote", dn.debit_note_number)
+    return _pdf(await _company(db, user.company_id), doc, "DebitNote", dn.debit_note_number, hide=hide)

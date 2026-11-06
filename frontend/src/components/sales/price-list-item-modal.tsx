@@ -131,7 +131,7 @@ export function PriceListItemModal({
         {variantOptions.length > 0 && (
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Variant / SKU</label>
-            <SearchableSelect
+            <SearchableSelect clearable
               options={variantOptions}
               value={variantId}
               onChange={setVariantId}
@@ -144,7 +144,7 @@ export function PriceListItemModal({
           <label className="block text-xs font-medium text-muted-foreground mb-1">
             Customer-Specific Override
           </label>
-          <SearchableSelect
+          <SearchableSelect clearable
             options={customers}
             value={customerId}
             onChange={setCustomerId}

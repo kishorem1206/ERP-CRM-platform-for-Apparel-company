@@ -263,7 +263,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
                 <button type="button" onClick={() => setCosts((r) => r.filter((x) => x.key !== c.key))} className="text-muted-foreground px-1">×</button>
                 {c.cost_type === "agent_commission" && (
                   <div className="w-full">
-                    <SearchableSelect
+                    <SearchableSelect clearable
                       value={c.party_vendor_id}
                       onChange={(v) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, party_vendor_id: v } : x))}
                       placeholder="Select Agent"

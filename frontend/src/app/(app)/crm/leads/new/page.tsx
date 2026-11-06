@@ -260,7 +260,7 @@ export default function NewLeadPage() {
             </Field>
 
             <Field label="Organization">
-              <SearchableSelect
+              <SearchableSelect clearable
                 options={orgs.map((o) => ({ value: o.id, label: o.name }))}
                 value={form.org_id}
                 onChange={(v) => set("org_id", v)}
@@ -271,7 +271,7 @@ export default function NewLeadPage() {
 
             <div className="grid grid-cols-2 gap-4">
               <Field label="Source">
-                <SearchableSelect
+                <SearchableSelect clearable
                   options={sources.map((s) => ({ value: s.id, label: s.name }))}
                   value={form.source_id}
                   onChange={(v) => set("source_id", v)}
@@ -280,7 +280,7 @@ export default function NewLeadPage() {
                 />
               </Field>
               <Field label="Type">
-                <SearchableSelect
+                <SearchableSelect clearable
                   options={types.map((t) => ({ value: t.id, label: t.name }))}
                   value={form.type_id}
                   onChange={(v) => set("type_id", v)}

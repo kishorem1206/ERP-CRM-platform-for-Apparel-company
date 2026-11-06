@@ -210,7 +210,7 @@ function EditActivityModal({
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Assign To</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             options={users.map((u) => ({ value: u.id, label: u.name }))}
             value={form.assigned_to}
             onChange={(v) => set("assigned_to", v)}

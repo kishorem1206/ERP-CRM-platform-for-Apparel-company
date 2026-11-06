@@ -42,6 +42,8 @@ class VendorContact(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(20))
     email: Mapped[Optional[str]] = mapped_column(String(150))
+    designation: Mapped[Optional[str]] = mapped_column(String(100))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
 
     vendor: Mapped["Vendor"] = relationship(back_populates="contacts")
@@ -56,9 +58,29 @@ class VendorBankDetail(Base):
     account_number: Mapped[Optional[str]] = mapped_column(String(30))
     ifsc: Mapped[Optional[str]] = mapped_column(String(11))
     account_name: Mapped[Optional[str]] = mapped_column(String(100))
+    branch: Mapped[Optional[str]] = mapped_column(String(100))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
 
     vendor: Mapped["Vendor"] = relationship(back_populates="bank_details")
+
+
+# Built in to the app; a company can add more (VendorType). Agents and job
+# workers are looked up by these codes elsewhere, so they can't be renamed.
+BUILTIN_VENDOR_TYPES: dict[str, str] = {
+    "supplier": "Supplier", "job_worker": "Job Worker", "transporter": "Transporter", "agent": "Agent",
+}
+
+
+class VendorType(Base):
+    """A vendor type a company added beyond BUILTIN_VENDOR_TYPES."""
+    __tablename__ = "vendor_types"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class PurchaseOrder(Base):

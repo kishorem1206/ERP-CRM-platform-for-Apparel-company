@@ -1,17 +1,18 @@
 """PurchaseService: vendor master, purchase orders, and GRN (goods receipt)."""
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.business_rules import BusinessRulesError
 from app.models.inventory import InventoryTransaction
 from app.models.purchase import (
-    PurchaseEntry, PurchaseEntryItem, PurchaseOrder, PurchaseOrderItem, Vendor,
-    VendorBankDetail, VendorContact,
+    BUILTIN_VENDOR_TYPES, PurchaseEntry, PurchaseEntryItem, PurchaseOrder, PurchaseOrderItem, Vendor,
+    VendorBankDetail, VendorContact, VendorType,
 )
 from app.schemas.inventory import ReceiveParams
 from app.schemas.purchase import (
@@ -139,7 +140,69 @@ class PurchaseService:
         )
         return result.scalar_one_or_none()
 
+    # ── Vendor types ──────────────────────────────────────────────────────
+
+    async def list_vendor_types(self, company_id: UUID) -> list[dict]:
+        """Built-in types first, then the company's own, by name."""
+        custom = (await self.db.execute(
+            select(VendorType).where(VendorType.company_id == company_id).order_by(VendorType.name)
+        )).scalars().all()
+        return [{"code": c, "name": n, "builtin": True} for c, n in BUILTIN_VENDOR_TYPES.items()] + [
+            {"code": t.code, "name": t.name, "builtin": False} for t in custom
+        ]
+
+    async def create_vendor_type(self, name: str, company_id: UUID) -> dict:
+        name = " ".join(name.split())
+        if not name:
+            raise BusinessRulesError("NAME_REQUIRED", "Type name is required")
+        existing = await self.list_vendor_types(company_id)
+        if any(t["name"].lower() == name.lower() for t in existing):
+            raise BusinessRulesError("DUPLICATE_NAME", f"A vendor type called “{name}” already exists")
+        base = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:20] or "type"
+        codes = {t["code"] for t in existing}
+        code, n = base, 2
+        while code in codes:
+            suffix = f"_{n}"
+            code, n = base[: 20 - len(suffix)] + suffix, n + 1
+        self.db.add(VendorType(company_id=company_id, code=code, name=name, created_at=datetime.now(timezone.utc)))
+        await self.db.flush()
+        return {"code": code, "name": name, "builtin": False}
+
+    async def _check_vendor_type(self, code: str, company_id: UUID) -> None:
+        if code in BUILTIN_VENDOR_TYPES:
+            return
+        found = (await self.db.execute(
+            select(VendorType.id).where(VendorType.company_id == company_id, VendorType.code == code)
+        )).scalar_one_or_none()
+        if not found:
+            raise BusinessRulesError("UNKNOWN_VENDOR_TYPE", f"Unknown vendor type “{code}”")
+
+    def _set_contacts_and_banks(self, vendor_id: UUID, contacts, banks) -> None:
+        """Add contact / bank rows, skipping blank ones; exactly one of each
+        is primary (the first, unless one was marked)."""
+        def primary_index(rows) -> int:
+            return next((i for i, r in enumerate(rows) if r.is_primary), 0)
+
+        if contacts is not None:
+            rows = [c for c in contacts if c.name.strip()]
+            first = primary_index(rows)
+            for i, c in enumerate(rows):
+                data = {k: (v.strip() or None) if isinstance(v, str) else v for k, v in c.model_dump().items()}
+                data["name"] = c.name.strip()
+                data["is_primary"] = i == first
+                self.db.add(VendorContact(vendor_id=vendor_id, **data))
+        if banks is not None:
+            rows = [b for b in banks if (b.bank_name or "").strip() or (b.account_number or "").strip()]
+            first = primary_index(rows)
+            for i, b in enumerate(rows):
+                data = {k: (v.strip() or None) if isinstance(v, str) else v for k, v in b.model_dump().items()}
+                if data.get("ifsc"):
+                    data["ifsc"] = data["ifsc"].upper()
+                data["is_primary"] = i == first
+                self.db.add(VendorBankDetail(vendor_id=vendor_id, **data))
+
     async def create_vendor(self, body: VendorCreate, company_id: UUID, user_id: UUID) -> Vendor:
+        await self._check_vendor_type(body.vendor_type, company_id)
         now = datetime.now(timezone.utc)
         vendor = Vendor(
             company_id=company_id,
@@ -157,11 +220,7 @@ class PurchaseService:
         self.db.add(vendor)
         await self.db.flush()
 
-        for c in body.contacts:
-            self.db.add(VendorContact(vendor_id=vendor.id, **c.model_dump()))
-        for b in body.bank_details:
-            self.db.add(VendorBankDetail(vendor_id=vendor.id, **b.model_dump()))
-
+        self._set_contacts_and_banks(vendor.id, body.contacts, body.bank_details)
         await self.db.flush()
 
         result = await self.db.execute(
@@ -175,11 +234,25 @@ class PurchaseService:
         vendor = await self.get_vendor(vendor_id, company_id)
         if not vendor:
             return None
-        for field, value in body.model_dump(exclude_unset=True).items():
+        updates = body.model_dump(exclude_unset=True, exclude={"contacts", "bank_details"})
+        if updates.get("vendor_type"):
+            await self._check_vendor_type(updates["vendor_type"], company_id)
+        for field, value in updates.items():
             setattr(vendor, field, value)
+        fields = body.model_fields_set
+        if "contacts" in fields and body.contacts is not None:
+            await self.db.execute(delete(VendorContact).where(VendorContact.vendor_id == vendor.id))
+        if "bank_details" in fields and body.bank_details is not None:
+            await self.db.execute(delete(VendorBankDetail).where(VendorBankDetail.vendor_id == vendor.id))
+        self._set_contacts_and_banks(
+            vendor.id,
+            body.contacts if "contacts" in fields else None,
+            body.bank_details if "bank_details" in fields else None,
+        )
         vendor.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
-        return vendor
+        self.db.expire(vendor)
+        return await self.get_vendor(vendor_id, company_id)
 
     # ── Purchase Orders ────────────────────────────────────────────────────
 

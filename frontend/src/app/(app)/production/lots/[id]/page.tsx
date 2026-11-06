@@ -10,6 +10,7 @@ import api from "@/lib/api";
 import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { useCreateMaster } from "@/lib/use-create-master";
+import { useVendorTypeLabel } from "@/lib/vendor-types";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
 
@@ -481,7 +482,7 @@ function AddLotCostModal({ lotId, onClose }: { lotId: string; onClose: () => voi
         {costType === "agent_commission" && (
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Agent</label>
-            <SearchableSelect
+            <SearchableSelect clearable
               value={partyVendorId}
               onChange={setPartyVendorId}
               placeholder="Select Agent"
@@ -958,6 +959,7 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
+  const vendorTypeLabel = useVendorTypeLabel();
   const vendors = useQuery({
     queryKey: ["vendors", "ref"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
@@ -1010,7 +1012,7 @@ function SendToVendorModal({ stage, lotId, onClose }: { stage: Stage; lotId: str
               onChange={setVendorId}
               placeholder="Select job-work vendor"
               accent={INDIGO}
-              options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: v.vendor_type }))}
+              options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: vendorTypeLabel(v.vendor_type) }))}
             />
           </div>
         ) : (
@@ -1145,6 +1147,7 @@ function AddStageModal({ lotId, stages, onClose }: { lotId: string; stages: Stag
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
+  const vendorTypeLabel = useVendorTypeLabel();
   const vendors = useQuery({
     queryKey: ["vendors", "ref"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
@@ -1249,16 +1252,16 @@ function AddStageModal({ lotId, stages, onClose }: { lotId: string; stages: Stag
           <label className="block text-xs font-medium text-muted-foreground mb-2">Assignment (optional)</label>
           <AssignmentTypeToggle value={assignmentType} onChange={setAssignmentType} allowNone />
           {assignmentType === "vendor" && (
-            <SearchableSelect
+            <SearchableSelect clearable
               value={vendorId}
               onChange={setVendorId}
               placeholder="Start typing a vendor"
               accent={INDIGO}
-              options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: v.vendor_type }))}
+              options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: vendorTypeLabel(v.vendor_type) }))}
             />
           )}
           {assignmentType === "internal_worker" && (
-            <SearchableSelect
+            <SearchableSelect clearable
               value={workerId}
               onChange={setWorkerId}
               placeholder="Start typing a worker"
@@ -1393,6 +1396,7 @@ function StartFabricProcessingModal({ lotId, onClose }: { lotId: string; onClose
   const [ratePerKg, setRatePerKg] = useState("");
   const [notes, setNotes] = useState("");
 
+  const vendorTypeLabel = useVendorTypeLabel();
   const vendors = useQuery({
     queryKey: ["vendors", "ref"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
@@ -1435,12 +1439,12 @@ function StartFabricProcessingModal({ lotId, onClose }: { lotId: string; onClose
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Vendor (optional)</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             value={vendorId}
             onChange={setVendorId}
             placeholder="In-house / select vendor"
             accent={INDIGO}
-            options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: v.vendor_type }))}
+            options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: vendorTypeLabel(v.vendor_type) }))}
           />
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -1563,6 +1567,7 @@ function EditFabricProcessingModal({ entry, lotId, onClose }: { entry: FabricPro
   const [billAmount, setBillAmount] = useState(entry.bill_amount != null ? String(entry.bill_amount) : "");
   const [notes, setNotes] = useState(entry.notes ?? "");
 
+  const vendorTypeLabel = useVendorTypeLabel();
   const vendors = useQuery({
     queryKey: ["vendors", "ref"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { page_size: 200 } })).data.data as { id: string; name: string; vendor_type: string }[],
@@ -1597,12 +1602,12 @@ function EditFabricProcessingModal({ entry, lotId, onClose }: { entry: FabricPro
       <div className="p-6 space-y-4">
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Vendor (optional)</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             value={vendorId}
             onChange={setVendorId}
             placeholder="In-house / select vendor"
             accent={INDIGO}
-            options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: v.vendor_type }))}
+            options={(vendors.data ?? []).map((v) => ({ value: v.id, label: v.name, meta: vendorTypeLabel(v.vendor_type) }))}
           />
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -2367,7 +2372,7 @@ function RecordOutputModal({ lotId, suggestedUnitCost, onClose }: { lotId: strin
         {variantOptions.length > 0 && (
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Variant / SKU (optional)</label>
-            <SearchableSelect
+            <SearchableSelect clearable
               value={variantId}
               onChange={setVariantId}
               placeholder="Any variant"

@@ -10,6 +10,11 @@ import { SearchableSelect } from "@/components/shared/searchable-select";
 import { Can } from "@/lib/permissions";
 import { parseApiError } from "@/lib/api-error";
 import { SuppliesPicker } from "../_supplies-picker";
+import {
+  BanksEditor, ContactsEditor, VendorTypeSelect, bankRowsFrom, banksPayload, contactRowsFrom,
+  contactsAndBanksError, contactsPayload, type VendorBankApi, type VendorContactApi,
+} from "../_vendor-parts";
+import { useVendorTypeLabel } from "@/lib/vendor-types";
 
 const INDIGO = "#0049A7";
 
@@ -22,8 +27,8 @@ interface VendorDetail {
   payment_terms: number;
   is_active: boolean;
   supplies_product_types: string[] | null;
-  contacts: { name: string; phone: string | null; email: string | null; is_primary: boolean }[];
-  bank_details: { bank_name: string | null; account_number: string | null; ifsc: string | null; account_name: string | null; is_primary: boolean }[];
+  contacts: VendorContactApi[];
+  bank_details: VendorBankApi[];
 }
 
 function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDetail; onClose: () => void }) {
@@ -37,6 +42,8 @@ function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDe
     is_active: vendor.is_active,
     supplies: vendor.supplies_product_types ?? ([] as string[]),
   });
+  const [contacts, setContacts] = useState(() => contactRowsFrom(vendor.contacts));
+  const [banks, setBanks] = useState(() => bankRowsFrom(vendor.bank_details));
   const [error, setError] = useState("");
 
   const mut = useMutation({
@@ -49,6 +56,8 @@ function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDe
         payment_terms: parseInt(form.payment_terms) || 30,
         is_active: form.is_active,
         supplies_product_types: form.supplies.length ? form.supplies : null,
+        contacts: contactsPayload(contacts),
+        bank_details: banksPayload(banks),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["vendor-detail", id] });
@@ -64,14 +73,19 @@ function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDe
   return (
     <ModalPortal>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
-        <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
           <div className="flex items-center justify-between px-5 py-4 border-b">
             <h2 className="font-semibold text-base">Edit Vendor</h2>
             <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
           </div>
           <form
             className="p-5 space-y-3"
-            onSubmit={(e) => { e.preventDefault(); setError(""); mut.mutate(); }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const rowsError = contactsAndBanksError(contacts, banks);
+              setError(rowsError);
+              if (!rowsError) mut.mutate();
+            }}
           >
             <div>
               <label className="text-xs font-medium text-muted-foreground">Vendor Name *</label>
@@ -82,17 +96,8 @@ function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDe
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Type *</label>
                 <div className="mt-1">
-                  <SearchableSelect
-                    value={form.vendor_type}
-                    onChange={(v) => setForm((f) => ({ ...f, vendor_type: v }))}
-                    accent={INDIGO}
-                    options={[
-                      { value: "supplier", label: "Supplier" },
-                      { value: "job_worker", label: "Job Worker" },
-                      { value: "transporter", label: "Transporter" },
-                      { value: "agent", label: "Agent" },
-                    ]}
-                  />
+                  <VendorTypeSelect value={form.vendor_type} accent={INDIGO}
+                    onChange={(v) => setForm((f) => ({ ...f, vendor_type: v }))} />
                 </div>
               </div>
               <div>
@@ -130,6 +135,8 @@ function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDe
                 className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
             </div>
             <SuppliesPicker value={form.supplies} onChange={(v) => setForm((f) => ({ ...f, supplies: v }))} />
+            <div className="border-t border-border pt-3"><ContactsEditor rows={contacts} onChange={setContacts} /></div>
+            <div className="border-t border-border pt-3"><BanksEditor rows={banks} onChange={setBanks} /></div>
             {error && <p className="text-xs text-destructive">{error}</p>}
             <div className="flex justify-end gap-2 pt-1">
               <button type="button" onClick={onClose}
@@ -149,6 +156,7 @@ function EditVendorModal({ id, vendor, onClose }: { id: string; vendor: VendorDe
 export default function VendorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [showEdit, setShowEdit] = useState(false);
+  const typeLabel = useVendorTypeLabel();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["vendor-detail", id],
     queryFn: () => api.get(`/purchase/vendors/${id}`).then((r) => r.data.data as VendorDetail),
@@ -189,9 +197,9 @@ export default function VendorDetailPage() {
         <div className={card + " text-sm text-muted-foreground"}>This vendor could not be loaded.</div>
       ) : data && (
         <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             {[
-              ["Code", data.code], ["GSTIN", data.gstin], ["PAN", data.pan],
+              ["Code", data.code], ["Type", typeLabel(data.vendor_type)], ["GSTIN", data.gstin], ["PAN", data.pan],
               ["Payment terms", `${data.payment_terms} days`],
             ].map(([k, v]) => (
               <div key={k as string} className={card + " min-w-0"}>
@@ -207,8 +215,13 @@ export default function VendorDetailPage() {
               {data.contacts.length === 0 && <p className="text-sm text-muted-foreground">No contacts added.</p>}
               {data.contacts.map((c, i) => (
                 <div key={i} className="border-t border-border py-2 first:border-t-0">
-                  <p className="font-medium">{c.name}{c.is_primary && <span className="ml-2 text-[10px] font-bold uppercase text-indigo-700">Primary</span>}</p>
+                  <p className="font-medium">
+                    {c.name}
+                    {c.designation && <span className="ml-1.5 text-xs font-normal text-muted-foreground">· {c.designation}</span>}
+                    {c.is_primary && <span className="ml-2 text-[10px] font-bold uppercase text-indigo-700">Primary</span>}
+                  </p>
                   <p className="text-xs text-muted-foreground">{[c.phone, c.email].filter(Boolean).join(" · ") || "—"}</p>
+                  {c.notes && <p className="text-xs text-muted-foreground mt-0.5 italic">{c.notes}</p>}
                 </div>
               ))}
             </div>
@@ -217,9 +230,14 @@ export default function VendorDetailPage() {
               {data.bank_details.length === 0 && <p className="text-sm text-muted-foreground">No bank details added.</p>}
               {data.bank_details.map((b, i) => (
                 <div key={i} className="border-t border-border py-2 first:border-t-0 text-sm">
-                  <p className="font-medium">{b.bank_name || "—"}</p>
+                  <p className="font-medium">
+                    {b.bank_name || "—"}
+                    {b.branch && <span className="ml-1.5 text-xs font-normal text-muted-foreground">· {b.branch}</span>}
+                    {b.is_primary && <span className="ml-2 text-[10px] font-bold uppercase text-indigo-700">Primary</span>}
+                  </p>
                   <p className="text-xs text-muted-foreground">A/c {b.account_number || "—"} · IFSC {b.ifsc || "—"}</p>
-                  <p className="text-xs text-muted-foreground">{b.account_name || ""}</p>
+                  {b.account_name && <p className="text-xs text-muted-foreground">{b.account_name}</p>}
+                  {b.notes && <p className="text-xs text-muted-foreground mt-0.5 italic">{b.notes}</p>}
                 </div>
               ))}
             </div>

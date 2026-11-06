@@ -119,7 +119,7 @@ export function CreateTaskModal({ onClose, leadId }: { onClose: () => void; lead
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">Assign To</label>
-          <SearchableSelect
+          <SearchableSelect clearable
             options={users.map((u) => ({ value: u.id, label: u.name, meta: u.email }))}
             value={assignedTo} onChange={setAssignedTo} placeholder="Unassigned" accent={INDIGO}
           />
@@ -127,7 +127,7 @@ export function CreateTaskModal({ onClose, leadId }: { onClose: () => void; lead
         {!leadId && (
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Related Customer</label>
-            <SearchableSelect
+            <SearchableSelect clearable
               options={customers.map((c) => ({ value: c.id, label: c.legal_name }))}
               value={customerId} onChange={setCustomerId} placeholder="None" accent={INDIGO}
             />

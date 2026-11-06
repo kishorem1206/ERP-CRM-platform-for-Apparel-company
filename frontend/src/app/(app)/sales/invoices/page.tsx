@@ -7,6 +7,7 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { useQuickCustomer } from "@/components/sales/quick-customer";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
 
@@ -94,6 +95,7 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
+  const quickCustomer = useQuickCustomer();
   const { data: customers } = useQuery({
     queryKey: ["customers-list"],
     queryFn: async () => (await api.get("/sales/customers?page_size=200")).data.data ?? [],
@@ -141,7 +143,10 @@ function AddInvoiceModal({ onClose }: { onClose: () => void }) {
         >
           <div>
             <label className="text-xs font-medium text-muted-foreground">Customer *</label>
+            {quickCustomer.modal}
             <SearchableSelect
+              onCreate={quickCustomer.onCreate}
+              createNoun="customer"
               value={customerId}
               onChange={(v) => setCustomerId(v)}
               placeholder="Select customer…"

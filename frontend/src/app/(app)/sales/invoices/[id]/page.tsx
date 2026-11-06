@@ -18,6 +18,7 @@ export default function Page() {
       status={data?.status}
       backHref="/sales/invoices"
       pdfPath={`/documents/invoices/${id}/pdf`}
+      pdfFields={[{ key: "due_date", label: "Due date" }]}
       downloadName={`Invoice_${data?.invoice_number ?? id}.pdf`}
       loading={isLoading}
       error={isError}

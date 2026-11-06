@@ -18,6 +18,7 @@ export default function Page() {
       status={data?.status}
       backHref="/sales/orders"
       pdfPath={`/documents/sales-orders/${id}/pdf`}
+      pdfFields={[{ key: "order_date,date", label: "Order date" }, { key: "expected_delivery", label: "Expected delivery" }, { key: "customer_po", label: "Customer PO" }]}
       downloadName={`SalesOrder_${data?.order_number ?? id}.pdf`}
       loading={isLoading}
       error={isError}

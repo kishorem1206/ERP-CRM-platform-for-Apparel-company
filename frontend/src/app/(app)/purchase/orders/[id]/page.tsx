@@ -230,6 +230,7 @@ export default function Page() {
       status={status ? PO_STATUS_LABEL[status] ?? status : status}
       backHref="/purchase/orders"
       pdfPath={`/documents/purchase-orders/${id}/pdf${pdfVersion ? `?v=${pdfVersion}` : ""}`}
+      pdfFields={[{ key: "date", label: "Order date" }, { key: "expected_date", label: "Expected date" }]}
       downloadName={`PurchaseOrder_${data?.po_number ?? id}.pdf`}
       loading={isLoading}
       error={isError}

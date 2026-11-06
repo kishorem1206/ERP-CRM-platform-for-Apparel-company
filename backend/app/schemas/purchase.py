@@ -13,6 +13,8 @@ class VendorContactOut(BaseModel):
     name: str
     phone: str | None
     email: str | None
+    designation: str | None = None
+    notes: str | None = None
     is_primary: bool
 
     model_config = {"from_attributes": True}
@@ -24,6 +26,8 @@ class VendorBankDetailOut(BaseModel):
     account_number: str | None
     ifsc: str | None
     account_name: str | None
+    branch: str | None = None
+    notes: str | None = None
     is_primary: bool
 
     model_config = {"from_attributes": True}
@@ -46,18 +50,26 @@ class VendorOut(BaseModel):
 
 
 class VendorContactCreate(BaseModel):
-    name: str
-    phone: str | None = None
-    email: str | None = None
+    name: str = Field(min_length=1, max_length=100)
+    phone: str | None = Field(default=None, max_length=20)
+    email: str | None = Field(default=None, max_length=150)
+    designation: str | None = Field(default=None, max_length=100)
+    notes: str | None = None
     is_primary: bool = False
 
 
 class VendorBankDetailCreate(BaseModel):
-    bank_name: str | None = None
-    account_number: str | None = None
-    ifsc: str | None = None
-    account_name: str | None = None
+    bank_name: str | None = Field(default=None, max_length=100)
+    account_number: str | None = Field(default=None, max_length=30)
+    ifsc: str | None = Field(default=None, max_length=11)
+    account_name: str | None = Field(default=None, max_length=100)
+    branch: str | None = Field(default=None, max_length=100)
+    notes: str | None = None
     is_primary: bool = False
+
+
+class VendorTypeCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
 
 
 class VendorCreate(BaseModel):
@@ -71,14 +83,6 @@ class VendorCreate(BaseModel):
     contacts: list[VendorContactCreate] = []
     bank_details: list[VendorBankDetailCreate] = []
 
-    @field_validator("vendor_type")
-    @classmethod
-    def validate_vendor_type(cls, v: str) -> str:
-        allowed = {"supplier", "job_worker", "transporter", "agent"}
-        if v not in allowed:
-            raise ValueError(f"vendor_type must be one of {allowed}")
-        return v
-
 
 class VendorUpdate(BaseModel):
     name: str | None = None
@@ -88,6 +92,9 @@ class VendorUpdate(BaseModel):
     payment_terms: int | None = None
     is_active: bool | None = None
     supplies_product_types: list[str] | None = None
+    # When given, replace the vendor's contacts / bank accounts with these.
+    contacts: list[VendorContactCreate] | None = None
+    bank_details: list[VendorBankDetailCreate] | None = None
 
 
 # ── Purchase Order ───────────────────────────────────────────────────────────

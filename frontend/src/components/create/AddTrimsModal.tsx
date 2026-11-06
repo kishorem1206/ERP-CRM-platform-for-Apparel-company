@@ -176,7 +176,7 @@ export function AddTrimsModal({ open, onClose }: Props) {
           label="Product (optional)"
           hint="Links this lot to a product in your catalog, so its category stays consistent with Production and the rest of the app — instead of being typed separately here."
         >
-          <SearchableSelect
+          <SearchableSelect clearable
             value={form.product_id}
             onChange={(v) => set("product_id", v)}
             placeholder="— Not linked to a catalog product —"

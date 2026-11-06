@@ -157,28 +157,28 @@ export default function StockBalancePage() {
 
       {/* Filters */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SearchableSelect
+        <SearchableSelect clearable
           options={productOptions}
           value={productId}
           onChange={setProductId}
           placeholder="All products"
           accent={INDIGO}
         />
-        <SearchableSelect
+        <SearchableSelect clearable
           options={categoryOptions}
           value={categoryId}
           onChange={setCategoryId}
           placeholder="All categories"
           accent={INDIGO}
         />
-        <SearchableSelect
+        <SearchableSelect clearable
           options={warehouseOptions}
           value={warehouseId}
           onChange={setWarehouseId}
           placeholder="All warehouses"
           accent={INDIGO}
         />
-        <SearchableSelect
+        <SearchableSelect clearable
           options={customerOptions}
           value={customerId}
           onChange={setCustomerId}

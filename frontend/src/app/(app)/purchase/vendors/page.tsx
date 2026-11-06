@@ -7,13 +7,15 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ModalPortal } from "@/components/shared/modal-portal";
-import { SearchableSelect } from "@/components/shared/searchable-select";
 import { Can } from "@/lib/permissions";
 import { SuppliesPicker } from "./_supplies-picker";
+import {
+  BanksEditor, ContactsEditor, VendorTypeSelect, banksPayload, contactsAndBanksError, contactsPayload,
+  type BankRow, type ContactRow,
+} from "./_vendor-parts";
+import { useVendorTypeLabel, useVendorTypes } from "@/lib/vendor-types";
 
 const LAVENDER = "#0F78FF";
-
-type VendorType = "supplier" | "job_worker" | "transporter" | "agent";
 
 interface Vendor {
   id: string;
@@ -21,27 +23,12 @@ interface Vendor {
   name: string;
   gstin: string | null;
   pan: string | null;
-  vendor_type: VendorType;
+  vendor_type: string;
   payment_terms: number;
   is_active: boolean;
 }
 
-const TYPE_LABELS: Record<VendorType, string> = {
-  supplier: "Supplier",
-  job_worker: "Job Worker",
-  transporter: "Transporter",
-  agent: "Agent",
-};
-
-const TYPE_FILTERS = [
-  { label: "All", value: "" },
-  { label: "Suppliers", value: "supplier" },
-  { label: "Job Workers", value: "job_worker" },
-  { label: "Transporters", value: "transporter" },
-  { label: "Agents", value: "agent" },
-];
-
-const columns: Column<Record<string, unknown>>[] = [
+const columnsFor = (typeLabel: (code: string) => string): Column<Record<string, unknown>>[] => [
   { key: "code", header: "Code", sortable: true },
   { key: "name", header: "Vendor Name", sortable: true },
   {
@@ -49,7 +36,7 @@ const columns: Column<Record<string, unknown>>[] = [
     header: "Type",
     render: (row) => (
       <span className="text-xs text-muted-foreground">
-        {TYPE_LABELS[(row.vendor_type as VendorType)] ?? (row.vendor_type as string)}
+        {typeLabel(row.vendor_type as string)}
       </span>
     ),
   },
@@ -100,6 +87,8 @@ function autoCode(name: string): string {
 function AddVendorModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [form, setForm] = useState(EMPTY);
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [banks, setBanks] = useState<BankRow[]>([]);
   const [error, setError] = useState("");
 
   const mut = useMutation({
@@ -110,6 +99,8 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
         gstin: body.gstin || null,
         pan: body.pan || null,
         supplies_product_types: body.supplies.length ? body.supplies : null,
+        contacts: contactsPayload(contacts),
+        bank_details: banksPayload(banks),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["vendors"] });
@@ -126,7 +117,7 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
   return (
     <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6 overflow-y-auto bg-black/40 backdrop-blur-[2px]">
-      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <h2 className="font-semibold text-base">New Vendor</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
@@ -135,7 +126,9 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
           className="p-5 space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
-            setError("");
+            const rowsError = contactsAndBanksError(contacts, banks);
+            setError(rowsError);
+            if (rowsError) return;
             const finalForm = { ...form, code: form.code || autoCode(form.name || "V") };
             setForm(finalForm);
             mut.mutate(finalForm);
@@ -169,17 +162,8 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
             <div>
               <label className="text-xs font-medium text-muted-foreground">Type *</label>
               <div className="mt-1">
-                <SearchableSelect
-                  value={form.vendor_type}
-                  onChange={(v) => setForm((f) => ({ ...f, vendor_type: v as typeof EMPTY["vendor_type"] }))}
-                  accent={LAVENDER}
-                  options={[
-                    { value: "supplier", label: "Supplier" },
-                    { value: "job_worker", label: "Job Worker" },
-                    { value: "transporter", label: "Transporter" },
-                    { value: "agent", label: "Agent" },
-                  ]}
-                />
+                <VendorTypeSelect value={form.vendor_type} accent={LAVENDER}
+                  onChange={(v) => setForm((f) => ({ ...f, vendor_type: v }))} />
               </div>
             </div>
           </div>
@@ -203,6 +187,8 @@ function AddVendorModal({ onClose }: { onClose: () => void }) {
               className="mt-1 w-full rounded border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
           </div>
           <SuppliesPicker value={form.supplies} onChange={(v) => setForm((f) => ({ ...f, supplies: v }))} />
+          <div className="border-t border-border pt-3"><ContactsEditor rows={contacts} onChange={setContacts} /></div>
+          <div className="border-t border-border pt-3"><BanksEditor rows={banks} onChange={setBanks} /></div>
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose}
@@ -225,6 +211,10 @@ export default function VendorsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
+  const vendorTypes = useVendorTypes();
+  const typeLabel = useVendorTypeLabel();
+  const columns = columnsFor(typeLabel);
+  const typeFilters = [{ label: "All", value: "" }, ...(vendorTypes.data ?? []).map((t) => ({ label: t.name, value: t.code }))];
 
   const { data, isLoading } = useQuery({
     queryKey: ["vendors", typeFilter, search, page],
@@ -271,8 +261,8 @@ export default function VendorsPage() {
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
         </div>
-        <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-xl w-fit">
-          {TYPE_FILTERS.map((f) => (
+        <div className="flex flex-wrap items-center gap-1 p-1 bg-muted/50 rounded-xl w-fit">
+          {typeFilters.map((f) => (
             <button
               key={f.value}
               onClick={() => { setTypeFilter(f.value); setPage(1); }}
@@ -295,7 +285,7 @@ export default function VendorsPage() {
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">VENDOR DIRECTORY</p>
             <p className="text-sm font-medium mt-0.5">
-              {typeFilter ? TYPE_LABELS[typeFilter as VendorType] ?? typeFilter : "All types"}
+              {typeFilter ? typeLabel(typeFilter) : "All types"}
             </p>
           </div>
         </div>

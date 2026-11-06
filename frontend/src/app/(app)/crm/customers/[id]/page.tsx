@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useCustomersBase } from "@/lib/customers-base";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Plus, Trash2, Star, Building2,
@@ -88,6 +89,7 @@ function AddressBlock({ title, value, onChange }: { title: string; value: Addres
 export default function EditCustomerPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const router = useRouter();
+  const customersBase = useCustomersBase();
   const qc = useQueryClient();
   const [tab, setTab] = useState("company");
   const [error, setError] = useState("");
@@ -178,7 +180,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["customers"] });
       qc.invalidateQueries({ queryKey: ["customer", id] });
-      router.push("/crm/customers");
+      router.push(customersBase);
     },
     onError: (e: unknown) => {
       const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
@@ -484,7 +486,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
       {/* Sticky header */}
       <div className="sticky top-0 z-10 bg-background border-b px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => router.push("/crm/customers")} className="text-muted-foreground hover:text-foreground">
+          <button type="button" onClick={() => router.push(customersBase)} className="text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
@@ -498,7 +500,7 @@ export default function EditCustomerPage({ params }: { params: { id: string } })
         </div>
         <div className="flex items-center gap-2">
           {error && <p className="text-xs text-destructive max-w-xs text-right">{error}</p>}
-          <button type="button" onClick={() => router.push("/crm/customers")}
+          <button type="button" onClick={() => router.push(customersBase)}
             className="px-4 py-1.5 rounded-md border border-input text-sm hover:bg-muted">Cancel</button>
           <Can perm="sales.edit"><button type="button" onClick={() => handleSubmit()} disabled={mut.isPending}
             className="px-4 py-1.5 rounded-xl text-sm font-semibold text-white disabled:opacity-60 flex items-center gap-1.5 transition-all hover:opacity-90 active:scale-95"

@@ -1,7 +1,7 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronUp, Check, Plus } from "lucide-react";
+import { ChevronDown, ChevronUp, Check, Plus, X } from "lucide-react";
 import { parseApiError } from "@/lib/api-error";
 
 export interface SelectOption {
@@ -23,7 +23,14 @@ interface Props {
   onCreate?: (label: string) => Promise<string>;
   /** Noun used in the add row, e.g. "colour" → "Type a new colour name". */
   createNoun?: string;
+  /** Shows an × to empty an optional field once something is picked. On by
+   *  default when the list already has an empty ("" ) choice. */
+  clearable?: boolean;
 }
+
+/** Throw this from `onCreate` when the user backs out (e.g. closes a fuller
+ *  "new record" form); the dropdown then shows no error. */
+export const CREATE_CANCELLED = "__create_cancelled__";
 
 const DEFAULT_ACCENT = "#0049A7";
 const GAP = 6;        // space between trigger and panel
@@ -55,6 +62,7 @@ export function SearchableSelect({
   disabled = false,
   onCreate,
   createNoun = "entry",
+  clearable,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -89,6 +97,7 @@ export function SearchableSelect({
       onChange(newValue);
       close();
     } catch (e) {
+      if (e instanceof Error && e.message === CREATE_CANCELLED) return;
       setCreateError(parseApiError(e, `Could not add this ${createNoun}.`));
     } finally {
       setCreating(false);
@@ -182,6 +191,7 @@ export function SearchableSelect({
   }
 
   const isSelected = !!selected && !!value;
+  const canClear = (clearable ?? options.some((o) => o.value === "")) && !!value && !disabled;
 
   return (
     <div ref={ref} className="relative w-full">
@@ -231,6 +241,20 @@ export function SearchableSelect({
           style={open ? { color: "hsl(var(--foreground))" } : undefined}
           autoComplete="off"
         />
+
+        {/* Clear — empties an optional field without opening the list */}
+        {canClear && !open && (
+          <button
+            type="button"
+            aria-label="Clear"
+            title="Clear"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => { e.stopPropagation(); onChange(""); }}
+            className="flex-shrink-0 rounded p-1 mr-0.5 text-muted-foreground hover:text-foreground hover:bg-muted"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
 
         {/* Right icon */}
         <span className="pr-3 flex-shrink-0 flex items-center">
