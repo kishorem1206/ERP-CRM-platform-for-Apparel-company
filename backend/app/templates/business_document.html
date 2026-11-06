@@ -102,7 +102,7 @@
         <td class="c">{{ loop.index }}</td>
         <td>{{ item.description }}{% if item.sub %}<div class="muted small">{{ item.sub }}</div>{% endif %}</td>
         <td>{{ item.hsn or "" }}</td>
-        <td class="r">{{ item.qty }}</td>
+        <td class="r">{{ item.qty if item.qty is not none else "" }}</td>
         <td>{{ item.unit or "" }}</td>
         <td class="r">{{ item.rate or "" }}</td>
         <td class="r">{{ item.discount or "" }}</td>

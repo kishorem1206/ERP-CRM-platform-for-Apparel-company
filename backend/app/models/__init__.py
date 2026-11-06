@@ -81,5 +81,6 @@ __all__ = [
 ]
 from app.models.retail import (  # noqa: F401
     RetailCustomer, RetailEstimate, RetailEstimateItem, RetailInvoice, RetailInvoiceItem,
-    RetailPayment, RetailSettings, RetailSettingsAudit,
+    RetailPayment, RetailSettings, RetailSettingsAudit, RetailCoupon, RetailCouponRedemption, RetailLoyaltyEntry,
+    RetailReturn, RetailReturnItem,
 )

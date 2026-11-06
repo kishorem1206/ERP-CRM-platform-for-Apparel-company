@@ -594,6 +594,22 @@ async def send_due_whatsapp_automations() -> int:
 # Celery beat schedule. The cron tick runs whatever is due, so the external
 # trigger only has to fire at least as often as the shortest interval it
 # should honour; anything slower just runs on the next tick after it's due.
+async def retail_daily():
+    """Retail: make birthday coupons that are due and expire lapsed loyalty points."""
+    from app.db.session import AsyncSessionLocal
+    from app.services.retail import RetailService
+
+    async with AsyncSessionLocal() as db:
+        companies = (await db.execute(text(
+            "SELECT company_id FROM retail_settings WHERE birthday_enabled OR loyalty_enabled"
+        ))).scalars().all()
+        for company_id in companies:
+            svc = RetailService(db)
+            await svc.generate_birthday_coupons(company_id)
+            await svc.expire_all_points(company_id)
+        await db.commit()
+
+
 SCHEDULE: dict[str, tuple[int, object]] = {
     "send_due_whatsapp_automations": (0, send_due_whatsapp_automations),
     "refresh_inventory_balance": (5 * 60, refresh_inventory_balance),
@@ -605,4 +621,5 @@ SCHEDULE: dict[str, tuple[int, object]] = {
     "check_overdue_payments": (24 * 60 * 60, check_overdue_payments),
     "check_production_delays": (24 * 60 * 60, check_production_delays),
     "check_job_work_challans": (24 * 60 * 60, check_job_work_challans),
+    "retail_daily": (24 * 60 * 60, retail_daily),
 }

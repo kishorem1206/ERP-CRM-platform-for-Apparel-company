@@ -13,7 +13,7 @@ Money rules (see models/retail.py):
 """
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,8 +22,8 @@ from sqlalchemy.orm import selectinload
 from app.domain.business_rules import BusinessRulesError
 from app.models.master import Product, ProductVariant, Warehouse
 from app.models.retail import (
-    RetailCustomer, RetailEstimate, RetailEstimateItem, RetailInvoice, RetailInvoiceItem,
-    RetailPayment, RetailSettings, RetailSettingsAudit,
+    RetailCoupon, RetailCouponRedemption, RetailCustomer, RetailEstimate, RetailEstimateItem, RetailInvoice,
+    RetailInvoiceItem, RetailLoyaltyEntry, RetailPayment, RetailSettings, RetailSettingsAudit,
 )
 from app.schemas.inventory import IssueParams, ReceiveParams
 from app.schemas.retail import (
@@ -31,6 +31,8 @@ from app.schemas.retail import (
     RetailInvoiceCreate, RetailLineIn, RetailPaymentCreate, RetailSettingsUpdate,
 )
 from app.services.inventory import InventoryService
+from app.services.retail_credit import RetailCreditMixin
+from app.services.retail_engagement import RetailEngagementMixin
 
 CENT = Decimal("0.01")
 HUNDRED = Decimal("100")
@@ -47,13 +49,27 @@ def _apparel_gst(unit_price_incl: Decimal) -> Decimal:
     return Decimal("5") if unit_price_incl / Decimal("1.05") <= APPAREL_GST_THRESHOLD else Decimal("18")
 
 
+def outstanding_of(inv) -> Decimal:
+    """What the customer still owes on a bill: total less returns, less
+    money kept (paid minus refunded). Nothing on a cancelled bill."""
+    if inv.status != "active":
+        return Decimal("0")
+    return max(Decimal("0"), inv.total_amount - (inv.returned_amount or 0) - (inv.amount_paid - (inv.refunded_amount or 0)))
+
+
+def refresh_payment_status(inv) -> None:
+    inv.payment_status = _payment_status(
+        inv.total_amount - (inv.returned_amount or 0), inv.amount_paid - (inv.refunded_amount or 0),
+    )
+
+
 def _payment_status(total: Decimal, paid: Decimal) -> str:
     if paid >= total:
         return "paid"
     return "partially_paid" if paid > 0 else "unpaid"
 
 
-class RetailService:
+class RetailService(RetailCreditMixin, RetailEngagementMixin):
     def __init__(self, db: AsyncSession):
         self.db = db
         self.inv = InventoryService(db)
@@ -130,14 +146,17 @@ class RetailService:
     _CUSTOMER_STATS = """
         SELECT c.id,
                COUNT(i.id) AS purchase_count,
-               COALESCE(SUM(i.total_amount), 0) AS total_spent,
-               COALESCE(SUM(q.qty), 0) AS products_purchased,
+               COALESCE(SUM(i.total_amount - i.returned_amount), 0) AS total_spent,
+               COALESCE(SUM(q.qty - COALESCE(rq.qty, 0)), 0) AS products_purchased,
                MAX(i.invoice_date) AS last_purchase_date,
-               COALESCE(SUM(i.total_amount - i.amount_paid), 0) AS outstanding
+               COALESCE(SUM(i.total_amount - i.returned_amount - i.amount_paid + i.refunded_amount), 0) AS outstanding
         FROM retail_customers c
         LEFT JOIN retail_invoices i ON i.customer_id = c.id AND i.status = 'active'
         LEFT JOIN (SELECT invoice_id, SUM(quantity) AS qty FROM retail_invoice_items GROUP BY invoice_id) q
                ON q.invoice_id = i.id
+        LEFT JOIN (SELECT r.invoice_id, SUM(ri.quantity) AS qty FROM retail_return_items ri
+                   JOIN retail_returns r ON r.id = ri.return_id GROUP BY r.invoice_id) rq
+               ON rq.invoice_id = i.id
         WHERE c.company_id = :cid {where}
         GROUP BY c.id
     """
@@ -182,14 +201,17 @@ class RetailService:
         base = f"""
             SELECT c.id,
                    COUNT(i.id) AS purchase_count,
-                   COALESCE(SUM(i.total_amount), 0) AS total_spent,
-                   COALESCE(SUM(q.qty), 0) AS products_purchased,
+                   COALESCE(SUM(i.total_amount - i.returned_amount), 0) AS total_spent,
+                   COALESCE(SUM(q.qty - COALESCE(rq.qty, 0)), 0) AS products_purchased,
                    MAX(i.invoice_date) AS last_purchase_date,
-                   COALESCE(SUM(i.total_amount - i.amount_paid), 0) AS outstanding
+                   COALESCE(SUM(i.total_amount - i.returned_amount - i.amount_paid + i.refunded_amount), 0) AS outstanding
             FROM retail_customers c
             LEFT JOIN retail_invoices i ON i.customer_id = c.id AND i.status = 'active'
             LEFT JOIN (SELECT invoice_id, SUM(quantity) AS qty FROM retail_invoice_items GROUP BY invoice_id) q
                    ON q.invoice_id = i.id
+            LEFT JOIN (SELECT r.invoice_id, SUM(ri.quantity) AS qty FROM retail_return_items ri
+                       JOIN retail_returns r ON r.id = ri.return_id GROUP BY r.invoice_id) rq
+                   ON rq.invoice_id = i.id
             WHERE {" AND ".join(filters)}
             GROUP BY c.id
         """
@@ -296,12 +318,19 @@ class RetailService:
 
     async def _price(
         self, lines: list[RetailLineIn], bill_discount_pct: Decimal, company_id: UUID,
-        user_id: UUID, can_approve: bool,
+        user_id: UUID, can_approve: bool, *, customer: RetailCustomer | None = None,
+        coupon_code: str | None = None, redeem_points: int = 0, on: date | None = None,
     ) -> tuple[list[dict], dict]:
-        """Lines and totals for a bill or estimate, after checking discounts."""
+        """Lines and totals for a bill or estimate, after checking discounts.
+
+        Order: item discount, bill discount (staff discounts, held to the
+        min/max limits), then the coupon on the lines it covers, then loyalty
+        points across the bill; GST is backed out of each line's final amount.
+        """
         settings = await self.get_settings(company_id)
         lo, hi = settings.min_discount_pct, settings.max_discount_pct
         needs_approval = False
+        on = on or date.today()
 
         def check(pct: Decimal, what: str) -> None:
             nonlocal needs_approval
@@ -323,6 +352,7 @@ class RetailService:
         )).scalars().all()} if variant_ids else {}
 
         priced: list[dict] = []
+        categories: list = []
         for i, line in enumerate(lines):
             product = products.get(line.product_id)
             if not product or product.deleted_at is not None:
@@ -343,10 +373,6 @@ class RetailService:
             gross = _q(price * qty)
             after_item = _q(gross * (HUNDRED - item_pct) / HUNDRED)
             net = _q(after_item * (HUNDRED - bill) / HUNDRED)
-            gst_rate = Decimal(product.hsn.gst_rate) if product.hsn else _apparel_gst(price)
-            taxable = _q(net * HUNDRED / (HUNDRED + gst_rate))
-            gst = net - taxable
-            cgst = _q(gst / 2)
             label = product.name
             if variant:
                 bits = [b for b in (variant.size.name if variant.size else None, variant.colour.name if variant.colour else None) if b]
@@ -355,10 +381,10 @@ class RetailService:
                 "product_id": product.id, "variant_id": variant.id if variant else None,
                 "description": label[:300], "hsn_code": product.hsn.hsn if product.hsn else None,
                 "quantity": qty, "unit_price": _q(price), "gross_amount": gross,
-                "item_discount_pct": item_pct, "discount_amount": gross - net, "gst_rate": gst_rate,
-                "taxable_amount": taxable, "cgst_amount": cgst, "sgst_amount": gst - cgst,
+                "item_discount_pct": item_pct, "gst_rate": Decimal(product.hsn.gst_rate) if product.hsn else _apparel_gst(price),
                 "net_amount": net, "sort_order": i, "unit_id": product.unit_id,
             })
+            categories.append(product.category_id)
 
         if needs_approval and not (can_approve and settings.allow_approved_override):
             raise BusinessRulesError(
@@ -366,12 +392,74 @@ class RetailService:
                 f"Discount above the {hi}% maximum needs a manager's approval."
                 if settings.allow_approved_override else f"Discount can't be more than {hi}%.",
             )
+        staff_discount = sum((l["gross_amount"] - l["net_amount"] for l in priced), Decimal("0"))
+
+        # Coupon: only on the lines it covers.
+        coupon, coupon_discount = None, Decimal("0")
+        if coupon_code and coupon_code.strip():
+            coupon = await self.find_usable_coupon(coupon_code, company_id, customer, on)
+            covered = [
+                i for i, l in enumerate(priced)
+                if (not coupon.product_ids and not coupon.category_ids)
+                or l["product_id"] in coupon.product_ids or (categories[i] and categories[i] in coupon.category_ids)
+            ]
+            base = sum((priced[i]["net_amount"] for i in covered), Decimal("0"))
+            if not covered:
+                raise BusinessRulesError("COUPON_NOT_APPLICABLE", f"Coupon {coupon.code} doesn't apply to any item on this bill.")
+            if base < coupon.min_purchase:
+                raise BusinessRulesError("COUPON_MIN_PURCHASE", f"Coupon {coupon.code} needs a purchase of at least ₹{coupon.min_purchase:,.0f}.")
+            coupon_discount = (
+                _q(base * coupon.discount_value / HUNDRED) if coupon.discount_type == "percent"
+                else min(_q(coupon.discount_value), base)
+            )
+            if coupon.max_discount is not None:
+                coupon_discount = min(coupon_discount, _q(coupon.max_discount))
+            self._spread(priced, covered, coupon_discount)
+
+        # Loyalty points: across the bill, up to the configured share of it.
+        points_discount = Decimal("0")
+        if redeem_points:
+            if not settings.loyalty_enabled:
+                raise BusinessRulesError("LOYALTY_OFF", "The loyalty programme is switched off.")
+            if not customer:
+                raise BusinessRulesError("CUSTOMER_REQUIRED", "Pick the customer to redeem their points.")
+            await self.expire_points(customer, on)
+            if redeem_points > customer.loyalty_points:
+                raise BusinessRulesError("NOT_ENOUGH_POINTS", f"{customer.name} has only {customer.loyalty_points} points.")
+            if redeem_points < settings.min_redeem_points:
+                raise BusinessRulesError("BELOW_MIN_POINTS", f"At least {settings.min_redeem_points} points must be redeemed at a time.")
+            payable = sum((l["net_amount"] for l in priced), Decimal("0"))
+            cap = _q(payable * settings.max_redeem_pct / HUNDRED)
+            points_discount = _q(Decimal(redeem_points) * settings.point_value)
+            if points_discount > cap:
+                most = int(cap / settings.point_value)
+                raise BusinessRulesError(
+                    "TOO_MANY_POINTS",
+                    f"Points can pay at most {settings.max_redeem_pct:g}% of this bill — up to {most} points.",
+                )
+            self._spread(priced, list(range(len(priced))), points_discount)
+
+        for l in priced:
+            net = l["net_amount"]
+            taxable = _q(net * HUNDRED / (HUNDRED + l["gst_rate"]))
+            gst = net - taxable
+            cgst = _q(gst / 2)
+            l.update(discount_amount=l["gross_amount"] - net, taxable_amount=taxable, cgst_amount=cgst, sgst_amount=gst - cgst)
+
         exact = sum((l["net_amount"] for l in priced), Decimal("0"))
         total = exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+        # Points this bill earns (on what's paid, outside excluded categories).
+        points_earned = 0
+        if settings.loyalty_enabled and customer and total >= settings.min_bill_for_points:
+            excluded = set(settings.loyalty_excluded_category_ids or [])
+            eligible = sum((l["net_amount"] for i, l in enumerate(priced) if categories[i] not in excluded), Decimal("0"))
+            points_earned = int(eligible / settings.amount_per_point) if settings.amount_per_point else 0
+
         totals = {
             "bill_discount_pct": bill,
             "gross_amount": sum((l["gross_amount"] for l in priced), Decimal("0")),
-            "discount_amount": sum((l["discount_amount"] for l in priced), Decimal("0")),
+            "discount_amount": staff_discount,
             "taxable_amount": sum((l["taxable_amount"] for l in priced), Decimal("0")),
             "cgst_amount": sum((l["cgst_amount"] for l in priced), Decimal("0")),
             "sgst_amount": sum((l["sgst_amount"] for l in priced), Decimal("0")),
@@ -379,7 +467,26 @@ class RetailService:
             "total_amount": total,
             "discount_approved_by": user_id if needs_approval else None,
         }
-        return priced, totals
+        benefits = {
+            "coupon": coupon, "coupon_discount": coupon_discount,
+            "points_redeemed": redeem_points if points_discount else 0, "points_discount": points_discount,
+            "points_earned": points_earned,
+        }
+        return priced, {**totals, "_benefits": benefits}
+
+    @staticmethod
+    def _spread(priced: list[dict], idxs: list[int], amount: Decimal) -> None:
+        """Take `amount` off the given lines in proportion to their amounts;
+        the last line absorbs the rounding."""
+        base = sum((priced[i]["net_amount"] for i in idxs), Decimal("0"))
+        if amount <= 0 or base <= 0:
+            return
+        left = amount
+        for n, i in enumerate(idxs):
+            share = left if n == len(idxs) - 1 else min(_q(amount * priced[i]["net_amount"] / base), left)
+            share = min(share, priced[i]["net_amount"])
+            priced[i]["net_amount"] -= share
+            left -= share
 
     # ── Invoices ───────────────────────────────────────────────────────────
 
@@ -436,7 +543,11 @@ class RetailService:
                 return await self.get_invoice(existing, company_id)
         customer = None
         if body.customer_id:
-            customer = await self.get_customer(body.customer_id, company_id)
+            # Locked so two bills can't spend the same points at once.
+            customer = (await self.db.execute(
+                select(RetailCustomer).where(RetailCustomer.id == body.customer_id, RetailCustomer.company_id == company_id)
+                .with_for_update()
+            )).scalar_one_or_none()
             if not customer:
                 raise BusinessRulesError("NOT_FOUND", "Customer not found")
         if body.payment_mode == "credit" and not customer:
@@ -445,12 +556,17 @@ class RetailService:
         if not settings.warehouse_id:
             raise BusinessRulesError("NO_WAREHOUSE", "Set the retail stock warehouse in Retail Settings first.")
 
-        lines, totals = await self._price(body.items, body.bill_discount_pct, company_id, user_id, can_approve)
+        today = body.invoice_date or date.today()
+        lines, totals = await self._price(
+            body.items, body.bill_discount_pct, company_id, user_id, can_approve,
+            customer=customer, coupon_code=body.coupon_code, redeem_points=body.redeem_points, on=today,
+        )
+        benefits = totals.pop("_benefits")
+        coupon = benefits["coupon"]
         total = totals["total_amount"]
         paid_now = total if body.payment_mode == "cash" else _q(body.amount_paid_now or Decimal("0"))
         if paid_now > total:
             raise BusinessRulesError("OVERPAID", "Amount paid can't be more than the bill total.")
-        today = body.invoice_date or date.today()
         now = datetime.now(timezone.utc)
         number = await self._next_number(RetailInvoice, RetailInvoice.invoice_number, "RI", company_id)
         invoice = RetailInvoice(
@@ -460,10 +576,22 @@ class RetailService:
             payment_status=_payment_status(total, paid_now), amount_paid=paid_now,
             due_date=today + timedelta(days=settings.credit_days) if body.payment_mode == "credit" else None,
             status="active", estimate_id=body.estimate_id, notes=body.notes,
+            coupon_id=coupon.id if coupon else None, coupon_discount=benefits["coupon_discount"],
+            points_redeemed=benefits["points_redeemed"], points_discount=benefits["points_discount"],
+            points_earned=benefits["points_earned"],
             created_by=user_id, created_at=now, **totals,
         )
         self.db.add(invoice)
         await self.db.flush()
+        if coupon:
+            self.db.add(RetailCouponRedemption(
+                company_id=company_id, coupon_id=coupon.id, invoice_id=invoice.id,
+                customer_id=customer.id if customer else None, discount_amount=benefits["coupon_discount"],
+                status="active", created_at=now,
+            ))
+        if benefits["points_redeemed"]:
+            self._add_points(customer, "redeemed", -benefits["points_redeemed"], user_id,
+                             invoice_id=invoice.id, reason=f"Redeemed on {number}")
 
         for line in lines:
             if line["variant_id"] is None:
@@ -492,11 +620,15 @@ class RetailService:
                 invoice_id=invoice.id, unit_id=unit_id, unit_cost=cost, inv_transaction_id=txn.id, **line,
             ))
         if paid_now > 0:
+            pay_id = uuid4()
             self.db.add(RetailPayment(
+                id=pay_id, batch_ref=pay_id,
                 company_id=company_id, invoice_id=invoice.id, payment_date=today, amount=paid_now,
                 mode=body.collection_mode, status="active", created_by=user_id, created_at=now,
                 receipt_number=await self._next_number(RetailPayment, RetailPayment.receipt_number, "RR", company_id),
             ))
+        if customer and invoice.payment_status == "paid":
+            await self._award_points(invoice, customer, settings, user_id)
         await self.db.flush()
         return await self.get_invoice(invoice.id, company_id)
 
@@ -510,20 +642,28 @@ class RetailService:
             return invoice     # same collection submitted twice
         if invoice.status != "active":
             raise BusinessRulesError("CANCELLED", "This bill is cancelled.")
-        outstanding = invoice.total_amount - invoice.amount_paid
+        outstanding = outstanding_of(invoice)
         amount = _q(body.amount)
         if outstanding <= 0:
             raise BusinessRulesError("ALREADY_PAID", "This bill is already fully paid.")
         if amount > outstanding:
             raise BusinessRulesError("OVERPAID", f"Only ₹{outstanding} is outstanding on this bill.")
+        pay_id = uuid4()
         self.db.add(RetailPayment(
+            id=pay_id, batch_ref=pay_id,
             company_id=company_id, invoice_id=invoice.id, client_ref=body.client_ref,
             payment_date=body.payment_date or date.today(), amount=amount, mode=body.mode,
             reference=body.reference, status="active", created_by=user_id, created_at=datetime.now(timezone.utc),
             receipt_number=await self._next_number(RetailPayment, RetailPayment.receipt_number, "RR", company_id),
         ))
         invoice.amount_paid = invoice.amount_paid + amount
-        invoice.payment_status = _payment_status(invoice.total_amount, invoice.amount_paid)
+        refresh_payment_status(invoice)
+        if invoice.payment_status == "paid" and invoice.customer_id:
+            # Credit bills earn their points once the money is in.
+            customer = (await self.db.execute(
+                select(RetailCustomer).where(RetailCustomer.id == invoice.customer_id).with_for_update()
+            )).scalar_one()
+            await self._award_points(invoice, customer, await self.get_settings(company_id), user_id)
         await self.db.flush()
         self.db.expire(invoice)
         return await self.get_invoice(invoice_id, company_id)
@@ -537,16 +677,37 @@ class RetailService:
         if invoice.status == "cancelled":
             raise BusinessRulesError("CANCELLED", "This bill is already cancelled.")
         today = date.today()
+        returned = await self.returned_qty_by_item(invoice.id)
         for item in invoice.items:
+            left = item.quantity - returned.get(item.id, Decimal("0"))
+            if left <= 0:
+                continue
             await self.inv.receive(ReceiveParams(
                 company_id=company_id, product_id=item.product_id, variant_id=item.variant_id,
-                warehouse_id=invoice.warehouse_id, quantity=item.quantity, unit_id=item.unit_id,
+                warehouse_id=invoice.warehouse_id, quantity=left, unit_id=item.unit_id,
                 unit_cost=item.unit_cost, material_type="finished_good", transaction_date=today,
                 reference_type="retail_invoice_cancel", reference_id=invoice.id,
                 notes=f"Cancelled retail bill {invoice.invoice_number}",
             ), user_id=user_id)
         for p in invoice.payments:
             p.status = "cancelled"
+        if invoice.coupon_id:
+            for r in (await self.db.execute(
+                select(RetailCouponRedemption).where(RetailCouponRedemption.invoice_id == invoice.id, RetailCouponRedemption.status == "active")
+            )).scalars().all():
+                r.status = "reversed"
+        if invoice.customer_id and (invoice.points_redeemed or invoice.points_awarded):
+            customer = (await self.db.execute(
+                select(RetailCustomer).where(RetailCustomer.id == invoice.customer_id).with_for_update()
+            )).scalar_one()
+            if invoice.points_redeemed:
+                self._add_points(customer, "reversed", invoice.points_redeemed, user_id, invoice_id=invoice.id,
+                                 reason=f"Points given back — {invoice.invoice_number} cancelled")
+            kept = invoice.points_earned - (invoice.points_returned or 0)
+            if invoice.points_awarded and kept > 0:
+                self._add_points(customer, "reversed", -kept, user_id, invoice_id=invoice.id,
+                                 reason=f"Points taken back — {invoice.invoice_number} cancelled")
+                invoice.points_awarded = False
         invoice.status = "cancelled"
         invoice.amount_paid = Decimal("0")
         invoice.cancelled_at = datetime.now(timezone.utc)
@@ -611,6 +772,7 @@ class RetailService:
         if body.customer_id and not await self.get_customer(body.customer_id, company_id):
             raise BusinessRulesError("NOT_FOUND", "Customer not found")
         lines, totals = await self._price(body.items, body.bill_discount_pct, company_id, user_id, can_approve)
+        totals.pop("_benefits")
         for line in lines:
             line.pop("unit_id")
         settings = await self.get_settings(company_id)
@@ -670,6 +832,7 @@ class RetailService:
             raise BusinessRulesError("LOCKED", "This estimate was rejected.")
         invoice = await self.create_invoice(RetailInvoiceCreate(
             client_ref=body.client_ref, customer_id=est.customer_id, payment_mode=body.payment_mode,
+            coupon_code=body.coupon_code, redeem_points=body.redeem_points,
             amount_paid_now=body.amount_paid_now, collection_mode=body.collection_mode,
             bill_discount_pct=est.bill_discount_pct, notes=est.notes, estimate_id=est.id,
             items=[RetailLineIn(

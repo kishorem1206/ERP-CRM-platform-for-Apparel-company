@@ -2,7 +2,8 @@
 import { useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, IndianRupee, X } from "lucide-react";
+import Link from "next/link";
+import { Ban, IndianRupee, Undo2, X } from "lucide-react";
 import api from "@/lib/api";
 import { parseApiError } from "@/lib/api-error";
 import { Can } from "@/lib/permissions";
@@ -10,7 +11,8 @@ import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { PdfDocumentPage, fmtDate } from "@/components/documents/pdf-document-page";
 import { COLLECTION_MODES } from "@/components/retail/bill-editor";
-import { RETAIL_ACCENT, newClientRef, payStatusLabel, rupees, type RetailInvoice } from "@/lib/retail";
+import { ReturnModal } from "@/components/retail/return-modal";
+import { RETAIL_ACCENT, newClientRef, payStatusLabel, rupees, type RetailInvoice, type RetailReturn } from "@/lib/retail";
 
 const actionCls = "inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50";
 const inputCls = "w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
@@ -72,6 +74,16 @@ export default function RetailInvoicePage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const [paying, setPaying] = useState(false);
+  const [returning, setReturning] = useState(false);
+  const returns = useQuery({
+    queryKey: ["retail-returns", "invoice", id],
+    queryFn: async () => (await api.get("/retail/returns", { params: { invoice_id: id } })).data.data as RetailReturn[],
+  });
+  const cancelPayment = useMutation({
+    mutationFn: ({ pid, reason }: { pid: string; reason: string }) => api.post(`/retail/payments/${pid}/cancel`, { reason }),
+    onSuccess: () => { setError(""); refresh(); },
+    onError: (e: unknown) => setError(parseApiError(e, "Could not cancel this payment.")),
+  });
   const [version, setVersion] = useState(0);
   const [error, setError] = useState("");
   const { data, isLoading, isError } = useQuery({
@@ -92,6 +104,7 @@ export default function RetailInvoicePage() {
 
   return (
     <>
+      {returning && data && <ReturnModal invoice={data} onClose={() => setReturning(false)} />}
       {paying && data && <PaymentModal invoice={data} onClose={() => setPaying(false)} onSaved={() => { setPaying(false); refresh(); }} />}
       <PdfDocumentPage
         title="Retail bill"
@@ -117,6 +130,13 @@ export default function RetailInvoicePage() {
                 </button>
               </Can>
             )}
+            {data && data.items.some((i) => Number(i.quantity) > Number(data.returned_qty?.[i.id] ?? 0)) && (
+              <Can perm="retail.collect">
+                <button className={actionCls} onClick={() => setReturning(true)}>
+                  <Undo2 className="h-4 w-4" /> Return items
+                </button>
+              </Can>
+            )}
             <Can perm="retail.manage">
               <button className={`${actionCls} text-destructive`} disabled={cancel.isPending}
                 onClick={() => {
@@ -136,6 +156,26 @@ export default function RetailInvoicePage() {
                 Cancelled — {data.cancel_reason}. Stock was returned to the warehouse.
               </p>
             )}
+            {(data.coupon_code || data.points_redeemed > 0 || data.points_earned > 0) && (
+              <div className="flex flex-wrap gap-x-6 gap-y-1 rounded-2xl border border-border bg-card px-4 py-3 text-sm">
+                {data.coupon_code && <span>Coupon <b className="font-mono">{data.coupon_code}</b> − {rupees(data.coupon_discount)}</span>}
+                {data.points_redeemed > 0 && <span>Points used <b>{data.points_redeemed}</b> − {rupees(data.points_discount)}</span>}
+                {data.points_earned > 0 && data.status === "active" && (
+                  <span>Points earned <b>{data.points_earned}</b>{data.points_awarded ? "" : " — added once fully paid"}</span>
+                )}
+              </div>
+            )}
+            {(returns.data ?? []).length > 0 && (
+              <div className="rounded-2xl border border-border bg-card p-4 text-sm">
+                <p className="font-semibold mb-1.5">Returns · {rupees(data.returned_amount)}{Number(data.refunded_amount) > 0 && ` (refunded ${rupees(data.refunded_amount)})`}</p>
+                {(returns.data ?? []).map((r) => (
+                  <Link key={r.id} href={`/sales/retail/returns/${r.id}`} className="flex justify-between hover:underline">
+                    <span>{r.return_number} · {fmtDate(r.return_date)} · {r.reason}</span>
+                    <span className="tabular-nums">{rupees(r.return_amount)}</span>
+                  </Link>
+                ))}
+              </div>
+            )}
             {data.discount_approved && (
               <p className="text-xs text-amber-700 dark:text-amber-400">Discount above the usual maximum — approved when billed.</p>
             )}
@@ -146,10 +186,22 @@ export default function RetailInvoicePage() {
                   <tbody>
                     {data.payments.map((p) => (
                       <tr key={p.id} className="border-t border-border first:border-0">
-                        <td className="py-1.5 pr-3 font-mono text-xs">{p.receipt_number}</td>
+                        <td className="py-1.5 pr-3 font-mono text-xs">
+                          {p.batch_ref ? <Link className="hover:underline" href={`/sales/retail/receipts/${p.batch_ref}`}>{p.receipt_number}</Link> : p.receipt_number}
+                        </td>
                         <td className="py-1.5 pr-3">{fmtDate(p.payment_date)}</td>
                         <td className="py-1.5 pr-3 capitalize">{p.mode}{p.reference ? ` · ${p.reference}` : ""}</td>
-                        <td className={`py-1.5 text-right tabular-nums ${p.status === "cancelled" ? "line-through text-muted-foreground" : ""}`}>{rupees(p.amount)}</td>
+                        <td className={`py-1.5 text-right tabular-nums ${p.status === "cancelled" ? "line-through text-muted-foreground" : ""}`} title={p.cancel_reason ?? undefined}>{rupees(p.amount)}</td>
+                        <td className="py-1.5 pl-3 text-right w-16">
+                          {p.status === "active" && active && (
+                            <Can perm="retail.manage">
+                              <button className="text-xs text-destructive" onClick={() => {
+                                const reason = prompt("Cancel this payment? Give the reason:");
+                                if (reason && reason.trim().length >= 3) cancelPayment.mutate({ pid: p.id, reason: reason.trim() });
+                              }}>Cancel</button>
+                            </Can>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

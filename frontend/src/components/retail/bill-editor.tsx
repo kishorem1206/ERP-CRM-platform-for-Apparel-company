@@ -10,7 +10,8 @@ import { CustomerPicker } from "@/components/retail/customer-picker";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import {
   RETAIL_ACCENT, newClientRef, previewBill, previewLine, productLabel, rupees,
-  type DraftLine, type RetailCustomer, type RetailEstimate, type RetailProduct, type RetailSettings,
+  couponText, daysToBirthday,
+  type BillPreview, type DraftLine, type RetailCoupon, type RetailCustomer, type RetailEstimate, type RetailProduct, type RetailSettings,
 } from "@/lib/retail";
 
 const inputCls =
@@ -91,7 +92,44 @@ export function BillEditor({ mode, estimate }: { mode: "invoice" | "estimate"; e
   const setLine = (key: string, patch: Partial<DraftLine>) => setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
   const bill = Number(billPct) || 0;
-  const totals = useMemo(() => previewBill(lines, bill), [lines, bill]);
+  const local = useMemo(() => previewBill(lines, bill), [lines, bill]);
+
+  // Coupon and loyalty points (bills only). Applied values go to the server
+  // preview, which works the bill out exactly as it will be saved.
+  const [couponInput, setCouponInput] = useState("");
+  const [couponCode, setCouponCode] = useState("");
+  const [pointsInput, setPointsInput] = useState("");
+  const [redeemPoints, setRedeemPoints] = useState(0);
+  useEffect(() => { setCouponCode(""); setCouponInput(""); setRedeemPoints(0); setPointsInput(""); }, [customer?.id]);
+  const coupons = useQuery({
+    queryKey: ["retail-customer-coupons", customer?.id],
+    queryFn: async () => (await api.get(`/retail/customers/${customer!.id}/coupons`)).data.data as RetailCoupon[],
+    enabled: mode === "invoice" && !!customer,
+  });
+  const previewBody = JSON.stringify({
+    customer_id: customer?.id ?? null, bill_discount_pct: bill, coupon_code: couponCode || null, redeem_points: redeemPoints,
+    items: lines.filter((l) => Number(l.quantity) > 0).map((l) => ({
+      product_id: l.product.product_id, variant_id: l.product.variant_id, quantity: Number(l.quantity),
+      item_discount_pct: Number(l.discount) || 0, unit_price: l.product.mrp ? undefined : Number(l.price) || undefined,
+    })),
+  });
+  const [debouncedPreview, setDebouncedPreview] = useState(previewBody);
+  useEffect(() => { const t = setTimeout(() => setDebouncedPreview(previewBody), 300); return () => clearTimeout(t); }, [previewBody]);
+  const wantPreview = mode === "invoice" && lines.length > 0 && (!!customer || !!couponCode);
+  const preview = useQuery({
+    queryKey: ["retail-bill-preview", debouncedPreview],
+    queryFn: async () => (await api.post("/retail/invoices/preview", JSON.parse(debouncedPreview))).data.data as BillPreview,
+    enabled: wantPreview && JSON.parse(debouncedPreview).items.length > 0,
+    retry: false,
+  });
+  const previewError = wantPreview && preview.isError ? parseApiError(preview.error, "Could not work out this bill.") : "";
+  const p = wantPreview && preview.data && !preview.isError ? preview.data : null;
+  const totals = p ? {
+    gross: Number(p.gross_amount), discount: Number(p.discount_amount), coupon: Number(p.coupon_discount),
+    points: Number(p.points_discount), taxable: Number(p.taxable_amount),
+    gst: Number(p.cgst_amount) + Number(p.sgst_amount), roundOff: Number(p.round_off), total: Number(p.total_amount),
+  } : { ...local, coupon: 0, points: 0 };
+  const bdayIn = daysToBirthday(customer?.date_of_birth ?? null);
   const lo = Number(settings.data?.min_discount_pct ?? 0);
   const hi = Number(settings.data?.max_discount_pct ?? 100);
   const canApprove = can("retail.discount_approve") && !!settings.data?.allow_approved_override;
@@ -102,6 +140,7 @@ export function BillEditor({ mode, estimate }: { mode: "invoice" | "estimate"; e
     customer_id: customer?.id ?? null,
     bill_discount_pct: bill,
     notes: notes || null,
+    ...(mode === "invoice" ? { coupon_code: couponCode || null, redeem_points: redeemPoints } : {}),
     items: lines.map((l) => ({
       product_id: l.product.product_id, variant_id: l.product.variant_id,
       quantity: Number(l.quantity), item_discount_pct: Number(l.discount) || 0,
@@ -140,6 +179,7 @@ export function BillEditor({ mode, estimate }: { mode: "invoice" | "estimate"; e
     if (noPrice) return setError(`${productLabel(noPrice.product)} has no MRP — enter its price.`);
     if (mode === "invoice" && paymentMode === "credit" && !customer) return setError("A credit bill needs a customer.");
     if (mode === "invoice" && paymentMode === "credit" && Number(paidNow) > totals.total) return setError("Paid now can't be more than the total.");
+    if (previewError) return setError(previewError);
     save.mutate();
   }
 
@@ -250,7 +290,60 @@ export function BillEditor({ mode, estimate }: { mode: "invoice" | "estimate"; e
         <div className="rounded-2xl border border-border bg-card p-4 space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Customer</p>
           <CustomerPicker value={customer} onChange={setCustomer} />
+          {customer && bdayIn != null && bdayIn <= 7 && (
+            <p className="text-xs font-semibold text-pink-600 dark:text-pink-400">
+              {bdayIn === 0 ? "🎂 Birthday today!" : `🎂 Birthday in ${bdayIn} day${bdayIn === 1 ? "" : "s"}`}
+            </p>
+          )}
         </div>
+
+        {mode === "invoice" && (
+          <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Coupon & points</p>
+            <div className="flex gap-2">
+              <input value={couponInput} onChange={(e) => setCouponInput(e.target.value.toUpperCase())} placeholder="Coupon code"
+                className={`${inputCls} flex-1 uppercase`} />
+              {couponCode ? (
+                <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }} className="px-3 rounded-lg border text-xs">Remove</button>
+              ) : (
+                <button type="button" disabled={!couponInput.trim()} onClick={() => setCouponCode(couponInput.trim())}
+                  className="px-3 rounded-lg text-xs font-semibold text-white disabled:opacity-40" style={{ background: RETAIL_ACCENT }}>Apply</button>
+              )}
+            </div>
+            {!couponCode && (coupons.data ?? []).length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {(coupons.data ?? []).slice(0, 6).map((c) => (
+                  <button key={c.id} type="button" onClick={() => { setCouponInput(c.code); setCouponCode(c.code); }}
+                    title={`${c.name} — ${couponText(c)}`}
+                    className="rounded-full border border-dashed px-2.5 py-0.5 text-[11px] font-semibold hover:bg-muted"
+                    style={{ borderColor: RETAIL_ACCENT, color: RETAIL_ACCENT }}>
+                    {c.kind === "birthday" ? "🎂 " : ""}{c.code} · {couponText(c)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {customer && settings.data?.loyalty_enabled && (
+              <div className="space-y-1.5 border-t border-border pt-3">
+                <p className="text-xs text-muted-foreground">
+                  Points balance <b className="text-foreground">{p?.points_balance ?? customer.loyalty_points}</b>
+                  {p?.max_redeem_points != null && ` · can use up to ${p.max_redeem_points}`}
+                  {` · 1 point = ${rupees(settings.data.point_value)}`}
+                </p>
+                <div className="flex gap-2">
+                  <input type="number" min="0" step="1" value={pointsInput} onChange={(e) => setPointsInput(e.target.value)}
+                    placeholder="Points to redeem" className={`${inputCls} flex-1`} />
+                  {redeemPoints ? (
+                    <button type="button" onClick={() => { setRedeemPoints(0); setPointsInput(""); }} className="px-3 rounded-lg border text-xs">Remove</button>
+                  ) : (
+                    <button type="button" disabled={!(Number(pointsInput) > 0)} onClick={() => setRedeemPoints(Math.floor(Number(pointsInput)))}
+                      className="px-3 rounded-lg text-xs font-semibold text-white disabled:opacity-40" style={{ background: RETAIL_ACCENT }}>Redeem</button>
+                  )}
+                </div>
+              </div>
+            )}
+            {previewError && <p className="text-xs text-destructive">{previewError}</p>}
+          </div>
+        )}
 
         <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -265,6 +358,8 @@ export function BillEditor({ mode, estimate }: { mode: "invoice" | "estimate"; e
           <dl className="space-y-1 text-sm border-t border-border pt-3">
             <Row label="MRP value" value={rupees(totals.gross)} />
             {totals.discount > 0 && <Row label="Discount" value={`− ${rupees(totals.discount)}`} />}
+            {totals.coupon > 0 && <Row label={`Coupon ${p?.coupon_code ?? ""}`} value={`− ${rupees(totals.coupon)}`} />}
+            {totals.points > 0 && <Row label={`Points (${p?.points_redeemed ?? redeemPoints})`} value={`− ${rupees(totals.points)}`} />}
             <Row label="Taxable value" value={rupees(totals.taxable)} muted />
             <Row label="GST (incl.)" value={rupees(totals.gst)} muted />
             {totals.roundOff !== 0 && <Row label="Round off" value={rupees(totals.roundOff)} muted />}
@@ -273,6 +368,11 @@ export function BillEditor({ mode, estimate }: { mode: "invoice" | "estimate"; e
             <span className="text-sm font-semibold">Total</span>
             <span className="text-2xl font-bold tabular-nums">{rupees(totals.total, 0)}</span>
           </div>
+          {p && p.points_earned > 0 && (
+            <p className="text-[11px] text-muted-foreground text-right">
+              Earns {p.points_earned} point{p.points_earned === 1 ? "" : "s"}{paymentMode === "credit" ? " once fully paid" : ""}
+            </p>
+          )}
         </div>
 
         {mode === "invoice" ? (

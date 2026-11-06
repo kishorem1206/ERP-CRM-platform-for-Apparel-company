@@ -463,10 +463,14 @@ def _retail_lines(items) -> list[dict]:
     ]
 
 
-def _retail_totals(doc) -> list[tuple[str, str]]:
+def _retail_totals(doc, coupon_code: str | None = None) -> list[tuple[str, str]]:
     rows = [("MRP value", inr(doc.gross_amount))]
     if doc.discount_amount:
         rows.append(("Discount", f"- {inr(doc.discount_amount)}"))
+    if getattr(doc, "coupon_discount", 0):
+        rows.append((f"Coupon {coupon_code or ''}".strip(), f"- {inr(doc.coupon_discount)}"))
+    if getattr(doc, "points_discount", 0):
+        rows.append((f"Loyalty points ({doc.points_redeemed})", f"- {inr(doc.points_discount)}"))
     rows += [("Taxable value", inr(doc.taxable_amount)), ("CGST", inr(doc.cgst_amount)), ("SGST", inr(doc.sgst_amount))]
     if doc.round_off:
         rows.append(("Round off", inr(doc.round_off)))
@@ -493,14 +497,23 @@ async def retail_invoice_pdf(invoice_id: UUID, db: DBSession, user: AuthUser, hi
     meta = [("Payment", "Cash" if inv.payment_mode == "cash" else "Credit"),
             ("Status", inv.payment_status.replace("_", " ").title())]
     if inv.payment_mode == "credit":
-        meta += [("Paid", inr(inv.amount_paid)), ("Balance due", inr(inv.total_amount - inv.amount_paid))]
+        from app.services.retail import outstanding_of
+        meta += [("Paid", inr(inv.amount_paid - inv.refunded_amount)), ("Balance due", inr(outstanding_of(inv)))]
+    if inv.returned_amount:
+        meta.append(("Returned", inr(inv.returned_amount)))
         if inv.due_date:
             meta.append(("Due date", date_text(inv.due_date)))
+    coupon_code = None
+    if inv.coupon_id:
+        from app.models.retail import RetailCoupon
+        coupon_code = (await db.execute(select(RetailCoupon.code).where(RetailCoupon.id == inv.coupon_id))).scalar_one_or_none()
+    if inv.points_earned and inv.status == "active":
+        meta.append(("Points earned", f"{inv.points_earned}" + ("" if inv.points_awarded else " (on full payment)")))
     doc = {
         "title": "Tax invoice", "number": inv.invoice_number, "date": date_text(inv.invoice_date),
         "status": "cancelled" if inv.status == "cancelled" else None, "meta": meta,
         "parties": _retail_party(inv.customer), "lines": _retail_lines(inv.items),
-        "totals": _retail_totals(inv), "grand_total": inr(inv.total_amount),
+        "totals": _retail_totals(inv, coupon_code), "grand_total": inr(inv.total_amount),
         "notes": "Prices are inclusive of GST." + (f" {inv.notes}" if inv.notes else ""),
     }
     return _pdf(await _company(db, user.company_id), doc, "RetailInvoice", inv.invoice_number, hide=hide)
@@ -521,3 +534,60 @@ async def retail_estimate_pdf(estimate_id: UUID, db: DBSession, user: AuthUser, 
         "notes": "Prices are inclusive of GST. This is an estimate, not a bill." + (f" {est.notes}" if est.notes else ""),
     }
     return _pdf(await _company(db, user.company_id), doc, "RetailEstimate", est.estimate_number, hide=hide)
+
+
+@router.get("/retail-receipts/{batch_ref}/pdf")
+async def retail_receipt_pdf(batch_ref: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
+    """Payment receipt: one collection, possibly spread over several bills."""
+    user.require("retail.view")
+    from app.models.retail import RetailCustomer
+    from app.services.retail import RetailService, outstanding_of
+    rows = await RetailService(db).receipt(batch_ref, user.company_id)
+    if not rows:
+        raise HTTPException(404, "Receipt not found")
+    first, first_inv = rows[0]
+    customer = (await db.execute(select(RetailCustomer).where(RetailCustomer.id == first_inv.customer_id))).scalar_one_or_none() if first_inv.customer_id else None
+    cancelled = all(p.status != "active" for p, _ in rows)
+    lines = [{
+        "description": f"Against bill {inv.invoice_number} ({date_text(inv.invoice_date)})",
+        "sub": "Cancelled" if p.status != "active" else f"Balance now: {inr(outstanding_of(inv))}",
+        "hsn": None, "qty": None, "unit": None, "rate": None, "discount": None, "amount": inr(p.amount),
+    } for p, inv in rows]
+    received = sum((p.amount for p, _ in rows if p.status == "active"), Decimal("0"))
+    meta = [("Received by", first.mode.upper() if first.mode in ("upi",) else first.mode.title())]
+    if first.reference:
+        meta.append(("Reference", first.reference))
+    doc = {
+        "title": "Payment receipt", "number": first.receipt_number, "date": date_text(first.payment_date),
+        "status": "cancelled" if cancelled else None, "meta": meta,
+        "parties": [{"label": "Received from", "name": customer.name if customer else "Walk-in customer",
+                     "lines": [f"Mobile {customer.mobile}"] if customer else []}],
+        "lines": lines, "totals": [], "grand_total": inr(received), "grand_total_label": "Amount received",
+        "notes": "Thank you for your payment.",
+    }
+    return _pdf(await _company(db, user.company_id), doc, "Receipt", first.receipt_number, hide=hide)
+
+
+@router.get("/retail-returns/{return_id}/pdf")
+async def retail_return_pdf(return_id: UUID, db: DBSession, user: AuthUser, hide: str | None = None):
+    user.require("retail.view")
+    from app.services.retail import RetailService
+    r = await RetailService(db).get_return(return_id, user.company_id)
+    if not r:
+        raise HTTPException(404, "Return not found")
+    meta = [("Against bill", r.invoice.invoice_number if r.invoice else "—")]
+    if r.applied_to_balance:
+        meta.append(("Off balance due", inr(r.applied_to_balance)))
+    if r.refund_amount:
+        meta.append(("Refunded", f"{inr(r.refund_amount)} ({(r.refund_mode or 'cash').title()})"))
+    if r.points_reversed:
+        meta.append(("Points taken back", str(r.points_reversed)))
+    doc = {
+        "title": "Credit note — Sales return", "number": r.return_number, "date": date_text(r.return_date), "status": None,
+        "meta": meta, "parties": _retail_party(r.customer),
+        "lines": [{"description": i.description, "sub": None, "hsn": None, "qty": qty(i.quantity), "unit": "Pcs",
+                   "rate": None, "discount": None, "amount": inr(i.amount)} for i in r.items],
+        "totals": [("Taxable value", inr(r.taxable_amount)), ("CGST", inr(r.cgst_amount)), ("SGST", inr(r.sgst_amount))],
+        "grand_total": inr(r.return_amount), "notes": f"Reason: {r.reason}",
+    }
+    return _pdf(await _company(db, user.company_id), doc, "RetailReturn", r.return_number, hide=hide)

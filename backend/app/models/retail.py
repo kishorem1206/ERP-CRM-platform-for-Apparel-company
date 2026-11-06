@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -35,6 +35,26 @@ class RetailSettings(Base):
     warehouse_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("warehouses.id"))
     credit_days: Mapped[int] = mapped_column(Integer, default=30)
     estimate_validity_days: Mapped[int] = mapped_column(Integer, default=7)
+    # Loyalty: 1 point per `amount_per_point` ₹ of eligible paid value; a
+    # point is worth `point_value` ₹; points may pay at most `max_redeem_pct`
+    # of a bill; points lapse `points_expiry_days` after they're earned (0 = never).
+    loyalty_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    amount_per_point: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("100"))
+    min_bill_for_points: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    min_redeem_points: Mapped[int] = mapped_column(Integer, default=100)
+    point_value: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=Decimal("1"))
+    max_redeem_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("20"))
+    points_expiry_days: Mapped[int] = mapped_column(Integer, default=365)
+    loyalty_excluded_category_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    # Birthday offer: a coupon per customer per birthday, valid in the
+    # birthday week (birthday +/- 3 days) or month, made `birthday_lead_days` ahead.
+    birthday_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    birthday_discount_type: Mapped[str] = mapped_column(String(10), default="percent")
+    birthday_discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("10"))
+    birthday_min_purchase: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    birthday_max_discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    birthday_window: Mapped[str] = mapped_column(String(10), default="week")
+    birthday_lead_days: Mapped[int] = mapped_column(Integer, default=7)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 
@@ -70,6 +90,7 @@ class RetailCustomer(Base):
     pincode: Mapped[Optional[str]] = mapped_column(String(10))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")   # active / inactive
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    loyalty_points: Mapped[int] = mapped_column(Integer, default=0)   # balance; the ledger is the record
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)   # registration date
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -160,6 +181,17 @@ class RetailInvoice(_TotalsMixin, Base):
     due_date: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # active / cancelled
     estimate_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_estimates.id"))
+    coupon_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_coupons.id"))
+    coupon_discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    points_redeemed: Mapped[int] = mapped_column(Integer, default=0)
+    points_discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    points_earned: Mapped[int] = mapped_column(Integer, default=0)
+    points_awarded: Mapped[bool] = mapped_column(Boolean, default=False)   # credit bills: once fully paid
+    # Returns: value handed back, money refunded, points taken back.
+    # Outstanding = total - returned - (paid - refunded).
+    returned_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))
+    refunded_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))
+    points_returned: Mapped[int] = mapped_column(Integer, default=0)
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     cancel_reason: Mapped[Optional[str]] = mapped_column(Text)
@@ -190,7 +222,6 @@ class RetailPayment(Base):
     later collection on a credit bill. Collections are not sales."""
     __tablename__ = "retail_payments"
     __table_args__ = (
-        UniqueConstraint("company_id", "receipt_number", name="uq_retail_payments_receipt"),
         UniqueConstraint("company_id", "client_ref", name="uq_retail_payments_client_ref"),
     )
 
@@ -204,7 +235,124 @@ class RetailPayment(Base):
     mode: Mapped[str] = mapped_column(String(20), nullable=False, default="cash")   # cash / upi / card / bank
     reference: Mapped[Optional[str]] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # active / cancelled
+    # Payments made together (one collection across several bills) share a batch and a receipt.
+    batch_ref: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    cancel_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     invoice: Mapped["RetailInvoice"] = relationship(back_populates="payments")
+
+
+class RetailCoupon(Base):
+    __tablename__ = "retail_coupons"
+    __table_args__ = (UniqueConstraint("company_id", "code", name="uq_retail_coupons_code"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    code: Mapped[str] = mapped_column(String(30), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")   # manual / promo / birthday
+    discount_type: Mapped[str] = mapped_column(String(10), nullable=False)          # percent / fixed
+    discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    min_purchase: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    max_discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    expiry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    max_uses: Mapped[Optional[int]] = mapped_column(Integer)
+    per_customer_limit: Mapped[Optional[int]] = mapped_column(Integer)
+    product_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    category_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_customers.id"))
+    birthday_year: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    customer: Mapped[Optional["RetailCustomer"]] = relationship()
+
+
+class RetailCouponRedemption(Base):
+    __tablename__ = "retail_coupon_redemptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    coupon_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_coupons.id"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_invoices.id"), nullable=False)
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_customers.id"))
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")   # active / reversed
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RetailLoyaltyEntry(Base):
+    """One line of a customer's points ledger."""
+    __tablename__ = "retail_loyalty_ledger"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    customer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_customers.id"), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(20), nullable=False)   # earned / redeemed / expired / adjusted / reversed
+    points: Mapped[int] = mapped_column(Integer, nullable=False)
+    balance_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    invoice_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_invoices.id"))
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    expires_on: Mapped[Optional[date]] = mapped_column(Date)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RetailReturn(Base):
+    """Items handed back from a retail bill (a partial return)."""
+    __tablename__ = "retail_returns"
+    __table_args__ = (
+        UniqueConstraint("company_id", "return_number", name="uq_retail_returns_number"),
+        UniqueConstraint("company_id", "client_ref", name="uq_retail_returns_client_ref"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
+    return_number: Mapped[str] = mapped_column(String(30), nullable=False)
+    client_ref: Mapped[Optional[str]] = mapped_column(String(64))
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_invoices.id"), nullable=False)
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_customers.id"))
+    return_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    return_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)     # incl. GST
+    taxable_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    cgst_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    sgst_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    applied_to_balance: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))  # reduced what was owed
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"))       # paid back
+    refund_mode: Mapped[Optional[str]] = mapped_column(String(20))
+    points_reversed: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    items: Mapped[list["RetailReturnItem"]] = relationship(back_populates="ret", cascade="all, delete-orphan")
+    invoice: Mapped["RetailInvoice"] = relationship()
+    customer: Mapped[Optional["RetailCustomer"]] = relationship()
+
+
+class RetailReturnItem(Base):
+    __tablename__ = "retail_return_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    return_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_returns.id", ondelete="CASCADE"), nullable=False)
+    invoice_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("retail_invoice_items.id"), nullable=False)
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id"))
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    cgst_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    sgst_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(15, 4), default=Decimal("0"))
+    inv_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_transactions.id"))
+
+    ret: Mapped["RetailReturn"] = relationship(back_populates="items")
