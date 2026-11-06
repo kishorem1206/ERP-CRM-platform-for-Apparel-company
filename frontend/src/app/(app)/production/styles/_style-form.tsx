@@ -6,6 +6,7 @@ import { Plus, Trash2, GripVertical } from "lucide-react";
 import api from "@/lib/api";
 import { Field, Input, Textarea, SegControl } from "@/components/create/ModalShell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { CostBasisPicker, asBasis, basisPreview, rateLabel } from "@/components/production/cost-basis";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { parseApiError } from "@/lib/api-error";
 import { TRIM_TYPES, guessTrimType } from "@/lib/trim-types";
@@ -361,7 +362,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
     setAdditionalCosts(d.additional_costs.map((a) => ({
       key: newId(), cost_type: a.cost_type === "agent_commission" ? "agent_commission" : "additional",
       description: a.description, amount: a.amount != null ? String(a.amount) : "",
-      basis: a.basis ?? "", party_vendor_id: a.party_vendor_id ?? "", notes: a.notes ?? "",
+      basis: asBasis(a.basis), party_vendor_id: a.party_vendor_id ?? "", notes: a.notes ?? "",
     })));
   }, [styleQuery.data]);
 
@@ -644,7 +645,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
 
   // ── Additional cost rows ─────────────────────────────────────────────────
   function addAdditionalCost() {
-    setAdditionalCosts((r) => [...r, { key: newId(), cost_type: "additional", description: "", amount: "", basis: "", party_vendor_id: "", notes: "" }]);
+    setAdditionalCosts((r) => [...r, { key: newId(), cost_type: "additional", description: "", amount: "", basis: "lumpsum", party_vendor_id: "", notes: "" }]);
   }
   function updateAdditionalCost(key: string, patch: Partial<AdditionalCostRow>) {
     setAdditionalCosts((r) => r.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -767,7 +768,7 @@ export function StyleForm({ styleId }: { styleId?: string }) {
           cost_type: a.cost_type,
           description: a.description.trim(),
           amount: a.amount ? Number(a.amount) : undefined,
-          basis: a.basis || undefined,
+          basis: asBasis(a.basis),
           party_vendor_id: a.cost_type === "agent_commission" && a.party_vendor_id ? a.party_vendor_id : undefined,
           notes: a.notes || undefined,
         })),
@@ -1544,9 +1545,14 @@ export function StyleForm({ styleId }: { styleId?: string }) {
                   <Input value={a.description} onChange={(e) => updateAdditionalCost(a.key, { description: e.target.value })} placeholder="Description, e.g. Freight / Agent commission for Order #123" className="flex-1" />
                   <RemoveRowButton onClick={() => removeAdditionalCost(a.key)} />
                 </div>
+                <CostBasisPicker value={asBasis(a.basis)} accent={INDIGO}
+                  onChange={(b) => updateAdditionalCost(a.key, { basis: b })} />
                 <div className="grid grid-cols-3 gap-2">
-                  <Input type="number" step="0.01" value={a.amount} onChange={(e) => updateAdditionalCost(a.key, { amount: e.target.value })} placeholder="Amount (₹)" />
-                  <Input value={a.basis} onChange={(e) => updateAdditionalCost(a.key, { basis: e.target.value })} placeholder="Basis, e.g. per_piece, lumpsum" />
+                  <Input type="number" step="0.01" min="0" max={asBasis(a.basis) === "percent" ? 100 : undefined} value={a.amount}
+                    onChange={(e) => updateAdditionalCost(a.key, { amount: e.target.value })} placeholder={rateLabel(asBasis(a.basis))} />
+                  <p className="col-span-2 self-center text-[11px] text-muted-foreground">
+                    {basisPreview(asBasis(a.basis), a.amount, null, targetPrice ? Number(targetPrice) : null)}
+                  </p>
                   {a.cost_type === "agent_commission" && (
                     <SearchableSelect clearable
                       value={a.party_vendor_id}

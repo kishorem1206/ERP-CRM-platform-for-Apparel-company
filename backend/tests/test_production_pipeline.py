@@ -767,3 +767,63 @@ def test_auto_fill_pulls_style_lines_added_after_the_lot():
     assert r["trim_on_stitching"]
     assert r["unmatched"] == ["No Such Trim"]
     assert r["again"] == 0 and r["lot_fabric_rows"] == 1  # nothing copied twice
+
+
+async def _run_cost_basis_scenario():
+    """Additional costs plan as a lump sum, ₹ per piece x pieces, or % of
+    selling value (target price x pieces); % follows a target price change."""
+    from app.schemas.production import LotAdditionalCostCreate, ProductionLotUpdate, StyleAdditionalCostIn
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            svc = ProductionService(db)
+            style = await svc.create_style(StyleCreate(
+                name=f"Test Style {uuid4().hex[:8]}", final_output_unit="Pieces", target_price=Decimal("350"),
+                additional_costs=[
+                    StyleAdditionalCostIn(description="Freight", amount=Decimal("5000"), basis="lumpsum"),
+                    StyleAdditionalCostIn(cost_type="agent_commission", description="Agent", amount=Decimal("20"), basis="per_pc"),
+                    StyleAdditionalCostIn(cost_type="agent_commission", description="Sourcing", amount=Decimal("2"), basis="% of FOB"),
+                ],
+            ), company_id, user_id)
+            lot = await svc.create_lot(ProductionLotCreate(style_id=style.id, planned_qty=500), company_id, user_id)
+            lot_id = lot.id
+            stitching = await svc.add_lot_additional_cost(lot_id, LotAdditionalCostCreate(
+                description="Stitching contractor", basis="percent", rate=Decimal("5"),
+            ), company_id)
+            typed = await svc.add_lot_additional_cost(lot_id, LotAdditionalCostCreate(
+                description="Courier", planned_amount=Decimal("750"),
+            ), company_id)
+            added = (stitching.rate, typed.basis)
+
+            async def planned():
+                db.expire_all()
+                return {c.description: (c.basis, c.planned_amount) for c in (await svc.get_lot(lot_id, company_id)).additional_costs}
+
+            before = await planned()
+            await svc.update_lot(lot_id, ProductionLotUpdate(target_sp=Decimal("400")), company_id)
+            after = await planned()
+            no_price_lot = await svc.create_lot(ProductionLotCreate(planned_qty=10, additional_costs=[
+                LotAdditionalCostCreate(description="Pct without price", basis="percent", rate=Decimal("5")),
+            ]), company_id, user_id)
+            no_price_id = no_price_lot.id
+            db.expire_all()
+            no_price = (await svc.get_lot(no_price_id, company_id)).additional_costs[0].planned_amount
+            return before, after, added, no_price
+        finally:
+            await db.rollback()
+
+
+def test_additional_cost_basis_lumpsum_per_piece_percent():
+    before, after, (stitching_rate, typed_basis), no_price = asyncio.run(_run_cost_basis_scenario())
+    assert before["Freight"] == ("lumpsum", Decimal("5000.00"))
+    assert before["Agent"] == ("per_piece", Decimal("10000.00"))        # ₹20 x 500
+    assert before["Sourcing"] == ("percent", Decimal("3500.00"))        # 2% x ₹350 x 500
+    assert before["Stitching contractor"] == ("percent", Decimal("8750.00"))  # 5% x ₹350 x 500
+    assert before["Courier"] == ("lumpsum", Decimal("750.00"))
+    assert after["Sourcing"][1] == Decimal("4000.00")                   # follows target price 400
+    assert after["Stitching contractor"][1] == Decimal("10000.00")
+    assert after["Agent"][1] == Decimal("10000.00")                     # per piece unchanged
+    assert after["Courier"][1] == Decimal("750.00")
+    assert stitching_rate == Decimal("5") and typed_basis == "lumpsum"
+    assert no_price is None

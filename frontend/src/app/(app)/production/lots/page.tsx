@@ -7,6 +7,7 @@ import api from "@/lib/api";
 import { DataTable, Column } from "@/components/shared/data-table";
 import { ModalPortal } from "@/components/shared/modal-portal";
 import { SearchableSelect } from "@/components/shared/searchable-select";
+import { CostBasisPicker, basisPreview, type CostBasis } from "@/components/production/cost-basis";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
@@ -81,7 +82,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
   const [season, setSeason] = useState("");
   const [notes, setNotes] = useState("");
   const [piecesPerBox, setPiecesPerBox] = useState("");
-  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; planned_amount: string; party_vendor_id: string }[]>([]);
+  const [costs, setCosts] = useState<{ key: number; cost_type: "additional" | "agent_commission"; description: string; basis: CostBasis; rate: string; party_vendor_id: string }[]>([]);
   const [sizeRows, setSizeRows] = useState<LotSizeRow[]>([]);
   const [error, setError] = useState("");
 
@@ -89,6 +90,10 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
     queryKey: ["styles-list"],
     queryFn: async () => (await api.get("/production/styles")).data.data ?? [],
   });
+  const styleTargetPrice = (() => {
+    const st = (styles ?? []).find((x: { id: string; target_price?: string | number | null }) => x.id === styleId);
+    return st?.target_price != null ? Number(st.target_price) || null : null;
+  })();
   const { data: agentVendors } = useQuery({
     queryKey: ["vendors", "agent"],
     queryFn: async () => (await api.get("/purchase/vendors", { params: { vendor_type: "agent", page_size: 200 } })).data.data as { id: string; name: string }[],
@@ -119,7 +124,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
         sizes: sizeRowsPayload(sizeRows),
         additional_costs: costs.filter((c) => c.description.trim()).map((c) => ({
           cost_type: c.cost_type, description: c.description.trim(),
-          planned_amount: c.planned_amount ? Number(c.planned_amount) : undefined,
+          basis: c.basis, rate: c.rate ? Number(c.rate) : undefined,
           party_vendor_id: c.cost_type === "agent_commission" && c.party_vendor_id ? c.party_vendor_id : undefined,
         })),
       }),
@@ -242,7 +247,7 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
           <div>
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-muted-foreground">Additional Costs & Agent Commission (optional)</label>
-              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", planned_amount: "", party_vendor_id: "" }])}
+              <button type="button" onClick={() => setCosts((c) => [...c, { key: Date.now(), cost_type: "additional", description: "", basis: "lumpsum", rate: "", party_vendor_id: "" }])}
                 className="text-xs font-semibold" style={{ color: INDIGO }}>+ Add</button>
             </div>
             {costs.map((c) => (
@@ -258,9 +263,16 @@ function AddLotModal({ onClose }: { onClose: () => void }) {
                 </div>
                 <input value={c.description} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, description: e.target.value } : x))}
                   placeholder="Description" className="flex-1 rounded border border-input bg-background px-2 py-1.5 text-xs" />
-                <input type="number" step="0.01" value={c.planned_amount} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, planned_amount: e.target.value } : x))}
-                  placeholder="₹ planned" className="w-24 rounded border border-input bg-background px-2 py-1.5 text-xs" />
+                <input type="number" step="0.01" min="0" value={c.rate} onChange={(e) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, rate: e.target.value } : x))}
+                  placeholder={c.basis === "percent" ? "%" : "₹"} className="w-24 rounded border border-input bg-background px-2 py-1.5 text-xs" />
                 <button type="button" onClick={() => setCosts((r) => r.filter((x) => x.key !== c.key))} className="text-muted-foreground px-1">×</button>
+                <div className="w-full flex flex-wrap items-center gap-2">
+                  <CostBasisPicker value={c.basis} accent={INDIGO}
+                    onChange={(b) => setCosts((r) => r.map((x) => x.key === c.key ? { ...x, basis: b } : x))} />
+                  <span className="text-[11px] text-muted-foreground">
+                    {basisPreview(c.basis, c.rate, sizeRowsTotal(sizeRows) || parseInt(plannedQty) || null, styleTargetPrice)}
+                  </span>
+                </div>
                 {c.cost_type === "agent_commission" && (
                   <div className="w-full">
                     <SearchableSelect clearable

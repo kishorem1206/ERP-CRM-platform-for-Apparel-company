@@ -779,7 +779,9 @@ class LotAdditionalCost(Base):
     description: Mapped[str] = mapped_column(String(200), nullable=False)
     planned_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
     actual_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2))
-    basis: Mapped[Optional[str]] = mapped_column(String(30))
+    basis: Mapped[Optional[str]] = mapped_column(String(30))   # lumpsum / per_piece / percent
+    # The entered ₹ or % that planned_amount was worked out from (NULL = typed directly).
+    rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     party_vendor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

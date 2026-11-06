@@ -1,4 +1,5 @@
 "use client";
+import { basisText } from "@/components/production/cost-basis";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Copy, Pencil } from "lucide-react";
@@ -384,8 +385,7 @@ export default function StyleDetailPage() {
                   )}
                 </div>
                 <span className="text-muted-foreground">
-                  {a.amount ? `₹${Number(a.amount).toLocaleString("en-IN")}` : "—"}
-                  {a.basis ? ` / ${a.basis}` : ""}
+                  {a.amount != null ? (a.basis === "lumpsum" || !a.basis ? `₹${Number(a.amount).toLocaleString("en-IN")} lump sum` : basisText(a.basis, a.amount)) : "—"}
                 </span>
               </div>
             ))}

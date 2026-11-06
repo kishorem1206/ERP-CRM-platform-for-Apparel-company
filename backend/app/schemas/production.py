@@ -254,13 +254,35 @@ class StyleProcessOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+
+# Additional cost / agent commission basis. "percent" is % of the lot's selling
+# value (target price x planned pieces).
+COST_BASES = ("lumpsum", "per_piece", "percent")
+
+
+def normalize_cost_basis(basis: str | None) -> str:
+    b = (basis or "").strip().lower()
+    if b in COST_BASES:
+        return b
+    if "%" in b or "percent" in b:
+        return "percent"
+    if "piece" in b or "pc" in b:
+        return "per_piece"
+    return "lumpsum"
+
+
 class StyleAdditionalCostIn(BaseModel):
     cost_type: str = "additional"   # additional / agent_commission
     description: str
-    amount: Decimal | None = None
-    basis: str | None = None
+    amount: Decimal | None = None   # ₹ for lumpsum / per_piece, % for percent
+    basis: str | None = None        # lumpsum / per_piece / percent
     party_vendor_id: UUID | None = None
     notes: str | None = None
+
+    @field_validator("basis")
+    @classmethod
+    def _normalize_basis(cls, v: str | None) -> str:
+        return normalize_cost_basis(v)
 
     @field_validator("cost_type")
     @classmethod
@@ -518,11 +540,17 @@ class LotPartColourOut(BaseModel):
 class LotAdditionalCostCreate(BaseModel):
     cost_type: str = "additional"   # additional / agent_commission
     description: str
-    planned_amount: Decimal | None = None
+    planned_amount: Decimal | None = None   # used as-is when no rate is given
     actual_amount: Decimal | None = None
-    basis: str | None = None
+    basis: str | None = None                # lumpsum / per_piece / percent
+    rate: Decimal | None = None             # ₹ (per piece) or % — planned is worked out from it
     party_vendor_id: UUID | None = None
     notes: str | None = None
+
+    @field_validator("basis")
+    @classmethod
+    def _normalize_basis(cls, v: str | None) -> str:
+        return normalize_cost_basis(v)
 
     @field_validator("cost_type")
     @classmethod
@@ -835,6 +863,7 @@ class LotAdditionalCostOut(BaseModel):
     planned_amount: Decimal | None
     actual_amount: Decimal | None
     basis: str | None
+    rate: Decimal | None = None
     party_vendor_id: UUID | None
     notes: str | None
     model_config = {"from_attributes": True}

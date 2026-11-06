@@ -11,6 +11,7 @@ import { ModalShell } from "@/components/shared/modal-shell";
 import { SearchableSelect } from "@/components/shared/searchable-select";
 import { useCreateMaster } from "@/lib/use-create-master";
 import { useVendorTypeLabel } from "@/lib/vendor-types";
+import { CostBasisPicker, basisPreview, basisText, rateLabel, type CostBasis } from "@/components/production/cost-basis";
 import { DatePicker } from "@/components/shared/date-picker";
 import { Can } from "@/lib/permissions";
 
@@ -102,7 +103,7 @@ interface StageSize {
 interface LotAdditionalCost {
   id: string; cost_type: string; description: string;
   planned_amount: number | null; actual_amount: number | null;
-  basis: string | null; party_vendor_id: string | null; notes: string | null;
+  basis: string | null; rate: number | null; party_vendor_id: string | null; notes: string | null;
 }
 interface LotTrim {
   id: string; trim_name: string; category: string | null; trim_type: string | null; stage_id: string | null; unit: string | null;
@@ -429,10 +430,13 @@ function EditSellingPriceModal({ lot, onClose }: { lot: LotDetail; onClose: () =
 }
 
 // ── Add Additional Cost / Agent Commission Modal ──────────────────────────────
-function AddLotCostModal({ lotId, onClose }: { lotId: string; onClose: () => void }) {
+function AddLotCostModal({ lotId, pieces, sellingPrice, onClose }: {
+  lotId: string; pieces: number; sellingPrice: number | null; onClose: () => void;
+}) {
   const qc = useQueryClient();
   const [costType, setCostType] = useState<"additional" | "agent_commission">("additional");
   const [description, setDescription] = useState("");
+  const [basis, setBasis] = useState<CostBasis>("lumpsum");
   const [planned, setPlanned] = useState("");
   const [actual, setActual] = useState("");
   const [partyVendorId, setPartyVendorId] = useState("");
@@ -443,7 +447,7 @@ function AddLotCostModal({ lotId, onClose }: { lotId: string; onClose: () => voi
   const mut = useMutation({
     mutationFn: () => api.post(`/production/lots/${lotId}/additional-costs`, {
       cost_type: costType, description: description.trim(),
-      planned_amount: planned ? Number(planned) : undefined,
+      basis, rate: planned ? Number(planned) : undefined,
       actual_amount: actual ? Number(actual) : undefined,
       party_vendor_id: costType === "agent_commission" && partyVendorId ? partyVendorId : undefined,
     }),
@@ -469,16 +473,21 @@ function AddLotCostModal({ lotId, onClose }: { lotId: string; onClose: () => voi
           <label className="block text-xs font-medium text-muted-foreground mb-1">Description</label>
           <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Freight" autoFocus />
         </div>
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Charged as</label>
+          <CostBasisPicker value={basis} onChange={setBasis} accent={INDIGO} />
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Planned (₹)</label>
-            <input type="number" step="0.01" className={inputCls} value={planned} onChange={(e) => setPlanned(e.target.value)} />
+            <label className="block text-xs font-medium text-muted-foreground mb-1">{basis === "lumpsum" ? "Planned (₹)" : rateLabel(basis)}</label>
+            <input type="number" step="0.01" min="0" className={inputCls} value={planned} onChange={(e) => setPlanned(e.target.value)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Actual (₹)</label>
             <input type="number" step="0.01" className={inputCls} value={actual} onChange={(e) => setActual(e.target.value)} />
           </div>
         </div>
+        {planned && <p className="text-[11px] text-muted-foreground -mt-2">{basisPreview(basis, planned, pieces, sellingPrice)}</p>}
         {costType === "agent_commission" && (
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">Agent</label>
@@ -3759,6 +3768,9 @@ export default function LotDetailPage() {
                     {a.cost_type === "agent_commission" ? "Agent Commission" : "Additional"}
                   </span>
                   <span className="font-medium">{a.description}</span>
+                  {a.rate != null && a.basis !== "lumpsum" && (
+                    <span className="text-[11px] text-muted-foreground">{basisText(a.basis, a.rate)}</span>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-muted-foreground text-xs">
@@ -4083,7 +4095,11 @@ export default function LotDetailPage() {
           onClose={() => setEntryStage(null)}
         />
       )}
-      {showAddCost && <AddLotCostModal lotId={lot.id} onClose={() => setShowAddCost(false)} />}
+      {showAddCost && (
+        <AddLotCostModal lotId={lot.id} pieces={lot.planned_qty}
+          sellingPrice={lot.target_sp != null ? Number(lot.target_sp) || null : null}
+          onClose={() => setShowAddCost(false)} />
+      )}
       {actualCost && <RecordActualCostModal cost={actualCost} lotId={lot.id} onClose={() => setActualCost(null)} />}
       {actualTrim && (
         <RecordActualQtyModal

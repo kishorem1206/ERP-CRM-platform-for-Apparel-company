@@ -32,7 +32,7 @@ from app.schemas.production import (
     ProductionOutputCreate, SizeChartCreate, StyleSizeIn,
     StageChallanBillUpdate, StageChallanCreate, StageChallanReceive,
     StageCreate, StageEntryCreate, StageSizeUpdate, StageUpdate, StyleCreate, StyleProcessIn,
-    TargetPriceCheckOut, TargetPriceSuggestion,
+    TargetPriceCheckOut, TargetPriceSuggestion, normalize_cost_basis,
 )
 from app.services.inventory import InventoryService
 from app.services.sku import build_variant_sku
@@ -415,6 +415,24 @@ _STYLE_LOT_LINKS = (
     (StylePartColour, LotPartColour.style_part_colour_id, lambda r: (r.style_part_id, r.colour_id)),
 )
 
+
+
+def planned_cost(basis: str | None, rate: Decimal | None, pieces: int | None, selling_price: Decimal | None) -> Decimal | None:
+    """A lot's planned amount for an additional cost: a lump sum as entered,
+    ₹ per piece x pieces, or % of selling value (selling price x pieces).
+    None when it can't be worked out yet (e.g. no target price for a %)."""
+    if rate is None:
+        return None
+    basis = normalize_cost_basis(basis)
+    if basis == "lumpsum":
+        return Decimal(rate).quantize(Decimal("0.01"))
+    if not pieces:
+        return None
+    if basis == "per_piece":
+        return (Decimal(rate) * pieces).quantize(Decimal("0.01"))
+    if selling_price is None:
+        return None
+    return (Decimal(rate) / 100 * Decimal(selling_price) * pieces).quantize(Decimal("0.01"))
 
 class ProductionService:
     def __init__(self, db: AsyncSession):
@@ -1528,18 +1546,22 @@ class ProductionService:
         # planned_amount is frozen here; actual_amount is recorded during execution.
         if style:
             for ac in style.additional_costs:
+                basis = normalize_cost_basis(ac.basis)
                 self.db.add(LotAdditionalCost(
                     production_lot_id=lot.id, style_additional_cost_id=ac.id,
                     cost_type=ac.cost_type, description=ac.description,
-                    planned_amount=ac.amount, basis=ac.basis,
+                    planned_amount=planned_cost(basis, ac.amount, body.planned_qty, target_sp),
+                    rate=ac.amount, basis=basis,
                     party_vendor_id=ac.party_vendor_id, notes=ac.notes,
                     created_at=now,
                 ))
 
         for ac in body.additional_costs:
+            basis = normalize_cost_basis(ac.basis)
             self.db.add(LotAdditionalCost(
                 production_lot_id=lot.id, cost_type=ac.cost_type, description=ac.description,
-                planned_amount=ac.planned_amount, actual_amount=ac.actual_amount, basis=ac.basis,
+                planned_amount=planned_cost(basis, ac.rate, body.planned_qty, target_sp) if ac.rate is not None else ac.planned_amount,
+                rate=ac.rate, actual_amount=ac.actual_amount, basis=basis,
                 party_vendor_id=ac.party_vendor_id, notes=ac.notes, created_at=now,
             ))
 
@@ -1788,6 +1810,11 @@ class ProductionService:
         updates = body.model_dump(exclude_unset=True)
         for f, v in updates.items():
             setattr(lot, f, v)
+        if "target_sp" in updates:
+            # % of selling value follows the lot's target price.
+            for cost in lot.additional_costs:
+                if cost.rate is not None and cost.basis == "percent":
+                    cost.planned_amount = planned_cost(cost.basis, cost.rate, lot.planned_qty, lot.target_sp)
         lot.updated_at = datetime.now(timezone.utc)
         if "actual_selling_price" in updates and lot.actual_selling_price is not None:
             await self._sync_product_pricing(lot, mrp=lot.actual_selling_price)
@@ -2567,9 +2594,14 @@ class ProductionService:
         )).scalar_one_or_none()
         if not lot:
             return None
+        basis = normalize_cost_basis(body.basis)
+        planned = (
+            planned_cost(basis, body.rate, lot.planned_qty, lot.target_sp)
+            if body.rate is not None else body.planned_amount
+        )
         cost = LotAdditionalCost(
             production_lot_id=lot_id, cost_type=body.cost_type, description=body.description,
-            planned_amount=body.planned_amount, actual_amount=body.actual_amount, basis=body.basis,
+            planned_amount=planned, rate=body.rate, actual_amount=body.actual_amount, basis=basis,
             party_vendor_id=body.party_vendor_id, notes=body.notes, created_at=datetime.now(timezone.utc),
         )
         self.db.add(cost)
