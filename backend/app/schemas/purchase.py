@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Vendor ──────────────────────────────────────────────────────────────────
@@ -100,6 +100,7 @@ class POItemCreate(BaseModel):
     unit_price: Decimal
     discount_pct: Decimal = Decimal("0")
     gst_rate: Decimal = Decimal("0")
+    tolerance_pct: Decimal | None = Field(default=None, ge=0, le=100)
     notes: str | None = None
 
 
@@ -108,8 +109,11 @@ class POItemOut(BaseModel):
     product_id: UUID
     variant_id: UUID | None
     unit_id: UUID
+    product_name: str | None = None
+    unit_name: str | None = None
     ordered_qty: Decimal
     received_qty: Decimal
+    tolerance_pct: Decimal | None = None
     unit_price: Decimal
     discount_pct: Decimal
     discount_amount: Decimal
@@ -160,9 +164,18 @@ class PurchaseOrderOut(BaseModel):
     terms: str | None
     approved_by: UUID | None
     approved_at: datetime | None
+    close_reason: str | None = None
+    close_requested_by_name: str | None = None
+    close_requested_at: datetime | None = None
+    closed_by_name: str | None = None
+    closed_at: datetime | None = None
     items: list[POItemOut] = []
 
     model_config = {"from_attributes": True}
+
+
+class POCloseRequest(BaseModel):
+    reason: str | None = None
 
 
 # ── Purchase Entry (GRN) ─────────────────────────────────────────────────────

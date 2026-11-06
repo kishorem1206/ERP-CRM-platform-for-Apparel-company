@@ -12,6 +12,7 @@ import { DatePicker } from "@/components/shared/date-picker";
 import { Can, usePermissions } from "@/lib/permissions";
 import { parseApiError } from "@/lib/api-error";
 import { fetchLastRate, lastRateNote } from "@/lib/last-rate";
+import { PO_STATUS_LABEL, rangeText } from "@/lib/po-tolerance";
 
 const BLUE = "#0049A7";
 
@@ -31,6 +32,7 @@ interface LineItem {
   ordered_qty: string;
   unit_price: string;
   gst_rate: string;
+  tolerance_pct: string;
   rate_note?: string;
 }
 
@@ -40,6 +42,8 @@ const STATUS_FILTERS = [
   { label: "Approved", value: "approved" },
   { label: "Partial", value: "partial" },
   { label: "Received", value: "received" },
+  { label: "Awaiting close approval", value: "close_requested" },
+  { label: "Closed", value: "closed" },
   { label: "Cancelled", value: "cancelled" },
 ];
 
@@ -48,7 +52,7 @@ const baseColumns: Column<Record<string, unknown>>[] = [
   { key: "vendor_name", header: "Vendor", sortable: true, render: (row) => (row.vendor_name as string) || "—" },
   { key: "order_date", header: "Order Date", sortable: true },
   { key: "expected_date", header: "Expected", render: (row) => (row.expected_date as string) || "—" },
-  { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status as string} /> },
+  { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status as string} label={PO_STATUS_LABEL[row.status as string]} /> },
   {
     key: "total_amount",
     header: "Total",
@@ -58,7 +62,7 @@ const baseColumns: Column<Record<string, unknown>>[] = [
   },
 ];
 
-const emptyLine = (): LineItem => ({ product_id: "", unit_id: "", ordered_qty: "1", unit_price: "0", gst_rate: "0" });
+const emptyLine = (): LineItem => ({ product_id: "", unit_id: "", ordered_qty: "1", unit_price: "0", gst_rate: "0", tolerance_pct: "" });
 
 const inr = (v: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(v);
 const lineAmount = (it: LineItem) =>
@@ -74,6 +78,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
   const [intrastate, setIntrastate] = useState(true);
   const [items, setItems] = useState<LineItem[]>([emptyLine()]);
   const [error, setError] = useState("");
+  const [tolFocus, setTolFocus] = useState<number | null>(null);
   const { can } = usePermissions();
   const canApprove = can("purchase.approve");
 
@@ -110,6 +115,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
           ordered_qty: parseFloat(it.ordered_qty),
           unit_price: parseFloat(it.unit_price),
           gst_rate: parseFloat(it.gst_rate),
+          tolerance_pct: it.tolerance_pct === "" ? null : parseFloat(it.tolerance_pct),
         })),
       });
       if (approve) await api.post(`/purchase/orders/${res.data.data.id}/approve`);
@@ -124,6 +130,8 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
     },
   });
   const orderTotal = items.reduce((sum, it) => sum + lineAmount(it), 0);
+  const unitAbbr = (unitId: string) =>
+    (units ?? []).find((u: { id: string; abbreviation: string }) => u.id === unitId)?.abbreviation as string | undefined;
 
   const updateItem = (i: number, k: keyof LineItem, v: string) =>
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, [k]: v } : it)));
@@ -199,7 +207,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                 className="text-xs text-primary hover:underline">+ Add item</button>
             </div>
             <div className="border rounded overflow-x-auto">
-              <table className="w-full min-w-[760px] text-xs">
+              <table className="w-full min-w-[840px] text-xs">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="text-left px-2 py-1.5 font-medium">Product</th>
@@ -207,6 +215,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                     <th className="text-right px-2 py-1.5 font-medium">Qty</th>
                     <th className="text-right px-2 py-1.5 font-medium">Price</th>
                     <th className="text-right px-2 py-1.5 font-medium">GST%</th>
+                    <th className="text-right px-2 py-1.5 font-medium" title="How far the received quantity may be from the ordered quantity, either way, before closing the PO needs admin approval. Internal only — not printed on the PO.">Tolerance ±%</th>
                     <th className="text-right px-2 py-1.5 font-medium">Amount</th>
                     <th className="w-6"></th>
                   </tr>
@@ -254,6 +263,12 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                           onChange={(e) => updateItem(i, "gst_rate", e.target.value)}
                           className="w-16 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
                       </td>
+                      <td className="px-2 py-1">
+                        <input type="number" min="0" max="100" step="0.1" value={it.tolerance_pct} placeholder="0"
+                          onChange={(e) => updateItem(i, "tolerance_pct", e.target.value)}
+                          onFocus={() => setTolFocus(i)} onBlur={() => setTolFocus((f) => (f === i ? null : f))}
+                          className="w-16 rounded border border-input bg-background px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-ring" />
+                      </td>
                       <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{inr(lineAmount(it))}</td>
                       <td className="px-1 py-1">
                         {items.length > 1 && (
@@ -266,7 +281,21 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                     </tr>
                     {it.rate_note && (
                       <tr>
-                        <td colSpan={7} className="px-2 pb-1.5 text-[11px] text-muted-foreground">{it.rate_note}</td>
+                        <td colSpan={8} className="px-2 pb-1.5 text-[11px] text-muted-foreground">{it.rate_note}</td>
+                      </tr>
+                    )}
+                    {(tolFocus === i || (parseFloat(it.tolerance_pct) || 0) > 0) && (parseFloat(it.ordered_qty) || 0) > 0 && (
+                      <tr>
+                        <td colSpan={8} className="px-2 pb-2">
+                          <span className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px]"
+                            style={{ borderColor: `${BLUE}40`, background: `${BLUE}0D`, color: BLUE }}>
+                            {(parseFloat(it.tolerance_pct) || 0) > 0 ? (
+                              <>Allowed on receipt: <b>{rangeText(parseFloat(it.ordered_qty), it.tolerance_pct, unitAbbr(it.unit_id))}</b> (±{it.tolerance_pct}%) — outside this, closing the PO needs admin approval</>
+                            ) : (
+                              <>No tolerance: only <b>{rangeText(parseFloat(it.ordered_qty), 0, unitAbbr(it.unit_id)).replace("exactly ", "")}</b> closes without admin approval. Enter a % to allow some variation.</>
+                            )}
+                          </span>
+                        </td>
                       </tr>
                     )}
                     </Fragment>
@@ -274,7 +303,7 @@ function AddPOModal({ onClose }: { onClose: () => void }) {
                 </tbody>
                 <tfoot>
                   <tr className="border-t bg-muted/30">
-                    <td colSpan={5} className="px-2 py-1.5 text-right font-medium">Total (incl. GST)</td>
+                    <td colSpan={6} className="px-2 py-1.5 text-right font-medium">Total (incl. GST)</td>
                     <td className="px-2 py-1.5 text-right font-semibold tabular-nums whitespace-nowrap">{inr(orderTotal)}</td>
                     <td></td>
                   </tr>

@@ -81,6 +81,13 @@ class PurchaseOrder(Base):
     terms: Mapped[Optional[str]] = mapped_column(Text)
     approved_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Closing (internal only): a PO received outside a line's tolerance is
+    # "close_requested" until an admin approves; then "closed".
+    close_reason: Mapped[Optional[str]] = mapped_column(Text)
+    close_requested_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    close_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    closed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -100,6 +107,9 @@ class PurchaseOrderItem(Base):
     variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("product_variants.id"))
     unit_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("units.id"), nullable=False)
     ordered_qty: Mapped[Decimal] = mapped_column(Numeric(15, 3), nullable=False)
+    # ± % of ordered_qty a receipt may land in without admin approval to
+    # close the PO (internal only; NULL = 0, i.e. exact).
+    tolerance_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     received_qty: Mapped[Decimal] = mapped_column(Numeric(15, 3), default=Decimal("0"))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(15, 4), nullable=False)
     discount_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))

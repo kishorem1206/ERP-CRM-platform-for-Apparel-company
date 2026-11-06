@@ -153,3 +153,95 @@ def test_grn_edit_moves_stock_and_po_and_guards_used_stock():
     assert r["stock_after_edit"] == Decimal("7")
     assert r["po_line_received"] == Decimal("7") and r["po_status"] == "partial"
     assert r["refused"] == "STOCK_ALREADY_USED"
+
+
+async def _run_tolerance_close_scenario():
+    """Receipts inside a line's ± tolerance close the PO (or let the user
+    close it); anything outside needs an admin to approve the close."""
+    from app.domain.business_rules import BusinessRulesError
+    from app.schemas.purchase import GRNItemUpdate, PurchaseEntryUpdate
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            vendor = (await db.execute(select(Vendor.id).where(Vendor.company_id == company_id).limit(1))).scalar_one()
+            warehouse = (await db.execute(select(Warehouse.id).where(Warehouse.company_id == company_id).limit(1))).scalar_one()
+            unit = (await db.execute(select(Unit.id).where(Unit.company_id == company_id).limit(1))).scalar_one()
+            product = (await db.execute(select(Product.id).where(Product.company_id == company_id).limit(1))).scalar_one()
+            svc = PurchaseService(db)
+
+            async def receive(tolerance, qty):
+                po = await svc.create_purchase_order(PurchaseOrderCreate(
+                    vendor_id=vendor, order_date=date.today(),
+                    items=[POItemCreate(product_id=product, unit_id=unit, ordered_qty=500, unit_price=10, tolerance_pct=tolerance)],
+                ), company_id, user_id)
+                await svc.approve_purchase_order(po.id, company_id, user_id)
+                po_line = (await svc.get_purchase_order(po.id, company_id)).items[0]
+                grn = await svc.create_purchase_entry(PurchaseEntryCreate(
+                    vendor_id=vendor, warehouse_id=warehouse, entry_date=date.today(),
+                    items=[GRNItemCreate(po_item_id=po_line.id, product_id=product, unit_id=unit,
+                                         received_qty=qty, accepted_qty=qty, unit_price=10)],
+                ), company_id, user_id)
+                po_id, grn_id, grn_line = po.id, grn.id, grn.items[0].id
+                db.expire_all()
+                return po_id, grn_id, grn_line
+
+            async def status(po_id):
+                db.expire_all()
+                return (await svc.get_purchase_order(po_id, company_id)).status
+
+            async def error(coro):
+                try:
+                    await coro
+                except BusinessRulesError as e:
+                    return e.code
+
+            r = {}
+            short_ok, _, _ = await receive(10, 480)          # 450-550 allowed
+            r["short_ok_after_grn"] = await status(short_ok)
+            await svc.close_purchase_order(short_ok, company_id, user_id, None, can_approve=False)
+            r["short_ok_closed"] = await status(short_ok)
+
+            within_over, _, _ = await receive(10, 520)
+            r["within_over"] = await status(within_over)
+
+            way_over, _, _ = await receive(10, 50000)
+            r["way_over"] = await status(way_over)
+            await svc.decide_po_close(way_over, company_id, user_id, approve=True)
+            r["way_over_approved"] = await status(way_over)
+
+            too_short, _, _ = await receive(10, 300)
+            r["too_short_no_reason"] = await error(svc.close_purchase_order(too_short, company_id, user_id, " ", can_approve=False))
+            await svc.close_purchase_order(too_short, company_id, user_id, "Vendor out of stock", can_approve=False)
+            r["too_short_requested"] = await status(too_short)
+            await svc.decide_po_close(too_short, company_id, user_id, approve=False, reason="Chase the rest")
+            r["too_short_rejected"] = await status(too_short)
+            r["admin_closes_directly"] = (await svc.close_purchase_order(too_short, company_id, user_id, None, can_approve=True)).status
+
+            exact, grn_id, grn_line = await receive(None, 501)  # no tolerance: exact only
+            r["exact_over"] = await status(exact)
+            await svc.update_purchase_entry(
+                grn_id, PurchaseEntryUpdate(items=[GRNItemUpdate(id=grn_line, received_qty=500, rejected_qty=0, unit_price=10)]),
+                company_id, user_id,
+            )
+            db.expire_all()
+            fixed = await svc.get_purchase_order(exact, company_id)
+            r["exact_after_edit"] = (fixed.status, fixed.close_requested_at)
+            return r
+        finally:
+            await db.rollback()
+
+
+def test_po_tolerance_decides_who_can_close():
+    r = asyncio.run(_run_tolerance_close_scenario())
+    assert r["short_ok_after_grn"] == "partial"
+    assert r["short_ok_closed"] == "closed"              # within range: user closes it
+    assert r["within_over"] == "received"                # 520 of 500 at ±10%
+    assert r["way_over"] == "close_requested"            # above 550: admin must approve
+    assert r["way_over_approved"] == "closed"
+    assert r["too_short_no_reason"] == "REASON_REQUIRED"
+    assert r["too_short_requested"] == "close_requested"
+    assert r["too_short_rejected"] == "partial"
+    assert r["admin_closes_directly"] == "closed"
+    assert r["exact_over"] == "close_requested"          # blank tolerance = exact
+    assert r["exact_after_edit"] == ("received", None)   # corrected GRN withdraws the request

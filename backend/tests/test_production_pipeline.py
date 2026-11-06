@@ -700,3 +700,70 @@ def test_trims_follow_their_stage_and_materials_scale_per_piece():
     assert r["lot2_planned"] == 40                      # total of the sizes
     assert r["planned_from_per_piece"] == Decimal("10")  # 0.25 x 40
     assert r["per_piece_after_edit"] == Decimal("0.5")   # 20 / 40
+
+
+async def _run_fill_after_style_edit_scenario():
+    """Requirements saved on the style after its lot was created still reach
+    the lot on Auto-fill: they're copied onto the lot (trims onto their
+    stage), a fabric made from yarn with no yarn given is listed itself, and
+    names with no product are reported instead of silently dropped."""
+    from app.models.production import LotFabric, LotTrim, ProductionStage
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user_id, company_id = (await db.execute(select(User.id, User.company_id).limit(1))).one()
+            fabric = (await db.execute(
+                select(Product).where(Product.company_id == company_id, Product.product_type == "fabric").limit(1)
+            )).scalar_one()
+            trim = (await db.execute(
+                select(Product).where(Product.company_id == company_id, Product.product_type == "trim").limit(1)
+            )).scalar_one()
+            svc = ProductionService(db)
+            processes = [StyleProcessIn(seq=1, process_name="Cutting"), StyleProcessIn(seq=2, process_name="Stitching")]
+            name = f"Test Style {uuid4().hex[:8]}"
+            style = await svc.create_style(
+                StyleCreate(name=name, final_output_unit="Pieces", processes=processes), company_id, user_id,
+            )
+            lot = await svc.create_lot(ProductionLotCreate(style_id=style.id, planned_qty=40), company_id, user_id)
+            lot_id = lot.id
+            before = await svc.list_lot_materials(lot_id, company_id)
+
+            # Fabric left on the default "made from yarn", with no yarn lines.
+            await svc.update_style(style.id, StyleCreate(
+                name=name, final_output_unit="Pieces", processes=processes,
+                fabrics=[StyleFabricIn(fabric_name=fabric.name, consumption="0.3", unit="kg")],
+                trims=[
+                    StyleTrimIn(trim_name=trim.name, quantity=2, unit="pcs", process_seq=2),
+                    StyleTrimIn(trim_name="No Such Trim", quantity=1, unit="pcs"),
+                ],
+            ), company_id, user_id)
+
+            unmatched: list[str] = []
+            added = await svc.fill_lot_materials_from_style(lot_id, company_id, unmatched=unmatched)
+            materials = {m["product_id"]: m for m in await svc.list_lot_materials(lot_id, company_id)}
+            again = await svc.fill_lot_materials_from_style(lot_id, company_id)
+            stitching_id = (await db.execute(
+                select(ProductionStage.id).where(ProductionStage.production_lot_id == lot_id, ProductionStage.stage_name == "Stitching")
+            )).scalar_one()
+            trim_stage = (await db.execute(
+                select(LotTrim.stage_id).where(LotTrim.production_lot_id == lot_id, LotTrim.trim_name == trim.name)
+            )).scalar_one()
+            lot_fabrics = (await db.execute(select(LotFabric.id).where(LotFabric.production_lot_id == lot_id))).all()
+            return {
+                "before": before, "added": added, "unmatched": unmatched, "again": again,
+                "fabric": materials.get(fabric.id), "trim": materials.get(trim.id),
+                "trim_on_stitching": trim_stage == stitching_id, "lot_fabric_rows": len(lot_fabrics),
+            }
+        finally:
+            await db.rollback()
+
+
+def test_auto_fill_pulls_style_lines_added_after_the_lot():
+    r = asyncio.run(_run_fill_after_style_edit_scenario())
+    assert r["before"] == []
+    assert r["added"] == 2
+    assert float(r["fabric"]["planned_qty"]) == 12.0     # 0.3 kg x 40 pcs
+    assert float(r["trim"]["planned_qty"]) == 80.0       # 2 x 40 pcs
+    assert r["trim_on_stitching"]
+    assert r["unmatched"] == ["No Such Trim"]
+    assert r["again"] == 0 and r["lot_fabric_rows"] == 1  # nothing copied twice

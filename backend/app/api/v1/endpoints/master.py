@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.deps import AuthUser, DBSession
@@ -26,6 +26,17 @@ def _conflict(exc: IntegrityError, on_duplicate: str, on_reference: str) -> HTTP
     if "unique" in detail.lower() or "duplicate" in detail.lower():
         return HTTPException(409, on_duplicate)
     return HTTPException(409, on_reference)
+
+
+async def _existing_by_name(db, model, company_id, name: str):
+    """A record in this master with the same name, ignoring case and spaces at the ends."""
+    result = await db.execute(
+        select(model).where(
+            model.company_id == company_id,
+            func.lower(func.trim(model.name)) == name.lower(),
+        ).limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 # ── Brands ──────────────────────────────────────────────────────────────────
@@ -54,6 +65,8 @@ async def create_brand(body: BrandCreate, db: DBSession, user: AuthUser):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Brand name is required")
+    if await _existing_by_name(db, Brand, user.company_id, name):
+        raise HTTPException(409, f"A brand called “{name}” already exists")
     brand = Brand(company_id=user.company_id, name=name)
     db.add(brand)
     try:
@@ -133,6 +146,15 @@ async def create_style_part(body: StylePartCreate, db: DBSession, user: AuthUser
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Style Part name is required")
+    existing = await _existing_by_name(db, StylePart, user.company_id, name)
+    if existing and existing.is_active:
+        raise HTTPException(409, f"A style part called “{name}” already exists")
+    if existing:
+        # Hidden from pickers while inactive — bring it back rather than duplicate it.
+        existing.is_active = True
+        await db.commit()
+        await db.refresh(existing)
+        return ApiResponse(success=True, data=StylePartOut.model_validate(existing), message="Style Part restored")
     part = StylePart(company_id=user.company_id, name=name, created_at=datetime.now(timezone.utc))
     db.add(part)
     try:
@@ -195,6 +217,8 @@ async def create_category(body: CategoryCreate, db: DBSession, user: AuthUser):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Category name is required")
+    if await _existing_by_name(db, Category, user.company_id, name):
+        raise HTTPException(409, f"A category called “{name}” already exists")
     cat = Category(company_id=user.company_id, name=name)
     db.add(cat)
     try:
@@ -275,10 +299,8 @@ async def create_size(body: SizeCreate, db: DBSession, user: AuthUser):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Size name is required")
-    existing = await db.execute(
-        select(Size).where(Size.company_id == user.company_id, Size.name == name)
-    )
-    found = existing.scalar_one_or_none()
+    # Reuse an existing size typed in any case ("xl" → XL) instead of duplicating it.
+    found = await _existing_by_name(db, Size, user.company_id, name)
     if found:
         return ApiResponse(success=True, data=SizeOut.model_validate(found))
     size = Size(company_id=user.company_id, name=name, sort_order=body.sort_order)
@@ -359,6 +381,8 @@ async def create_colour(body: ColourCreate, db: DBSession, user: AuthUser):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Colour name is required")
+    if await _existing_by_name(db, Colour, user.company_id, name):
+        raise HTTPException(409, f"A colour called “{name}” already exists")
     colour = Colour(company_id=user.company_id, name=name, hex_code=body.hex_code or None)
     db.add(colour)
     try:

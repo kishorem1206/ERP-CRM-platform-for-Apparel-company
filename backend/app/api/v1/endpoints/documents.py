@@ -275,7 +275,10 @@ async def purchase_order_pdf(po_id: UUID, db: DBSession, user: AuthUser):
         for i in po.items
     ]
     doc = {
-        "title": "Purchase order", "number": po.po_number, "date": date_text(po.order_date), "status": po.status,
+        # "Awaiting close approval" is internal — the vendor sees it as received.
+        "title": "Purchase order", "number": po.po_number, "date": date_text(po.order_date),
+        "status": po.status if po.status != "close_requested"
+        else "received" if all(i.received_qty >= i.ordered_qty for i in po.items) else "partial",
         "meta": [("Expected date", date_text(po.expected_date))],
         "parties": [{"label": "Vendor", "name": po.vendor_name, "lines": []}],
         "lines": items,

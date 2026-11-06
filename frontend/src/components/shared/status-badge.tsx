@@ -19,6 +19,8 @@ const colorMap: Record<string, string> = {
   closed:    "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
   delivered: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   partial:   "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  received:  "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  close_requested: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
 };
 
 interface StatusBadgeProps {

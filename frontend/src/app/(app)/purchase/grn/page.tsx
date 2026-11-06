@@ -12,6 +12,7 @@ import { DatePicker } from "@/components/shared/date-picker";
 import { Can, usePermissions } from "@/lib/permissions";
 import { parseApiError } from "@/lib/api-error";
 import { fetchLastRate, lastRateNote } from "@/lib/last-rate";
+import { fmtQty, rangeText, toleranceRange } from "@/lib/po-tolerance";
 
 const TEAL = "#8174F5";
 
@@ -33,6 +34,7 @@ interface POLine {
   ordered_qty: string;
   received_qty: string;
   unit_price: string;
+  tolerance_pct: string | null;
 }
 
 interface GRNItem {
@@ -45,6 +47,7 @@ interface GRNItem {
   unit_price: string;
   ordered_qty?: number;
   received_so_far?: number;
+  tolerance_pct?: string | null;
   rate_note?: string;
 }
 
@@ -101,6 +104,7 @@ const poLineToItem = (purchaseOrderId: string, line: POLine): GRNItem => ({
   unit_price: line.unit_price,
   ordered_qty: Number(line.ordered_qty),
   received_so_far: Number(line.received_qty),
+  tolerance_pct: line.tolerance_pct,
 });
 
 function AddGRNModal({ onClose }: { onClose: () => void }) {
@@ -364,6 +368,8 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                     const projectedTotal = (it.received_so_far ?? 0) + acceptedOf(it);
                     const excessPreview = it.ordered_qty != null && projectedTotal > it.ordered_qty
                       ? projectedTotal - it.ordered_qty : 0;
+                    const overLimit = it.ordered_qty != null
+                      ? projectedTotal - toleranceRange(it.ordered_qty, it.tolerance_pct)[1] : 0;
                     return (
                     <Fragment key={i}>
                     <tr className="border-t">
@@ -440,14 +446,19 @@ function AddGRNModal({ onClose }: { onClose: () => void }) {
                       <tr>
                         <td colSpan={6} className="px-2 pb-1.5 text-[11px] text-muted-foreground">
                           {[
-                            it.ordered_qty != null && `Ordered: ${it.ordered_qty} · Received so far: ${it.received_so_far ?? 0}`,
+                            it.ordered_qty != null && `Ordered: ${it.ordered_qty} · Received so far: ${it.received_so_far ?? 0} · Allowed: ${rangeText(it.ordered_qty, it.tolerance_pct)}`,
                             (parseFloat(it.rejected_qty) || 0) > 0 && `Accepted into stock: ${acceptedOf(it)}`,
                             it.rate_note,
                           ].filter(Boolean).join(" · ")}
                           {excessPreview > 0 && (
                             <span className="ml-2 font-semibold" style={{ color: "#8174F5" }}>
-                              +{excessPreview} excess
+                              +{fmtQty(excessPreview)} excess
                             </span>
+                          )}
+                          {overLimit > 0 && (
+                            <p className="mt-1 font-semibold text-amber-700 dark:text-amber-400">
+                              {fmtQty(overLimit)} above the {Number(it.tolerance_pct) ? `±${Number(it.tolerance_pct)}%` : "ordered"} limit — the PO will need admin approval to close. Check the quantity before saving.
+                            </p>
                           )}
                         </td>
                       </tr>

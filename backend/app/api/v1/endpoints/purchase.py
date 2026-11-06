@@ -2,15 +2,17 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.v1.deps import AuthUser, DBSession
 from app.models.purchase import PurchaseOrder, PurchaseEntry, Vendor
+from app.models.master import Product, Unit
+from app.models.user import User
 from app.schemas.base import ApiResponse, PaginatedMeta
 from app.schemas.purchase import (
     PurchaseEntryUpdate,
     PurchaseEntryCreate, PurchaseEntryOut,
-    PurchaseOrderCreate, PurchaseOrderOut, PurchaseOrderUpdate,
+    POCloseRequest, PurchaseOrderCreate, PurchaseOrderOut, PurchaseOrderUpdate,
     VendorCreate, VendorOut, VendorUpdate,
     GRNItemOut, POItemOut,
 )
@@ -42,8 +44,34 @@ def _po_out(po: PurchaseOrder) -> PurchaseOrderOut:
         terms=po.terms,
         approved_by=po.approved_by,
         approved_at=po.approved_at,
+        close_reason=po.close_reason,
+        close_requested_at=po.close_requested_at,
+        closed_at=po.closed_at,
         items=[POItemOut.model_validate(i) for i in po.items],
     )
+
+
+async def _po_detail(db, po: PurchaseOrder) -> PurchaseOrderOut:
+    """The PO with its lines' product and unit names, and who asked to close
+    it and who closed it — so the PO page needs no other lists to read it."""
+    out = _po_out(po)
+    products = dict((await db.execute(
+        select(Product.id, Product.name).where(Product.id.in_({i.product_id for i in out.items}))
+    )).all()) if out.items else {}
+    units = dict((await db.execute(
+        select(Unit.id, Unit.abbreviation).where(Unit.id.in_({i.unit_id for i in out.items}))
+    )).all()) if out.items else {}
+    for item in out.items:
+        item.product_name = products.get(item.product_id)
+        item.unit_name = units.get(item.unit_id)
+    ids = {i for i in (po.close_requested_by, po.closed_by) if i}
+    if ids:
+        names = dict((await db.execute(
+            select(User.id, func.coalesce(User.full_name, User.email)).where(User.id.in_(ids))
+        )).all())
+        out.close_requested_by_name = names.get(po.close_requested_by)
+        out.closed_by_name = names.get(po.closed_by)
+    return out
 
 
 def _entry_out(e: PurchaseEntry) -> PurchaseEntryOut:
@@ -172,7 +200,7 @@ async def get_purchase_order(po_id: UUID, db: DBSession, user: AuthUser):
     po = await svc.get_purchase_order(po_id, user.company_id)
     if not po:
         raise HTTPException(404, "Purchase order not found")
-    return ApiResponse(success=True, data=_po_out(po))
+    return ApiResponse(success=True, data=await _po_detail(db, po))
 
 
 @router.patch("/orders/{po_id}")
@@ -203,6 +231,41 @@ async def cancel_purchase_order(po_id: UUID, db: DBSession, user: AuthUser):
     if not po:
         raise HTTPException(400, "Purchase order cannot be cancelled in its current status")
     return ApiResponse(success=True, data=_po_out(po))
+
+
+@router.post("/orders/{po_id}/close")
+async def close_purchase_order(po_id: UUID, body: POCloseRequest, db: DBSession, user: AuthUser):
+    """Close a PO. Within every line's tolerance it closes; otherwise it goes
+    to an admin for approval (an admin's own close goes straight through)."""
+    user.require("purchase.edit")
+    svc = PurchaseService(db)
+    po = await svc.close_purchase_order(
+        po_id, user.company_id, user.user_id, body.reason, user.has_permission("purchase.po_close_approve"),
+    )
+    if not po:
+        raise HTTPException(404, "Purchase order not found")
+    message = "PO closed" if po.status == "closed" else "Sent to an admin to approve closing"
+    return ApiResponse(success=True, data=await _po_detail(db, po), message=message)
+
+
+@router.post("/orders/{po_id}/close/approve")
+async def approve_po_close(po_id: UUID, db: DBSession, user: AuthUser):
+    user.require("purchase.po_close_approve")
+    svc = PurchaseService(db)
+    po = await svc.decide_po_close(po_id, user.company_id, user.user_id, approve=True)
+    if not po:
+        raise HTTPException(404, "Purchase order not found")
+    return ApiResponse(success=True, data=await _po_detail(db, po), message="PO closed")
+
+
+@router.post("/orders/{po_id}/close/reject")
+async def reject_po_close(po_id: UUID, body: POCloseRequest, db: DBSession, user: AuthUser):
+    user.require("purchase.po_close_approve")
+    svc = PurchaseService(db)
+    po = await svc.decide_po_close(po_id, user.company_id, user.user_id, approve=False, reason=body.reason)
+    if not po:
+        raise HTTPException(404, "Purchase order not found")
+    return ApiResponse(success=True, data=await _po_detail(db, po), message="Close request rejected — PO reopened")
 
 
 # ── Purchase Entries (GRN) ───────────────────────────────────────────────────

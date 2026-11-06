@@ -479,8 +479,8 @@ export function StyleForm({ styleId }: { styleId?: string }) {
       setRangeFrom("");
       setRangeTo("");
       setRangeStep("1");
-    } catch {
-      setErr("Failed to add size(s). Please try again.");
+    } catch (e) {
+      setErr(parseApiError(e, "Failed to add size(s). Please try again."));
     } finally {
       setAddingSizes(false);
     }

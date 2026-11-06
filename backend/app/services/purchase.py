@@ -53,6 +53,41 @@ def _compute_item_amounts(
     }
 
 
+
+# ── Receipt tolerance ────────────────────────────────────────────────────────
+# A PO line may be received anywhere within ± tolerance_pct of its ordered
+# quantity. Outside that range (short or over) the PO can only be closed once
+# an admin approves. Internal only — never printed on the PO / GRN PDFs.
+
+def tolerance_range(item: PurchaseOrderItem) -> tuple[Decimal, Decimal]:
+    tol = (item.tolerance_pct or Decimal("0")) / 100
+    return item.ordered_qty * (1 - tol), item.ordered_qty * (1 + tol)
+
+
+def line_tolerance_state(item: PurchaseOrderItem) -> str:
+    """"short", "within" or "over" the line's tolerance range."""
+    low, high = tolerance_range(item)
+    received = item.received_qty or Decimal("0")
+    if received > high:
+        return "over"
+    if received < low:
+        return "short"
+    return "within"
+
+
+def _receipt_status(po: PurchaseOrder) -> str:
+    """A PO's status from what it has received so far: any line above its
+    range waits for an admin to approve closing; every line at least fully
+    received (and none over) closes it; otherwise it's part-received."""
+    if any(line_tolerance_state(i) == "over" for i in po.items):
+        return "close_requested"
+    if all((i.received_qty or 0) >= i.ordered_qty for i in po.items):
+        return "received"
+    if any((i.received_qty or 0) > 0 for i in po.items):
+        return "partial"
+    return "approved"
+
+
 async def _next_sequence(db: AsyncSession, prefix: str, company_id: UUID, model_cls, number_field) -> str:
     result = await db.execute(
         select(func.count()).where(getattr(model_cls, "company_id") == company_id)
@@ -229,6 +264,7 @@ class PurchaseService:
                 unit_price=item_data.unit_price,
                 discount_pct=item_data.discount_pct,
                 gst_rate=item_data.gst_rate,
+                tolerance_pct=item_data.tolerance_pct,
                 notes=item_data.notes,
                 **amounts,
             )
@@ -283,6 +319,75 @@ class PurchaseService:
             return None
         po.status = "cancelled"
         po.updated_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        return po
+
+    def _apply_receipt_status(self, po: PurchaseOrder, user_id: UUID | None, now: datetime) -> None:
+        """Set the PO's status from its receipts. Going above a line's
+        tolerance raises a close request for an admin; coming back inside
+        (e.g. a corrected GRN) withdraws it."""
+        status = _receipt_status(po)
+        if status == "close_requested" and po.status != "close_requested":
+            po.close_reason = "Received above the tolerance limit"
+            po.close_requested_by = user_id
+            po.close_requested_at = now
+        elif status != "close_requested" and po.status == "close_requested":
+            po.close_reason = po.close_requested_by = po.close_requested_at = None
+        po.status = status
+        po.updated_at = now
+
+    async def close_purchase_order(
+        self, po_id: UUID, company_id: UUID, user_id: UUID, reason: str | None, can_approve: bool,
+    ) -> PurchaseOrder | None:
+        """Close an approved / part-received PO. Every line within its
+        tolerance range closes it straight away; otherwise it needs an admin
+        — a user who may approve closes it, anyone else raises a request."""
+        po = await self.get_purchase_order(po_id, company_id)
+        if not po:
+            return None
+        if po.status not in ("approved", "partial"):
+            raise BusinessRulesError("PO_NOT_OPEN", "Only an approved or part-received PO can be closed.")
+        now = datetime.now(timezone.utc)
+        within = all(line_tolerance_state(i) == "within" for i in po.items)
+        if within or can_approve:
+            po.status = "closed"
+            po.closed_by = user_id
+            po.closed_at = now
+            po.close_reason = (reason or "").strip() or None
+        else:
+            if not (reason or "").strip():
+                raise BusinessRulesError(
+                    "REASON_REQUIRED", "Some lines are outside their tolerance — give a reason for the admin.",
+                )
+            po.status = "close_requested"
+            po.close_reason = reason.strip()
+            po.close_requested_by = user_id
+            po.close_requested_at = now
+        po.updated_at = now
+        await self.db.flush()
+        return po
+
+    async def decide_po_close(
+        self, po_id: UUID, company_id: UUID, user_id: UUID, approve: bool, reason: str | None = None,
+    ) -> PurchaseOrder | None:
+        """Admin decision on a close request: approve closes the PO; reject
+        reopens it for more receipts (a corrected GRN can also clear it)."""
+        po = await self.get_purchase_order(po_id, company_id)
+        if not po:
+            return None
+        if po.status != "close_requested":
+            raise BusinessRulesError("NO_CLOSE_REQUEST", "This PO isn't waiting for close approval.")
+        now = datetime.now(timezone.utc)
+        if approve:
+            po.status = "closed"
+            po.closed_by = user_id
+            po.closed_at = now
+        else:
+            po.status = "partial" if any((i.received_qty or 0) > 0 for i in po.items) else "approved"
+            note = (reason or "").strip()
+            po.close_reason = f"Close rejected{': ' + note if note else ''}"
+            po.close_requested_by = po.close_requested_at = None
+        po.updated_at = now
         await self.db.flush()
         return po
 
@@ -427,11 +532,7 @@ class PurchaseService:
             )
             for po in po_result.scalars().all():
                 if po.status in ("approved", "partial"):
-                    fully_received = all(
-                        item.received_qty >= item.ordered_qty for item in po.items
-                    )
-                    po.status = "received" if fully_received else "partial"
-                    po.updated_at = now
+                    self._apply_receipt_status(po, user_id, now)
 
         await self.db.flush()
 
@@ -561,15 +662,9 @@ class PurchaseService:
                 select(PurchaseOrder).where(PurchaseOrder.id.in_(touched_po_ids)).options(selectinload(PurchaseOrder.items))
             )).scalars().all()
             for po in pos:
-                if po.status not in ("approved", "partial", "received"):
+                if po.status not in ("approved", "partial", "received", "close_requested"):
                     continue
-                if all(i.received_qty >= i.ordered_qty for i in po.items):
-                    po.status = "received"
-                elif any(i.received_qty > 0 for i in po.items):
-                    po.status = "partial"
-                else:
-                    po.status = "approved"
-                po.updated_at = entry.updated_at
+                self._apply_receipt_status(po, user_id, entry.updated_at)
             await self.db.flush()
 
         return await self.get_purchase_entry(entry.id, company_id)

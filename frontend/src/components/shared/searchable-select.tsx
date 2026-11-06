@@ -26,6 +26,24 @@ interface Props {
 }
 
 const DEFAULT_ACCENT = "#0049A7";
+const GAP = 6;        // space between trigger and panel
+const MARGIN = 8;     // keep the panel this far from the window edge
+const PREFERRED = 300; // panel height we try to fit below before flipping up
+
+interface Coords { top?: number; bottom?: number; left: number; width: number; maxHeight: number }
+
+/** Place the panel below the trigger, or above it when the window has more
+ *  room there, and never taller than the room available. */
+function placePanel(rect: DOMRect): Coords {
+  const below = window.innerHeight - rect.bottom - GAP - MARGIN;
+  const above = rect.top - GAP - MARGIN;
+  const left = rect.left;
+  const width = rect.width;
+  if (below >= PREFERRED || below >= above) {
+    return { top: rect.bottom + GAP, left, width, maxHeight: Math.max(below, 120) };
+  }
+  return { bottom: window.innerHeight - rect.top + GAP, left, width, maxHeight: Math.max(above, 120) };
+}
 const SELECTED_COLOR = "#0F78FF"; // vivid blue for confirmed selection
 
 export function SearchableSelect({
@@ -43,7 +61,7 @@ export function SearchableSelect({
   const [hovered, setHovered] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [coords, setCoords] = useState<Coords | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -108,12 +126,16 @@ export function SearchableSelect({
     if (!open) return;
     function updateCoords() {
       const rect = ref.current?.getBoundingClientRect();
-      if (rect) setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+      if (rect) setCoords(placePanel(rect));
     }
     updateCoords();
+    // Follow the trigger while the page scrolls; close only once the trigger
+    // itself has scrolled out of the window.
     function handleScroll(e: Event) {
       if (dropdownRef.current?.contains(e.target as Node)) return;
-      close();
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) close();
+      else setCoords(placePanel(rect));
     }
     window.addEventListener("resize", updateCoords);
     window.addEventListener("scroll", handleScroll, true);
@@ -127,7 +149,7 @@ export function SearchableSelect({
   function openDropdown() {
     if (disabled) return;
     const rect = ref.current?.getBoundingClientRect();
-    if (rect) setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+    if (rect) setCoords(placePanel(rect));
     setOpen(true);
     setQuery("");
     setTimeout(() => inputRef.current?.focus(), 20);
@@ -226,13 +248,20 @@ export function SearchableSelect({
       {open && coords && createPortal(
         <div
           ref={dropdownRef}
-          className="fixed z-[10000] bg-background border border-border rounded-xl shadow-2xl overflow-hidden"
-          style={{ top: coords.top, left: coords.left, width: coords.width, minWidth: "200px" }}
+          className="fixed z-[10000] flex flex-col bg-background border border-border rounded-xl shadow-2xl overflow-hidden"
+          style={{
+            top: coords.top, bottom: coords.bottom, left: coords.left, width: coords.width,
+            minWidth: "200px", maxHeight: coords.maxHeight,
+          }}
         >
-          <div className="max-h-60 overflow-y-auto py-1.5">
-            {filtered.length === 0 && onCreate ? null : filtered.length === 0 ? (
-              <p className="px-4 py-3 text-sm text-muted-foreground text-center">
-                No results for &ldquo;{query}&rdquo;
+          <div className="max-h-60 min-h-0 overflow-y-auto py-1.5">
+            {filtered.length === 0 ? (
+              <p className="px-4 py-2.5 text-sm text-muted-foreground">
+                {!typed
+                  ? `Nothing to choose yet${onCreate ? ` — type a ${createNoun} name to add one` : ""}`
+                  : onCreate
+                  ? <>No {createNoun} called &ldquo;{typed}&rdquo; yet</>
+                  : <>No results for &ldquo;{typed}&rdquo;</>}
               </p>
             ) : (
               filtered.map((opt) => {
@@ -280,7 +309,7 @@ export function SearchableSelect({
             )}
           </div>
           {onCreate && (
-            <div className="border-t border-border">
+            <div className="flex-shrink-0 border-t border-border">
               <button
                 type="button"
                 disabled={!canCreate || creating}

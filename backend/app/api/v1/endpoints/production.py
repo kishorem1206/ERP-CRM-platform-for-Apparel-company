@@ -908,11 +908,18 @@ async def add_lot_material(lot_id: UUID, body: LotMaterialCreate, db: DBSession,
 async def fill_lot_materials_from_style(lot_id: UUID, db: DBSession, user: AuthUser):
     user.require("production.edit")
     svc = ProductionService(db)
-    added = await svc.fill_lot_materials_from_style(lot_id, user.company_id)
+    unmatched: list[str] = []
+    added = await svc.fill_lot_materials_from_style(lot_id, user.company_id, unmatched=unmatched)
     if added is None:
         raise HTTPException(404, "Production lot not found")
     response = await _lot_materials_response(svc, lot_id, user.company_id)
-    response.message = f"{added} material{'s' if added != 1 else ''} added"
+    message = f"{added} material{'s' if added != 1 else ''} added."
+    if unmatched:
+        message += (
+            f" Not found in Inventory — create {'it' if len(unmatched) == 1 else 'them'} as a product"
+            f" or use Add Material: {', '.join(unmatched)}."
+        )
+    response.message = message
     return response
 
 

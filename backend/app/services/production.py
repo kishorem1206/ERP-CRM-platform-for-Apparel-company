@@ -1589,83 +1589,10 @@ class ProductionService:
                     if ssz.quantity is not None:
                         self.db.add(LotPartSize(lot_part_colour_id=lpc.id, size_id=ssz.size_id, planned_qty=int(ssz.quantity), sort_order=ssz.sort_order))
 
-        # Snapshot Style Trims / Packing Materials (§21: "fetched automatically
-        # when the Production Lot is created"). Trims with a size-wise
-        # breakdown are summed against this LOT's resolved per-size plan;
-        # flat trims and packing materials scale off the LOT's total
-        # planned_qty. Either way scaled by excess_pct when set.
         if style:
-            for tr in style.trims:
-                if tr.size_breakdown:
-                    base_qty = sum(
-                        float(sb.quantity) * resolved_size_qty.get(sb.size_id, 0)
-                        for sb in tr.size_breakdown
-                    )
-                else:
-                    base_qty = float(tr.quantity) * body.planned_qty if tr.quantity is not None else None
-                planned_qty = None
-                if base_qty is not None:
-                    excess_mult = 1 + float(tr.excess_pct) / 100 if tr.excess_pct is not None else 1
-                    planned_qty = Decimal(str(base_qty * excess_mult))
-                lot_trim = LotTrim(
-                    production_lot_id=lot.id, style_trim_id=tr.id, trim_name=tr.trim_name,
-                    unit=tr.unit, category=tr.category, trim_type=tr.trim_type,
-                    planned_qty=planned_qty, created_at=now,
-                )
-                self.db.add(lot_trim)
-                trims_by_process_seq.setdefault(tr.process_seq, []).append(lot_trim)
-
-            for pm in style.packing_materials:
-                planned_qty = None
-                if pm.quantity is not None:
-                    base_qty = float(pm.quantity) * body.planned_qty
-                    excess_mult = 1 + float(pm.excess_pct) / 100 if pm.excess_pct is not None else 1
-                    planned_qty = Decimal(str(base_qty * excess_mult))
-                self.db.add(LotPackingMaterial(
-                    production_lot_id=lot.id, style_packing_material_id=pm.id, material_name=pm.material_name,
-                    product_id=pm.product_id, unit=pm.unit, consumption_stage=pm.consumption_stage,
-                    planned_qty=planned_qty, created_at=now,
-                ))
-
-            # Fabric / Yarn requirement snapshot (Phase 6 — BOM Consolidation):
-            # same size-breakdown-aware scaling as trims above. A yarn's
-            # planned_qty is its consumption_pct share of its parent fabric's
-            # own planned_qty (see LotYarn docstring) — computed after the
-            # fabric loop so the parent's quantity already exists.
-            lot_fabric_by_style_fabric: dict[UUID, LotFabric] = {}
-            for fb in style.fabrics:
-                if fb.size_breakdown:
-                    base_qty = sum(
-                        float(sb.quantity) * resolved_size_qty.get(sb.size_id, 0)
-                        for sb in fb.size_breakdown
-                    )
-                else:
-                    base_qty = float(fb.consumption) * body.planned_qty if fb.consumption is not None else None
-                planned_qty = None
-                if base_qty is not None:
-                    excess_mult = 1 + float(fb.excess_pct) / 100 if fb.excess_pct is not None else 1
-                    planned_qty = Decimal(str(base_qty * excess_mult))
-                planned_qty, lot_unit = _fabric_planned_in_kg(planned_qty, fb.unit)
-                lf = LotFabric(
-                    production_lot_id=lot.id, style_fabric_id=fb.id, fabric_name=fb.fabric_name,
-                    style_part_id=fb.style_part_id, colour_id=fb.colour_id, source_type=fb.source_type,
-                    unit=lot_unit, planned_qty=planned_qty, created_at=now,
-                )
-                self.db.add(lf)
-                await self.db.flush()
-                lot_fabric_by_style_fabric[fb.id] = lf
-
-            for yn in style.yarns:
-                lot_fabric = lot_fabric_by_style_fabric.get(yn.style_fabric_id) if yn.style_fabric_id else None
-                planned_qty = None
-                if lot_fabric is not None and lot_fabric.planned_qty is not None and yn.consumption_pct is not None:
-                    planned_qty = (lot_fabric.planned_qty * yn.consumption_pct / 100).quantize(Decimal("0.0001"))
-                self.db.add(LotYarn(
-                    production_lot_id=lot.id, lot_fabric_id=lot_fabric.id if lot_fabric else None,
-                    style_yarn_id=yn.id, yarn_name=yn.yarn_name, colour_id=yn.colour_id,
-                    counts=yn.counts, consumption_pct=yn.consumption_pct, unit=yn.unit,
-                    planned_qty=planned_qty, created_at=now,
-                ))
+            trims_by_process_seq = await self._copy_style_materials(
+                lot.id, style, resolved_size_qty, body.planned_qty, now,
+            )
 
         # Stages are sorted by created_at for display (ProductionStage has no
         # explicit seq column); stagger by a millisecond per row so creation
@@ -1733,11 +1660,109 @@ class ProductionService:
             # to the selectinload below (and to any other query), not just
             # stale-cached.
             await self.db.flush()
-        await self.fill_lot_materials_from_style(lot.id, company_id)
+        await self.fill_lot_materials_from_style(lot.id, company_id, copy_new_style_lines=False)
         result = await self.db.execute(
             select(ProductionLot).where(ProductionLot.id == lot.id).options(*_LOT_FULL_LOADS)
         )
         return result.scalar_one()
+
+    async def _copy_style_materials(
+        self, lot_id: UUID, style: Style, resolved_size_qty: dict[UUID, int],
+        planned_total: int, now: datetime, *,
+        skip: set[UUID] = frozenset(), existing_fabrics: dict[UUID, "LotFabric"] | None = None,
+    ) -> dict[int | None, list[LotTrim]]:
+        """Copy the Style's trims, packing, fabric and yarn requirements onto a
+        lot, scaled to its plan. `skip` holds style row ids the lot already
+        has (so a later Auto-fill only adds what's new on the style), and
+        `existing_fabrics` the lot's fabric rows by style fabric, for yarns
+        to hang off. Returns the new trims by the process seq they're used in.
+        """
+        trims_by_process_seq: dict[int | None, list[LotTrim]] = {}
+        # Snapshot Style Trims / Packing Materials (§21: "fetched automatically
+        # when the Production Lot is created"). Trims with a size-wise
+        # breakdown are summed against this LOT's resolved per-size plan;
+        # flat trims and packing materials scale off the LOT's total
+        # planned_qty. Either way scaled by excess_pct when set.
+        for tr in style.trims:
+            if tr.id in skip:
+                continue
+            if tr.size_breakdown:
+                base_qty = sum(
+                    float(sb.quantity) * resolved_size_qty.get(sb.size_id, 0)
+                    for sb in tr.size_breakdown
+                )
+            else:
+                base_qty = float(tr.quantity) * planned_total if tr.quantity is not None else None
+            planned_qty = None
+            if base_qty is not None:
+                excess_mult = 1 + float(tr.excess_pct) / 100 if tr.excess_pct is not None else 1
+                planned_qty = Decimal(str(base_qty * excess_mult))
+            lot_trim = LotTrim(
+                production_lot_id=lot_id, style_trim_id=tr.id, trim_name=tr.trim_name,
+                unit=tr.unit, category=tr.category, trim_type=tr.trim_type,
+                planned_qty=planned_qty, created_at=now,
+            )
+            self.db.add(lot_trim)
+            trims_by_process_seq.setdefault(tr.process_seq, []).append(lot_trim)
+
+        for pm in style.packing_materials:
+            if pm.id in skip:
+                continue
+            planned_qty = None
+            if pm.quantity is not None:
+                base_qty = float(pm.quantity) * planned_total
+                excess_mult = 1 + float(pm.excess_pct) / 100 if pm.excess_pct is not None else 1
+                planned_qty = Decimal(str(base_qty * excess_mult))
+            self.db.add(LotPackingMaterial(
+                production_lot_id=lot_id, style_packing_material_id=pm.id, material_name=pm.material_name,
+                product_id=pm.product_id, unit=pm.unit, consumption_stage=pm.consumption_stage,
+                planned_qty=planned_qty, created_at=now,
+            ))
+
+        # Fabric / Yarn requirement snapshot (Phase 6 — BOM Consolidation):
+        # same size-breakdown-aware scaling as trims above. A yarn's
+        # planned_qty is its consumption_pct share of its parent fabric's
+        # own planned_qty (see LotYarn docstring) — computed after the
+        # fabric loop so the parent's quantity already exists.
+        lot_fabric_by_style_fabric: dict[UUID, LotFabric] = dict(existing_fabrics or {})
+        for fb in style.fabrics:
+            if fb.id in skip:
+                continue
+            if fb.size_breakdown:
+                base_qty = sum(
+                    float(sb.quantity) * resolved_size_qty.get(sb.size_id, 0)
+                    for sb in fb.size_breakdown
+                )
+            else:
+                base_qty = float(fb.consumption) * planned_total if fb.consumption is not None else None
+            planned_qty = None
+            if base_qty is not None:
+                excess_mult = 1 + float(fb.excess_pct) / 100 if fb.excess_pct is not None else 1
+                planned_qty = Decimal(str(base_qty * excess_mult))
+            planned_qty, lot_unit = _fabric_planned_in_kg(planned_qty, fb.unit)
+            lf = LotFabric(
+                production_lot_id=lot_id, style_fabric_id=fb.id, fabric_name=fb.fabric_name,
+                style_part_id=fb.style_part_id, colour_id=fb.colour_id, source_type=fb.source_type,
+                unit=lot_unit, planned_qty=planned_qty, created_at=now,
+            )
+            self.db.add(lf)
+            await self.db.flush()
+            lot_fabric_by_style_fabric[fb.id] = lf
+
+        for yn in style.yarns:
+            if yn.id in skip:
+                continue
+            lot_fabric = lot_fabric_by_style_fabric.get(yn.style_fabric_id) if yn.style_fabric_id else None
+            planned_qty = None
+            if lot_fabric is not None and lot_fabric.planned_qty is not None and yn.consumption_pct is not None:
+                planned_qty = (lot_fabric.planned_qty * yn.consumption_pct / 100).quantize(Decimal("0.0001"))
+            self.db.add(LotYarn(
+                production_lot_id=lot_id, lot_fabric_id=lot_fabric.id if lot_fabric else None,
+                style_yarn_id=yn.id, yarn_name=yn.yarn_name, colour_id=yn.colour_id,
+                counts=yn.counts, consumption_pct=yn.consumption_pct, unit=yn.unit,
+                planned_qty=planned_qty, created_at=now,
+            ))
+        return trims_by_process_seq
 
     async def _sync_product_pricing(
         self, lot: ProductionLot, *, mrp: Decimal | None = None, cost_price: Decimal | None = None,
@@ -2386,8 +2411,27 @@ class ProductionService:
         return result.scalars().all()
 
     async def create_worker(self, body: InternalWorkerCreate, company_id: UUID, user_id: UUID) -> InternalWorker:
+        name = (body.name or "").strip()
+        if not name:
+            raise BusinessRulesError("NAME_REQUIRED", "Name is required")
+        existing = (await self.db.execute(
+            select(InternalWorker).where(
+                InternalWorker.company_id == company_id,
+                func.lower(func.trim(InternalWorker.name)) == name.lower(),
+            ).limit(1)
+        )).scalar_one_or_none()
+        if existing and existing.is_active:
+            raise BusinessRulesError("DUPLICATE_NAME", f"A staff member / operator called “{name}” already exists")
+        if existing:
+            # Hidden from pickers while inactive — bring them back rather than duplicate.
+            existing.is_active = True
+            for field in ("phone", "role_title", "daily_rate"):
+                if getattr(body, field) is not None:
+                    setattr(existing, field, getattr(body, field))
+            await self.db.flush()
+            return existing
         worker = InternalWorker(
-            company_id=company_id, name=body.name, phone=body.phone,
+            company_id=company_id, name=name, phone=body.phone,
             role_title=body.role_title, daily_rate=body.daily_rate,
             created_at=datetime.now(timezone.utc), created_by=user_id,
         )
@@ -2749,7 +2793,51 @@ class ProductionService:
         await self.db.flush()
         return True
 
-    async def fill_lot_materials_from_style(self, lot_id: UUID, company_id: UUID) -> int | None:
+    async def _copy_new_style_lines(self, lot: ProductionLot, style: Style, fabrics, yarns, trims, packing) -> bool:
+        """Copy onto `lot` the Style requirements it doesn't have yet (added
+        to the Style after the lot was created). True when anything was added."""
+        style = (await self.db.execute(
+            select(Style).where(Style.id == style.id).options(
+                selectinload(Style.trims).selectinload(StyleTrim.size_breakdown),
+                selectinload(Style.packing_materials),
+                selectinload(Style.fabrics).selectinload(StyleFabric.size_breakdown),
+                selectinload(Style.yarns),
+            )
+        )).scalar_one()
+        skip = {
+            *(f.style_fabric_id for f in fabrics), *(y.style_yarn_id for y in yarns),
+            *(t.style_trim_id for t in trims), *(p.style_packing_material_id for p in packing),
+        } - {None}
+        style_rows = [*style.trims, *style.packing_materials, *style.fabrics, *style.yarns]
+        if all(row.id in skip for row in style_rows):
+            return False
+        sizes = {
+            size_id: qty for size_id, qty in (await self.db.execute(
+                select(ProductionLotSize.size_id, ProductionLotSize.planned_qty)
+                .where(ProductionLotSize.production_lot_id == lot.id)
+            )).all()
+        }
+        new_trims = await self._copy_style_materials(
+            lot.id, style, sizes, lot.planned_qty or 0, datetime.now(timezone.utc),
+            skip=skip, existing_fabrics={f.style_fabric_id: f for f in fabrics if f.style_fabric_id},
+        )
+        if new_trims:
+            # Each new trim goes to the stage of the process it's used in.
+            stage_by_seq = dict((await self.db.execute(
+                select(StyleProcess.seq, ProductionStage.id)
+                .join(StyleProcess, StyleProcess.id == ProductionStage.style_process_id)
+                .where(ProductionStage.production_lot_id == lot.id)
+            )).all())
+            for seq, lot_trims in new_trims.items():
+                for lot_trim in lot_trims:
+                    lot_trim.stage_id = stage_by_seq.get(seq)
+        await self.db.flush()
+        return True
+
+    async def fill_lot_materials_from_style(
+        self, lot_id: UUID, company_id: UUID, *,
+        unmatched: list[str] | None = None, copy_new_style_lines: bool = True,
+    ) -> int | None:
         """Add the lot's BOM lines that map to a catalog product and aren't on
         its material list yet, then anything already issued to the lot that
         still isn't (with no planned quantity); returns how many were added.
@@ -2757,8 +2845,13 @@ class ProductionService:
         A BOM line names its material, so the product is found through the
         material batch chosen on the Style (that batch's product), else by an
         exact product name of the same material type. Fabric made from yarn
-        is skipped — its yarn is what gets issued. Lines that map to no
-        product are left for the user to add by hand.
+        is skipped when it has yarn lines — its yarn is what gets issued.
+        Lines that map to no product are left for the user to add by hand;
+        their names go into `unmatched` so the caller can say which.
+
+        With `copy_new_style_lines`, requirements added to the Style after
+        this lot was created are copied onto the lot first, so the fill
+        reflects the Style as it is now (lines already on the lot are kept).
         """
         lot = await self._get_company_lot(lot_id, company_id)
         if not lot:
@@ -2769,6 +2862,9 @@ class ProductionService:
             return (await self.db.execute(select(model).where(model.production_lot_id == lot_id))).scalars().all()
 
         fabrics, yarns, trims, packing = await rows(LotFabric), await rows(LotYarn), await rows(LotTrim), await rows(LotPackingMaterial)
+
+        if style and copy_new_style_lines and await self._copy_new_style_lines(lot, style, fabrics, yarns, trims, packing):
+            fabrics, yarns, trims, packing = await rows(LotFabric), await rows(LotYarn), await rows(LotTrim), await rows(LotPackingMaterial)
 
         # Style row -> chosen material batch -> that batch's product.
         batch_by_style_row: dict[UUID, UUID] = {}
@@ -2804,8 +2900,10 @@ class ProductionService:
 
         needed: dict[UUID, list] = {}   # product_id -> [planned_qty, unit text]
 
-        def need(product_id: UUID | None, qty: Decimal | None, unit: str | None) -> None:
+        def need(product_id: UUID | None, qty: Decimal | None, unit: str | None, name: str | None = None) -> None:
             if not product_id or product_id not in product_by_id:
+                if name and unmatched is not None and name not in unmatched:
+                    unmatched.append(name)
                 return
             if product_id in needed:
                 current = needed[product_id][0]
@@ -2814,16 +2912,22 @@ class ProductionService:
                 needed[product_id] = [qty, unit]
 
         default_source = style.fabric_source if style else "yarn"
+        # Yarn lines name their fabric; ones that don't are taken to cover
+        # every yarn-made fabric (a single-fabric style rarely links them).
+        fabrics_with_yarn = {yn.lot_fabric_id for yn in yarns if yn.lot_fabric_id}
+        unlinked_yarn = any(yn.lot_fabric_id is None for yn in yarns)
         for fb in fabrics:
-            if (fb.source_type or default_source) == "yarn":
+            # Made from yarn: the yarn is what's issued — unless no yarn was
+            # given for it, in which case the fabric itself is the material.
+            if (fb.source_type or default_source) == "yarn" and (fb.id in fabrics_with_yarn or unlinked_yarn):
                 continue
-            need(resolve("fabric", fb.fabric_name, fb.style_fabric_id), fb.planned_qty, fb.unit)
+            need(resolve("fabric", fb.fabric_name, fb.style_fabric_id), fb.planned_qty, fb.unit, fb.fabric_name)
         for yn in yarns:
-            need(resolve("yarn", yn.yarn_name, yn.style_yarn_id), yn.planned_qty, yn.unit)
+            need(resolve("yarn", yn.yarn_name, yn.style_yarn_id), yn.planned_qty, yn.unit, yn.yarn_name)
         for tr in trims:
-            need(resolve("trim", tr.trim_name, tr.style_trim_id), tr.planned_qty, tr.unit)
+            need(resolve("trim", tr.trim_name, tr.style_trim_id), tr.planned_qty, tr.unit, tr.trim_name)
         for pm in packing:
-            need(pm.product_id or product_by_name.get(("packing", pm.material_name.strip().lower())), pm.planned_qty, pm.unit)
+            need(pm.product_id or product_by_name.get(("packing", pm.material_name.strip().lower())), pm.planned_qty, pm.unit, pm.material_name)
 
         for product_id in await self._issued_by_product(lot_id):
             if product_id not in needed:

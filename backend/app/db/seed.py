@@ -23,7 +23,7 @@ PERMISSIONS = [
     "delivery.view", "delivery.create", "delivery.dispatch",
     "invoice.view", "invoice.create", "invoice.cancel",
     "purchase_order.view", "purchase_order.create", "purchase_order.approve", "purchase_order.cancel",
-    "purchase_entry.view", "purchase_entry.create", "purchase.grn_edit",
+    "purchase_entry.view", "purchase_entry.create", "purchase.grn_edit", "purchase.po_close_approve",
     "purchase_return.view", "purchase_return.create",
     "inventory.view", "inventory.receive", "inventory.issue",
     "inventory.transfer", "inventory.adjust", "inventory.opening_balance",
